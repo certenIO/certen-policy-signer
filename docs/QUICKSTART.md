@@ -82,6 +82,17 @@ function checkPolicy(request) {
 Point `policy.url` at your own service and you are integrated. Everything else — discovery, decoding,
 signing, submission, receipts, idempotency — is already handled.
 
+To run the signer yourself rather than under the quickstart script, give it a config file — or ask it
+what it takes:
+
+```bash
+cp config.example.yaml config.yaml
+npx tsx src/index.ts config.yaml     # or: certen-external-policy-signer config.yaml
+npx tsx src/index.ts --help          # usage, environment, and the HTTP surface
+```
+
+The config path also comes from `$CONFIG_PATH`, and defaults to `./config.yaml`.
+
 Read next:
 
 - **[INTEGRATION.md](INTEGRATION.md)** — the full contract, the signed channel, answering asynchronously,

@@ -42,7 +42,7 @@ need to change how transactions are built** to put a policy gate on them.
 
 ```bash
 npm install                     # also applies a required accumulate.js patch — see docs/DEPLOY.md
-npm test                        # 182 tests, no network needed
+npm test                        # 207 tests, no network needed
 npm run smoke                   # prove the Ed25519 preimage is valid and deterministic
 ```
 
@@ -193,6 +193,32 @@ Two implementation decisions worth knowing:
 One process can watch several key pages, each with its own key and its own custody — one poller per
 scope, one shared decision pipeline, and a keyring that selects the key by page.
 See [`config.multi-scope.example.yaml`](config.multi-scope.example.yaml).
+
+---
+
+## Command line
+
+The signer takes one argument — the config file — and `--help` describes the whole surface, including
+the HTTP routes and which of them are admin-only:
+
+```bash
+npm install -g certenIO/certen-external-policy-signer   # the install builds the bundle
+certen-external-policy-signer --help
+
+node dist/signer.cjs --help                # from a build
+npx tsx src/index.ts --help                # from source
+docker run --rm certen/external-policy-signer --help
+```
+
+| | |
+|---|---|
+| `certen-external-policy-signer [config-path]` | Run. Config resolves from the argument, then `$CONFIG_PATH`, then `./config.yaml` |
+| `--help`, `-h` | Usage, environment, and the HTTP surface |
+| `--version`, `-v` | Package version |
+| `$LOG_LEVEL` | Pino level; `info` by default |
+
+An unrecognised flag exits `2` rather than being ignored — a flag that is silently dropped looks like
+a setting that took effect.
 
 ---
 

@@ -8,11 +8,13 @@
     "node": ">=20"
   },
   "bin": {
-    "certen-policy-signer": "dist/signer.cjs"
+    "certen-external-policy-signer": "dist/signer.cjs"
   },
   "scripts": {
     "postinstall": "node scripts/fix-accumulate-encoding.mjs",
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/signer.cjs --external:pino --external:pino-pretty",
+    "//prepare": "runs after postinstall — a git install has no dist/, so without this the bin is a dead path",
+    "prepare": "npm run build",
+    "build": "node scripts/build.mjs",
     "start": "node dist/signer.cjs",
     "dev": "tsx watch src/index.ts",
     "smoke": "tsx scripts/smoke-signing.ts",

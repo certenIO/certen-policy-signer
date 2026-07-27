@@ -1,5 +1,6 @@
 /** Entry point: wire modules from config, run the startup self-check, start servers + poller. */
 import { createHash } from 'node:crypto';
+import { parseArgs, helpText, VERSION, BIN } from './cli.js';
 import { loadConfig, parseBind } from './config.js';
 import { logger as baseLogger } from './logger.js';
 import { MapKeyring, buildSignerFromSpec, bookOf, SigningScope } from './signer/keyring.js';
@@ -22,8 +23,17 @@ function hostOf(endpoint: string): string {
 }
 
 async function main() {
-  const configPath = process.argv[2] ?? process.env.CONFIG_PATH ?? './config.yaml';
-  const cfg = loadConfig(configPath);
+  // Argument handling before anything else: --help must answer even when there is no config, no key
+  // and no network. It is printed raw rather than logged — a help screen wrapped in JSON is not help.
+  const inv = parseArgs(process.argv.slice(2));
+  if (inv.mode === 'help') { process.stdout.write(helpText()); return; }
+  if (inv.mode === 'version') { process.stdout.write(`${BIN} ${VERSION}\n`); return; }
+  if (inv.mode === 'error') {
+    process.stderr.write(`${BIN}: ${inv.message}\nTry '${BIN} --help'.\n`);
+    process.exit(2);
+  }
+
+  const cfg = loadConfig(inv.configPath);
   const logger = baseLogger.child({ org: cfg.wallet.org_id });
 
   // --- signing scopes + keyring (key custody) ---

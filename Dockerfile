@@ -3,8 +3,9 @@
 FROM node:20-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
-# postinstall patches accumulate.js's Time.encode, so the script must exist before `npm ci`.
-COPY scripts/fix-accumulate-encoding.mjs ./scripts/
+# Both hooks `npm ci` fires must exist before it runs: postinstall patches accumulate.js's Time.encode,
+# and prepare invokes the build (which no-ops here — src/ arrives below, so this layer stays cacheable).
+COPY scripts/fix-accumulate-encoding.mjs scripts/build.mjs ./scripts/
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
