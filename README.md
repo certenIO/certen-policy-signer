@@ -202,13 +202,18 @@ The signer takes one argument — the config file — and `--help` describes the
 the HTTP routes and which of them are admin-only:
 
 ```bash
-npm install -g certenIO/certen-external-policy-signer   # the install builds the bundle
+npm install                  # builds dist/signer.cjs as part of the install
+npm install -g .             # optional — puts `certen-external-policy-signer` on PATH
 certen-external-policy-signer --help
 
-node dist/signer.cjs --help                # from a build
-npx tsx src/index.ts --help                # from source
+node dist/signer.cjs --help                        # from a build, no global install
+npx tsx src/index.ts --help                        # from source
 docker run --rm certen/external-policy-signer --help
 ```
+
+> Install from a clone, not `npm install -g <git-url>`. npm prepares a git dependency by running
+> `prepare` in a temp clone that has no devDependencies, so the esbuild build fails there. Cloning
+> first is the supported path.
 
 | | |
 |---|---|
