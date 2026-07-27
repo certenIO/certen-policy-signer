@@ -9,19 +9,41 @@
  *
  * pino and pino-pretty stay external: they resolve transports by path at runtime, which a bundle breaks.
  */
-import { build } from 'esbuild';
 import { existsSync } from 'node:fs';
 
 const ENTRY = 'src/index.ts';
 const OUTFILE = 'dist/signer.cjs';
 
-// `prepare` runs during `npm ci`, and the Dockerfile installs dependencies in a layer that deliberately
-// holds only package.json and the postinstall patch — src/ arrives later, for caching. A dependency-only
-// install has nothing to bundle, so skip rather than fail. The Dockerfile still calls this explicitly
-// once src/ is present, and that call cannot be skipped this way.
-if (!existsSync(ENTRY)) {
-  console.log(`no ${ENTRY} — dependency-only install, nothing to bundle`);
-  process.exit(0);
+// This runs two ways, and they want opposite failure behaviour.
+//
+// As the `prepare` lifecycle hook it fires during any install, including ones where building is neither
+// possible nor wanted: the Dockerfile's dependency layer holds no src/ yet (kept that way for caching),
+// and `npm ci --omit=dev` has no esbuild because esbuild is a devDependency. Neither is an error — a
+// production install has nothing to bundle — so skip.
+//
+// Invoked directly as `npm run build`, the same conditions ARE errors: someone asked for a bundle and
+// must not be told it succeeded.
+//
+// The caller says which it is. `npm_lifecycle_event` cannot: `prepare` shells out to `npm run build`,
+// so by the time this file runs the variable reads "build" either way.
+const viaPrepare = process.argv.includes('--if-possible');
+
+function unavailable(why) {
+  if (viaPrepare) {
+    console.log(`skipping bundle: ${why}`);
+    process.exit(0);
+  }
+  console.error(`cannot build: ${why}`);
+  process.exit(1);
+}
+
+if (!existsSync(ENTRY)) unavailable(`no ${ENTRY} in ${process.cwd()}`);
+
+let build;
+try {
+  ({ build } = await import('esbuild'));
+} catch {
+  unavailable("esbuild is not installed (it is a devDependency; a production install has none)");
 }
 
 await build({

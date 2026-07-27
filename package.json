@@ -12,8 +12,8 @@
   },
   "scripts": {
     "postinstall": "node scripts/fix-accumulate-encoding.mjs",
-    "//prepare": "runs after postinstall — a git install has no dist/, so without this the bin is a dead path",
-    "prepare": "npm run build",
+    "//prepare": "runs after postinstall — a plain clone has no dist/, so without this the bin is a dead path. --if-possible: a production or dependency-only install has nothing to build, and that is not an error",
+    "prepare": "node scripts/build.mjs --if-possible",
     "build": "node scripts/build.mjs",
     "start": "node dist/signer.cjs",
     "dev": "tsx watch src/index.ts",
