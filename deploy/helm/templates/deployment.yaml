@@ -1,0 +1,76 @@
+{{- if gt (int .Values.replicaCount) 1 }}
+{{- fail "replicaCount must be 1: the wallet's idempotency lock and state file are per-process, so a second replica could double-vote on the same pending tx" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wallet.fullname" . }}
+  labels: {{- include "wallet.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate      # never run two wallets against one state volume (RWO + in-process lock)
+  selector:
+    matchLabels: {{- include "wallet.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "wallet.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ .Values.config | toYaml | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000     # so the non-root process can write the state PVC
+      containers:
+        - name: wallet
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["/config/config.yaml"]
+          envFrom:
+            - secretRef:
+                name: {{ include "wallet.fullname" . }}-secrets
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            {{- if .Values.signerSeedHex }}
+            - name: signer-key
+              mountPath: /etc/certen
+              readOnly: true
+            {{- end }}
+            {{- if .Values.persistence.enabled }}
+            - name: state
+              mountPath: /data
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "wallet.fullname" . }}-config
+        {{- if .Values.signerSeedHex }}
+        # The org's key as a file, mode 0400 — from its OWN Secret, which is never used with envFrom.
+        - name: signer-key
+          secret:
+            secretName: {{ include "wallet.fullname" . }}-signer-key
+            defaultMode: 0400
+            items:
+              - key: signer-seed
+                path: signer-seed
+        {{- end }}
+        {{- if .Values.persistence.enabled }}
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "wallet.fullname" . }}-state
+        {{- end }}

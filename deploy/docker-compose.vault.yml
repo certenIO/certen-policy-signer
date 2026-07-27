@@ -1,0 +1,50 @@
+# Production key posture: your key is generated inside Vault and NEVER leaves it. The signer holds
+# no private key at all — it sends Vault a 32-byte preimage and gets a signature back.
+#
+# This is the same signer image and the same policy engine as docker-compose.yml; only the signer changes.
+#
+#   docker compose -f docker-compose.vault.yml up -d vault      # then create the transit key (see docs/OPERATIONS.md)
+#   docker compose -f docker-compose.vault.yml up -d --build    # signer + policy
+#
+# The `vault` service here is a DEV Vault (in-memory, auto-unsealed, root token). For production, point
+# wallet.signer.vault.addr at your real Vault cluster and delete this service — see docs/OPERATIONS.md.
+services:
+  vault:
+    image: hashicorp/vault:latest
+    command: server -dev
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: "${VAULT_TOKEN:-root}"
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    ports: ["8200:8200"]      # published so the operator can create/inspect the transit key
+    cap_add: ["IPC_LOCK"]
+
+  policy:
+    image: node:20-slim
+    working_dir: /app
+    volumes: ["../examples:/app/examples:ro"]
+    command: node examples/policy-engine.mjs
+    environment:
+      PORT: "9099"
+      # See docker-compose.yml: a placeholder engine that approves everything is indistinguishable from a
+      # working one. `parity` visibly denies half, so a first run proves the gate is real.
+      POLICY_MODE: "${POLICY_MODE:-parity}"
+      POLICY_HMAC_SECRET: "${POLICY_HMAC_SECRET:-}"
+    expose: ["9099"]
+    restart: unless-stopped
+
+  signer:
+    build: ..
+    depends_on: [vault, policy]
+    environment:
+      # The ONLY secret the signer gets is a Vault token — not a signing key.
+      VAULT_TOKEN: "${VAULT_TOKEN:?set VAULT_TOKEN in .env}"
+      ADMIN_API_KEY: "${ADMIN_API_KEY:-}"
+      POLICY_HMAC_SECRET: "${POLICY_HMAC_SECRET:-}"
+    volumes:
+      - "${SIGNER_CONFIG:-./config.vault.yaml}:/config/config.yaml:ro"
+      - "signer-state:/data"
+    ports: ["8080:8080"]
+    restart: unless-stopped
+
+volumes:
+  signer-state:

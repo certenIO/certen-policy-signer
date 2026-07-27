@@ -1,0 +1,9 @@
+# Local demo config — local signer (no Vault), governance-admin key set for the console.
+wallet: { org_id: "demo-org", network: "kermit", accumulate_endpoints: ["http://127.0.0.1:9/v3"], signer_url: "acc://demo-org.acme/book/1", attachment_model: "authority" }
+signer: { provider: "local", local: { allow_ephemeral: true } }  # throwaway key — console demo only, matches no page
+policy: { url: "http://127.0.0.1:9099/decision", mode: "sync", auth: "none", timeout_ms: 2000 }  # parity-policy-engine.mjs: even=approve/odd=deny
+trigger: { webhook: { enabled: true, bind: "127.0.0.1:18080" }, poller: { enabled: false } }
+behavior: { submit_reject_vote: true }  # on deny, sign+submit a Reject vote (else withhold signature -> tx expires)
+admin: { api_key: "local-demo-key", governance_admin_key: "gov-secret" }  # admin shares the health port; api_key is what protects it
+health: { bind: "127.0.0.1:18080" }
+observability: { log_level: "info" }

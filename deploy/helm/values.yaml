@@ -1,0 +1,63 @@
+image:
+  repository: certen/external-policy-signer
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1   # signing is idempotent + DB-locked; >1 is safe but unnecessary for POC
+
+# The wallet config (SPEC §11). Secrets come from `secretEnv`, referenced as env:NAME.
+config:
+  wallet:
+    org_id: "demo-org"
+    network: "kermit"
+    accumulate_endpoints: ["https://kermit.accumulatenetwork.io/v3"]
+    signer_url: "acc://demo-org.acme/book/1"
+    attachment_model: "authority"
+  signer:
+    # Pilot posture: the org's key is mounted as a FILE from the Secret below — not an env var, which
+    # would be readable via `kubectl describe pod` / the pod spec. For the production posture, switch to
+    # vault-transit (the key then never leaves Vault) and drop signerSeedHex.
+    provider: "local"
+    local:
+      seed_file: "/etc/certen/signer-seed"
+    # provider: "vault-transit"
+    # vault: { addr: "https://vault.internal:8200", key_name: "org-accum", token: "env:VAULT_TOKEN" }
+  policy:
+    url: "https://policy.internal/decision"
+    mode: "sync"
+    auth: "hmac"
+    hmac_secret: "env:POLICY_HMAC_SECRET"
+  trigger:
+    webhook: { enabled: true, hmac_secret: "env:WEBHOOK_HMAC_SECRET", bind: "0.0.0.0:8080" }
+    poller: { enabled: true, interval_seconds: 20 }
+  behavior: { submit_reject_vote: true }
+  store: { path: "/data/wallet-state.json" }   # persisted on the PVC below — see persistence:
+  health: { bind: "0.0.0.0:8080" }
+  admin: { api_key: "env:ADMIN_API_KEY" }      # admin shares the health port; no key => 403
+
+# The org's Ed25519 page key (64 hex chars), mounted as a FILE at signer.local.seed_file.
+# Leave empty and supply the Secret out-of-band (external-secrets, sealed-secrets); do NOT commit a real key.
+# Not needed at all when signer.provider=vault-transit — that is the point of Vault.
+signerSeedHex: ""
+
+# Secret values -> injected as env vars, referenced by config `env:NAME`.
+# The signing key is deliberately NOT here (see signerSeedHex above) — env vars show up in the pod spec.
+secretEnv:
+  POLICY_HMAC_SECRET: ""
+  WEBHOOK_HMAC_SECRET: ""
+  ADMIN_API_KEY: ""
+  # VAULT_TOKEN: ""        # only when signer.provider=vault-transit
+
+# Signing history + receipts. Without this the pod forgets every decision it has made on each restart.
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""      # "" = cluster default
+
+resources:
+  requests: { cpu: "100m", memory: "128Mi" }
+  limits: { cpu: "500m", memory: "512Mi" }
+
+service:
+  type: ClusterIP
+  port: 8080

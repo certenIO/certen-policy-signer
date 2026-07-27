@@ -1,0 +1,171 @@
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+#  certen-external-policy-signer — annotated reference config
+#
+#  Copy this, delete what you do not need, and read the comments on the ones you keep. Every option that
+#  can change WHAT GETS SIGNED is marked. Secrets are never written here: use `env:NAME` to read them from
+#  the environment, or a file path for a mounted Docker/Kubernetes secret.
+#
+#  Minimum viable config is much smaller than this file — see the "Quick start" section of the README.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+wallet:
+  # A label for logs and receipts. Any string; use something you will recognize in an incident.
+  org_id: "example-org"
+
+  # Free-form network label, for logs only — nothing branches on it. Omit and the endpoint host is
+  # logged instead. Works with any Accumulate network: public, devnet, or private.
+  network: "kermit"
+
+  # The Accumulate v3 JSON-RPC endpoint(s). The first is used.
+  accumulate_endpoints:
+    - "https://kermit.accumulatenetwork.io/v3"
+
+  # ── Which key page this signer acts for ──────────────────────────────────────────────────────────
+  # Single-scope: one page, plus the top-level `signer:` block below. This is the common case.
+  signer_url: "acc://example-org.acme/book/1"
+
+  # Multi-scope alternative: watch several pages, each with its own key and custody. Mutually exclusive
+  # with signer_url. One poller per scope, one shared decision pipeline; the keyring picks the key by
+  # page. See config.multi-scope.example.yaml.
+  # scopes:
+  #   - page: "acc://team-a.acme/book/1"
+  #     key: { provider: "local", local: { seed_file: "/run/secrets/team_a_seed" } }
+  #   - page: "acc://team-b.acme/book/1"
+  #     key: { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "team-b", token: "env:VAULT_TOKEN" } }
+
+  # How this signer is attached to the transactions it signs.
+  #   authority — the key book is named as an authority (the usual case)
+  #   delegate  — signing on behalf of a delegator (set delegator_url)
+  #   per_tx    — named per transaction, in the transaction header
+  attachment_model: "authority"
+  delegator_url: null
+
+  # SR6 startup self-check: refuse to boot unless this signer's public key is verifiably on the page
+  # above. Leave false. Setting it true downgrades a failure to a warning, and the failure it hides is
+  # "every vote you cast will be silently rejected by the network". Only for pages whose key hashes the
+  # node will not expose.
+  allow_unverified_signer: false
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+#  KEY CUSTODY — where the private key lives. Used in single-scope mode.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+signer:
+  # vault-transit — PRODUCTION. The key is generated inside HashiCorp Vault and never leaves it; Vault
+  #                 performs the Ed25519 signature. This process never holds private key material.
+  # local         — the key is held in this process's memory. Simpler; a deliberate, documented tradeoff
+  #                 for pilots. See "Key posture" in docs/DEPLOY.md.
+  provider: "vault-transit"
+  vault:
+    addr: "https://vault.internal:8200"
+    key_name: "example-org-accumulate"
+    token: "env:VAULT_TOKEN"
+
+  # local:
+  #   seed_hex: "env:SIGNER_SEED_HEX"        # 32-byte hex seed, or...
+  #   seed_file: "/run/secrets/signer_seed"  # ...a file holding it (Docker/Kubernetes secret mount)
+  #   allow_ephemeral: false                 # dev only: generate a throwaway key. It matches no on-chain
+  #                                          # page, so every vote it casts is rejected. Never in prod.
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+#  YOUR POLICY ENGINE — the decision this signer obeys.
+#  Contract and a runnable reference implementation: examples/policy-engine.mjs
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+policy:
+  url: "https://policy.internal.example-org/decision"
+
+  # Only "sync" is implemented: the signer POSTs and waits. An engine that cannot answer immediately
+  # replies {"decision":"pending"} and the signer asks again next poll — see examples/policy-engine.mjs.
+  mode: "sync"
+
+  # none | hmac | mtls. With hmac, the signer signs its request and REQUIRES a valid signature on the
+  # response, so a decision cannot be forged or replayed by anything on the network path.
+  auth: "hmac"
+  hmac_secret: "env:POLICY_HMAC_SECRET"
+
+  # Header names for the signed channel. Defaults shown; point them at whatever your engine already
+  # emits. The legacy `x-certen-signature` is always accepted on responses for backward compatibility.
+  signature_header: "x-signer-signature"
+  timestamp_header: "x-signer-timestamp"
+
+  # How long to wait for a decision. A timeout is fail-closed: nothing is signed and it retries.
+  timeout_ms: 10000
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+#  INTENT DECODING — how a transaction becomes the sentence and amounts your engine decides on.
+#  This is the seam you extend for your own payload format. Guide: docs/INTEGRATION.md §1
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+resolver:
+  # Load your own decoders — a path or a package name. No fork required. See examples/custom-decoder.mjs.
+  # decoder_modules:
+  #   - "./examples/custom-decoder.mjs"
+
+  # Explicit chain order, FIRST CLAIM WINS — a specific decoder must precede a general one. Omit to use
+  # the built-in order (loaded modules first, then send-tokens, certen-intent, write-data). The terminal
+  # `fallback` is always appended. An unknown name here stops the boot rather than running one short.
+  # decoders: ["acme-purchase-order", "send-tokens", "write-data"]
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+#  TRIGGERS — how pending transactions are discovered.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+trigger:
+  poller:
+    enabled: true
+    interval_seconds: 20
+  webhook:
+    # Push instead of poll. Requires hmac_secret: without one the route returns 403 rather than
+    # existing unauthenticated.
+    enabled: false
+    hmac_secret: "env:WEBHOOK_HMAC_SECRET"
+    signature_header: "x-signer-signature"
+    bind: "0.0.0.0:8080"
+
+behavior:
+  # On a deny: true casts an explicit REJECT vote, killing the transaction now. false withholds the
+  # signature and lets it expire. Both are safe; the first is auditable and immediate, the second is
+  # quieter. Note a reject vote is still a SIGNATURE, so an emergency pause suppresses it too.
+  submit_reject_vote: false
+
+  # Retries when the key page version moves under us mid-signature — a benign race, not a failure.
+  max_bad_version_retries: 3
+
+  # SR4 local ceiling, defense-in-depth BEHIND your policy engine: refuse to sign if ANY amount exceeds
+  # this, compared as a big integer. Optional. This is a backstop for an engine bug, not a policy.
+  # value_ceiling: "1000000"
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+#  DURABLE STATE — idempotency (never vote twice) and the receipt audit trail.
+#  Omit the path and BOTH die with the process: a restart can double-vote and the audit trail is lost.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+store:
+  path: "/data/signer-state.json"
+
+health:
+  bind: "0.0.0.0:8080"
+
+# Admin routes (including the emergency pause) share the health listener. There is no separate admin
+# port, so api_key — not a bind address — is what protects them. Without it, every admin route returns
+# 403 and the pause is unavailable.
+admin:
+  api_key: "env:ADMIN_API_KEY"
+  # Separate, higher-privilege credential for key-page governance. Changing a key changes who can act
+  # for your organization, so it is deliberately not the same credential as the pause.
+  # governance_admin_key: "env:GOVERNANCE_ADMIN_KEY"
+
+observability:
+  log_level: "info"
+  metrics: true
+  # /metrics shares the public health listener, so it is admin-authenticated by default. Set true only
+  # if that port is already private (e.g. a ClusterIP scraped by an in-cluster Prometheus).
+  metrics_public: false
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+#  OPTIONAL VENDOR ADAPTER — vote through the Certen api-gateway's external-signing seam instead of
+#  submitting to Accumulate directly. Off by default; most deployments never touch this. Your key still
+#  never leaves this process — the gateway hands over bytes and you decide whether to sign them.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# gateway:
+#   enabled: true
+#   url: "https://gateway.internal:8090"
+#   api_key: "env:GATEWAY_API_KEY"
+#   identity: "acc://example-org.acme"
+#   timeout_ms: 20000

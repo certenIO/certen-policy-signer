@@ -1,0 +1,17 @@
+{{- if .Values.persistence.enabled }}
+# Signing history + receipts (store.path). ReadWriteOnce: the wallet's single-flight lock is in-process,
+# so exactly one replica may own this state — see the replicaCount guard in deployment.yaml.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "wallet.fullname" . }}-state
+  labels: {{- include "wallet.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,49 @@
+# GATEWAY mode: the wallet votes through the Certen api-gateway's external-signing seam instead of
+# submitting to Accumulate itself. See docs/INTEGRATION.md §3.
+#
+# What changes:  only how the vote reaches the chain (POST /v1/sign -> sign -> POST /v1/sign/:id/signature).
+# What does NOT: the org's key stays in the wallet, the policy engine still gates every signature, and
+#                discovery + intent decoding remain the wallet's job (the gateway's pending list carries no
+#                transaction body, and its poller does not reliably see per-tx Header.Authorities entries).
+#
+# The wallet therefore still needs an Accumulate v3 endpoint — for READS (discover + decode), not writes.
+wallet:
+  org_id: "demo-org"
+  network: "kermit"
+  accumulate_endpoints: ["https://kermit.accumulatenetwork.io/v3"]   # reads: discovery + intent decode
+  signer_url: "acc://demo-org.acme/book/1"
+  attachment_model: "per_tx"
+
+gateway:
+  enabled: true
+  url: "https://gateway.certen.internal:8090"
+  api_key: "env:GATEWAY_API_KEY"      # ck_live_… — needs the pending:read and sign:write scopes
+  identity: "acc://demo-org.acme"     # the org's ADI, as registered with the gateway
+  signer_url: "acc://demo-org.acme/book/1"
+  timeout_ms: 20000
+
+signer:
+  provider: "vault-transit"           # or local + seed_file — the key never goes to the gateway either way
+  vault:
+    addr: "https://vault.internal:8200"
+    key_name: "org-accum"
+    token: "env:VAULT_TOKEN"
+
+policy:
+  url: "http://policy:9099/decision"
+  mode: "sync"
+  auth: "hmac"
+  hmac_secret: "env:POLICY_HMAC_SECRET"
+  timeout_ms: 10000
+
+trigger:
+  webhook: { enabled: false, bind: "0.0.0.0:8080" }
+  poller: { enabled: true, interval_seconds: 20 }
+
+behavior:
+  submit_reject_vote: true
+
+store: { path: "/data/wallet-state.json" }
+health: { bind: "0.0.0.0:8080" }
+admin: { api_key: "env:ADMIN_API_KEY" }
+observability: { log_level: "info", metrics: true }

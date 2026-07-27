@@ -1,0 +1,41 @@
+# Standalone pilot config (mounted at /config/config.yaml by docker-compose.yml).
+# Edit org_id + signer_url; everything secret comes from the environment.
+wallet:
+  org_id: "demo-org"
+  network: "kermit"
+  accumulate_endpoints: ["https://kermit.accumulatenetwork.io/v3"]
+  signer_url: "acc://demo-org.acme/book/1"   # the org's key page — our public key must be ON it (SR6, fail-closed)
+  attachment_model: "per_tx"                 # the intent names the org in Header.Authorities
+
+signer:
+  provider: "local"                          # org key held in-process, read from a mounted secret file
+  local:
+    seed_file: "/run/secrets/signer_seed"    # docker secret; prefer this to an env var (see docs/DEPLOY.md)
+    # seed_hex: "env:SIGNER_SEED_HEX"        # alternative, but env vars leak via `docker inspect`
+
+policy:
+  url: "http://policy:9099/decision"         # the org's policy engine (compose service name)
+  mode: "sync"
+  auth: "none"                               # -> "hmac" + hmac_secret: "env:POLICY_HMAC_SECRET" to authenticate decisions
+  timeout_ms: 10000
+
+trigger:
+  webhook: { enabled: false, bind: "0.0.0.0:8080" }
+  poller: { enabled: true, interval_seconds: 20 }
+
+behavior:
+  submit_reject_vote: true                   # on deny, submit a Reject vote (false = withhold signature, tx expires)
+  # value_ceiling: "1000000000000000000"     # optional SR4 guard: refuse to sign if ANY leg exceeds this
+
+# Durable state: which txs we already voted on + the receipt audit trail. Backed by the `wallet-state`
+# volume — remove it and a restart forgets every decision it has made.
+store:
+  path: "/data/wallet-state.json"
+
+# /healthz + /metrics are public on this port; the admin routes share it and are protected by api_key.
+# Without ADMIN_API_KEY set, every admin route returns 403 — including SR8 pause.
+health: { bind: "0.0.0.0:8080" }
+admin:
+  api_key: "env:ADMIN_API_KEY"
+
+observability: { log_level: "info", metrics: true }

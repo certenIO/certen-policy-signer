@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Policy Signer — Operator Console</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --panel: #fff; --ink: #12151a; --muted: #61697a; --line: #e2e6ee;
+    --ok: #0a7d4a; --warn: #9a6100; --bad: #b3261e; --accent: #2b5fd9; --code: #f2f4f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116; --panel: #161a21; --ink: #e7eaf0; --muted: #99a2b4; --line: #262c37;
+      --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --accent: #7aa2f7; --code: #0b0e13;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 20px 24px; border-bottom: 1px solid var(--line); display: flex;
+           align-items: center; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  h2 { font-size: 14px; margin: 0 0 14px; font-weight: 650; text-transform: uppercase;
+       letter-spacing: 0.06em; color: var(--muted); }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .spread { justify-content: space-between; }
+  button { font: inherit; font-weight: 550; padding: 8px 15px; border-radius: 7px;
+           border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { color: #fff; opacity: .9; }
+  button.danger { border-color: var(--bad); color: var(--bad); }
+  input { font: inherit; padding: 8px 11px; border-radius: 7px; border: 1px solid var(--line);
+          background: var(--bg); color: var(--ink); min-width: 260px; }
+  label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 5px; }
+  .field { margin-bottom: 12px; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 7px; padding: 12px;
+        overflow-x: auto; margin: 10px 0 0; white-space: pre-wrap; word-break: break-word; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+          font-size: 12.5px; font-weight: 600; border: 1px solid currentColor; }
+  .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); }
+  .muted { color: var(--muted); font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .05em;
+       color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--line); font-weight: 600; }
+  td { padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 13.5px; }
+  tr:last-child td { border-bottom: 0; }
+  .tx { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+  .scroll { overflow-x: auto; }
+  .note { border-left: 3px solid var(--accent); padding: 10px 14px; background: var(--code);
+          border-radius: 0 7px 7px 0; font-size: 13.5px; margin-top: 12px; }
+  .note.bad { border-left-color: var(--bad); }
+  .note.ok { border-left-color: var(--ok); }
+  .grid2 { display: grid; grid-template-columns: 1fr; gap: 20px; }
+  @media (min-width: 860px) { .grid2 { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Policy Signer — Operator Console</h1>
+  <span id="signer-url" class="muted"></span>
+  <span style="flex:1"></span>
+  <span id="status-pill" class="pill warn">connecting…</span>
+  <button onclick="refreshAll()">Refresh</button>
+</header>
+
+<main>
+
+  <!-- ─────────────  STATUS + EMERGENCY STOP  ───────────── -->
+  <section class="panel">
+    <div class="row spread">
+      <h2 style="margin:0">Status</h2>
+      <div class="row">
+        <button id="btn-pause" class="danger" onclick="setPaused(true)">Pause signing</button>
+        <button id="btn-resume" class="primary" onclick="setPaused(false)">Resume</button>
+      </div>
+    </div>
+    <div id="status-body" class="muted" style="margin-top:14px">loading…</div>
+    <div class="note">
+      <strong>Pause stops everything, including reject votes.</strong> A reject is still a signature, so a
+      paused signer that kept submitting rejections would not be paused. While paused, transactions simply
+      stay pending — nothing is lost, and the backlog is handled when you resume.
+    </div>
+  </section>
+
+  <div class="grid2">
+    <!-- ─────────────  POLICY ENGINE TESTER  ───────────── -->
+    <section class="panel">
+      <h2>Test your policy engine</h2>
+      <p class="muted" style="margin-top:0">
+        Sends one synthetic decision request and checks the reply against the contract. Wiring an engine
+        fails in a few predictable ways, and every one of them looks identical from the signer's side —
+        "it never signs anything". Find out here instead.
+      </p>
+      <div class="field">
+        <label for="pe-url">Endpoint URL</label>
+        <input id="pe-url" value="http://127.0.0.1:9099/decision" style="width:100%">
+      </div>
+      <div class="field">
+        <label for="pe-secret">Shared HMAC secret <span class="muted">— optional; leave blank if policy.auth is none</span></label>
+        <input id="pe-secret" type="password" placeholder="(none)" style="width:100%">
+      </div>
+      <div class="field">
+        <label for="pe-values">Amounts to send as <code>values</code> <span class="muted">— comma separated</span></label>
+        <input id="pe-values" value="4000" style="width:100%">
+      </div>
+      <button class="primary" onclick="testPolicy()">Send test request</button>
+      <div id="pe-result"></div>
+    </section>
+
+    <!-- ─────────────  SIGNING KEYS  ───────────── -->
+    <section class="panel">
+      <h2>Signing keys</h2>
+      <p class="muted" style="margin-top:0">
+        The public key this signer holds, and the key hash that must appear on your Accumulate key page.
+        If they do not match, the signer refuses to start — see the startup self-check.
+      </p>
+      <div id="keys-body" class="muted">loading…</div>
+
+      <div id="gov-panel" style="display:none; margin-top:18px; padding-top:18px; border-top:1px solid var(--line)">
+        <h2>Key page governance</h2>
+        <div class="field">
+          <label for="gov-hash">New key hash <span class="muted">— 64 hex characters</span></label>
+          <input id="gov-hash" placeholder="sha256 of the new public key" style="width:100%">
+        </div>
+        <div class="row">
+          <button onclick="keyPage('rotate-key','updateKey')">Rotate (routine)</button>
+          <button class="danger" onclick="keyPage('rotate-key','update')">Rotate (compromise)</button>
+          <button onclick="keyPage('add-key')">Add key</button>
+        </div>
+        <div class="note bad">
+          <strong>Compromise mode is not the default, and the difference matters.</strong> A routine
+          rotation swaps the key but leaves the page version alone, so anything the old key already signed
+          at the current version stays valid. Compromise mode bumps the version, resetting the nonces and
+          invalidating those signatures. If a key may be in someone else's hands, use it.
+        </div>
+        <div id="gov-result"></div>
+      </div>
+      <div id="gov-disabled" class="muted" style="margin-top:16px; display:none">
+        Key-page operations are disabled: this console was started without <code>GOVERNANCE_KEY</code>.
+        Changing a key changes who can act for you, so it is a separate credential from the pause.
+      </div>
+    </section>
+  </div>
+
+  <!-- ─────────────  ACTIVITY / AUDIT  ───────────── -->
+  <section class="panel">
+    <div class="row spread">
+      <h2 style="margin:0">Recent decisions</h2>
+      <span class="muted">the audit trail — what was decided, and why</span>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Transaction</th><th>What it does</th><th>Status</th><th>Decision</th><th>Reason given</th></tr>
+        </thead>
+        <tbody id="activity"><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="note">
+      <strong>The reason column is your engine's own words</strong>, stored verbatim beside the vote along
+      with any evidence it returned. That pairing — "we decided this" next to "this happened on chain" — is
+      what an audit actually needs a year from now.
+    </div>
+  </section>
+
+  <p class="muted" style="text-align:center">
+    This console is an operator tool with no authentication of its own. Reachability is the boundary — run
+    it inside your trust domain. It is a single HTML file and one small server; both are meant to be edited.
+  </p>
+</main>
+
+<script>
+let CONFIG = {};
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+async function signer(path, method = 'GET', body) {
+  const r = await fetch('/api/signer' + path, {
+    method,
+    headers: body ? { 'content-type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  return { status: r.status, ok: r.ok, data };
+}
+
+/* ─── status ─────────────────────────────────────────────────────────────────── */
+async function refreshStatus() {
+  const pill = $('status-pill');
+  const { ok, data, status } = await signer('/healthz').catch(() => ({ ok: false, data: {}, status: 0 }));
+
+  if (!status) {
+    pill.className = 'pill bad'; pill.textContent = 'unreachable';
+    $('status-body').innerHTML = '<span class="muted">Cannot reach the signer. Is it running, and is SIGNER_URL correct?</span>';
+    return;
+  }
+  const paused = !!data.paused;
+  pill.className = 'pill ' + (paused ? 'warn' : ok ? 'ok' : 'bad');
+  pill.textContent = paused ? 'PAUSED' : ok ? 'healthy' : 'unhealthy';
+
+  const poller = data.poller
+    ? (data.poller.healthy ? 'running' : 'STALLED') +
+      (data.poller.lastSuccess ? ` · last success ${new Date(data.poller.lastSuccess).toLocaleTimeString()}` : '')
+    : 'not enabled';
+
+  $('status-body').innerHTML =
+    `<div class="row" style="gap:28px">
+       <div><strong>Discovery</strong><br><span class="muted">${esc(poller)}</span></div>
+       <div><strong>Signing</strong><br><span class="muted">${paused ? 'PAUSED — nothing will be signed' : 'active'}</span></div>
+       ${data.reasons?.length ? `<div><strong>Notes</strong><br><span class="muted">${esc(data.reasons.join(', '))}</span></div>` : ''}
+     </div>`;
+  $('btn-pause').disabled = paused || !CONFIG.hasAdminKey;
+  $('btn-resume').disabled = !paused || !CONFIG.hasAdminKey;
+}
+
+async function setPaused(p) {
+  const r = await signer('/v1/admin/' + (p ? 'pause' : 'resume'), 'POST');
+  if (!r.ok) alert('Failed: ' + JSON.stringify(r.data));
+  refreshStatus();
+}
+
+/* ─── keys ───────────────────────────────────────────────────────────────────── */
+async function refreshKeys() {
+  const { ok, data } = await signer('/v1/admin/pubkey');
+  if (!ok) {
+    $('keys-body').innerHTML = `<span class="muted">Unavailable — ${esc(data.error || 'the admin API key may not be set')}</span>`;
+    return;
+  }
+  $('keys-body').innerHTML = (data.signers || []).map((s) => `
+    <div style="margin-bottom:14px">
+      <div><strong>${esc(s.page)}</strong></div>
+      <div class="tx">public key &nbsp;${esc(s.public_key)}</div>
+      <div class="tx">key hash &nbsp;&nbsp;&nbsp;${esc(s.key_hash)} <span class="muted">← must be on the page</span></div>
+    </div>`).join('') || '<span class="muted">no signing scopes reported</span>';
+}
+
+async function keyPage(op, mode) {
+  const newKeyHash = $('gov-hash').value.trim();
+  if (!/^[a-f0-9]{64}$/i.test(newKeyHash)) return alert('Enter a 64-character hex key hash.');
+  const what = mode === 'update' ? 'ROTATE IN COMPROMISE MODE (bumps the page version)' : op;
+  if (!confirm(`${what} on your key page?\n\nThis changes who can act for your organization.`)) return;
+
+  $('gov-result').innerHTML = '<div class="note">working — the signer builds, signs, and confirms this on chain before replying…</div>';
+  const body = op === 'add-key' ? { op, keyHash: newKeyHash } : { op, newKeyHash, mode };
+  const r = await signer('/v1/admin/key-page', 'POST', body);
+  $('gov-result').innerHTML =
+    `<div class="note ${r.ok ? 'ok' : 'bad'}">${r.ok ? 'Confirmed on chain.' : 'Failed.'}</div>
+     <pre>${esc(JSON.stringify(r.data, null, 2))}</pre>`;
+  refreshKeys();
+}
+
+/* ─── activity ───────────────────────────────────────────────────────────────── */
+async function refreshActivity() {
+  const { ok, data } = await signer('/v1/requests?limit=25');
+  const tbody = $('activity');
+  if (!ok) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">Unavailable — ${esc(data.error || 'the admin API key may not be set')}</td></tr>`;
+    return;
+  }
+  const rows = data.requests || [];
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="muted">Nothing yet. Decisions appear here as transactions are discovered.</td></tr>';
+    return;
+  }
+  const cls = { signed: 'ok', rejected: 'bad', error: 'bad', awaiting_policy: 'warn' };
+  tbody.innerHTML = rows.map(({ request: q, receipt }) => `
+    <tr>
+      <td class="tx">${esc(q.txHash.slice(0, 16))}…</td>
+      <td>${esc(q.actionSummary || '—')}</td>
+      <td><span class="pill ${cls[q.status] || 'warn'}">${esc(q.status)}</span></td>
+      <td>${esc(receipt?.vote || q.decision || '—')}</td>
+      <td class="muted">${esc(receipt?.reason || q.lastError || '—')}</td>
+    </tr>`).join('');
+}
+
+/* ─── policy engine tester ───────────────────────────────────────────────────── */
+async function testPolicy() {
+  const box = $('pe-result');
+  box.innerHTML = '<div class="note">sending…</div>';
+  const values = $('pe-values').value.split(',').map((v) => v.trim()).filter(Boolean);
+  const r = await fetch('/api/test-policy', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ url: $('pe-url').value.trim(), hmacSecret: $('pe-secret').value || undefined, values }),
+  });
+  const d = await r.json();
+
+  const head = d.ok
+    ? `<div class="note ok"><strong>${esc(String(d.decision).toUpperCase())}</strong> in ${d.ms}ms — ${esc(d.note)}</div>`
+    : `<div class="note bad"><strong>Problem (${esc(d.stage)}):</strong> ${esc(d.problem)}${d.note ? '<br><span class="muted">' + esc(d.note) + '</span>' : ''}</div>`;
+
+  box.innerHTML = head +
+    (d.raw !== undefined ? `<pre>${esc(typeof d.raw === 'string' ? d.raw : JSON.stringify(d.raw, null, 2))}</pre>` : '') +
+    `<details style="margin-top:10px"><summary class="muted" style="cursor:pointer">the request that was sent</summary>
+       <pre>${esc(JSON.stringify(d.request, null, 2))}</pre></details>`;
+}
+
+/* ─── boot ───────────────────────────────────────────────────────────────────── */
+async function refreshAll() {
+  await Promise.all([refreshStatus(), refreshKeys(), refreshActivity()]);
+}
+
+(async function init() {
+  CONFIG = await (await fetch('/api/config')).json();
+  $('signer-url').textContent = CONFIG.signerUrl;
+  $('gov-panel').style.display = CONFIG.hasGovernanceKey ? 'block' : 'none';
+  $('gov-disabled').style.display = CONFIG.hasGovernanceKey ? 'none' : 'block';
+  await refreshAll();
+  setInterval(() => { refreshStatus(); refreshActivity(); }, 5000);
+})();
+</script>
+</body>
+</html>

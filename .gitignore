@@ -1,0 +1,39 @@
+node_modules/
+dist/
+*.log
+.env
+deploy/.env
+deploy/config.generated.yaml
+deploy/signer-seed.txt
+deploy/*.seed
+wallet.db
+data/
+coverage/
+config.smoke.yaml
+config.*.generated.yaml
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+#  LOCAL-ONLY TREE — never publish.
+#
+#  This repository is PUBLIC. `internal/` is a working tree that stays on the maintainer's machine and
+#  is invisible to git while remaining fully functional locally.
+#
+#  Anything named after a specific customer, tied to specific infrastructure, or simply not written for
+#  an outside reader belongs under internal/ — NOT behind a scrub pass in a published file. A scrub is
+#  something you have to remember every time; an ignored directory is not.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+internal/
+tsconfig.internal.json
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# TypeScript incremental build info
+*.tsbuildinfo

@@ -1,0 +1,42 @@
+{
+  "name": "certen-external-policy-signer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless policy-gated signer for Accumulate — your off-chain policy engine decides, your key signs, and nothing signs without an approval",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "certen-policy-signer": "dist/signer.cjs"
+  },
+  "scripts": {
+    "postinstall": "node scripts/fix-accumulate-encoding.mjs",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/signer.cjs --external:pino --external:pino-pretty",
+    "start": "node dist/signer.cjs",
+    "dev": "tsx watch src/index.ts",
+    "smoke": "tsx scripts/smoke-signing.ts",
+    "quickstart": "tsx scripts/quickstart.ts",
+    "console": "node console/server.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:vault": "node scripts/vault-it.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "accumulate.js": "^0.12.0",
+    "axios": "^1.7.0",
+    "js-yaml": "^4.1.0",
+    "pino": "^9.0.0",
+    "tweetnacl": "^1.0.3",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

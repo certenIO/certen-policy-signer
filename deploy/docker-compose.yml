@@ -1,0 +1,47 @@
+# Standalone pilot stack: you run the signer plus your own policy engine against live Accumulate.
+# The signer discovers pending transactions that name you as an authority, asks your policy engine, votes.
+# Nothing here is hosted by anyone else — you hold the key (see README "Security posture").
+#
+#   cp .env.example .env      # set SIGNER_SEED_HEX (your key page key)
+#   edit config.pilot.yaml    # set wallet.org_id + wallet.signer_url to your key page
+#   docker compose up --build
+services:
+  # Your policy engine. Replace this with the real one; the signer only cares that it speaks
+  # POST /decision -> {decision: 'approve'|'deny'|'pending', reason, evidence}. See examples/policy-engine.mjs.
+  policy:
+    image: node:20-slim
+    working_dir: /app
+    volumes: ["../examples:/app/examples:ro"]
+    command: node examples/policy-engine.mjs
+    environment:
+      PORT: "9099"
+      # `parity` approves even amounts and denies odd ones — a visible rule, so a first run demonstrably
+      # gates rather than rubber-stamping. Deliberately NOT `approve`: a placeholder engine that says yes
+      # to everything looks identical to a working one, right up until it matters.
+      POLICY_MODE: "${POLICY_MODE:-parity}"
+      POLICY_HMAC_SECRET: "${POLICY_HMAC_SECRET:-}"   # set => engine HMAC-signs its decisions
+    expose: ["9099"]
+    restart: unless-stopped
+
+  signer:
+    build: ..
+    depends_on: [policy]
+    environment:
+      POLICY_HMAC_SECRET: "${POLICY_HMAC_SECRET:-}"
+      ADMIN_API_KEY: "${ADMIN_API_KEY:-}"     # unset => admin routes (incl. SR8 pause) are 403, not open
+    # The org's key arrives as a mounted FILE, not an env var: env vars are readable via `docker inspect`,
+    # by anything that can read /proc/<pid>/environ, and leak into logs and crash dumps. The config
+    # references it as signer.local.seed_file: /run/secrets/signer_seed.
+    secrets: [signer_seed]
+    volumes:
+      - "${SIGNER_CONFIG:-./config.pilot.yaml}:/config/config.yaml:ro"
+      - "signer-state:/data"                  # signing history + receipts must survive a restart
+    ports: ["8080:8080"]     # /healthz, /metrics, /v1/admin/* (both require x-api-key)
+    restart: unless-stopped
+
+secrets:
+  signer_seed:
+    file: "${SIGNER_SEED_FILE:-./signer-seed.txt}"   # 64 hex chars, mode 0600, NEVER committed
+
+volumes:
+  signer-state:

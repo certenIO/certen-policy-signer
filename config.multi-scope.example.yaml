@@ -1,0 +1,80 @@
+# certen-signing-wallet — MULTI-SCOPE example config.
+#
+# One running wallet watches SEVERAL key pages and signs on each with its own key. Use this when an ADI has
+# more than one key book / key page (e.g. an operations book and a treasury book), or when you custody keys
+# for several identities in one process. The wallet runs one poller per scope (each scans that page's
+# pending index AND its book's signature chain), all feeding one shared policy-gated orchestrator; the
+# keyring picks the key by the page a given transaction needs.
+#
+# Every scope is verified at boot (SR6): its key MUST be on its page, or the wallet refuses to start.
+# A transaction naming a page this wallet holds no key for is refused (fail-closed) — it never signs blind.
+wallet:
+  org_id: "demo-org"
+  network: "kermit"
+  accumulate_endpoints:
+    - "https://kermit.accumulatenetwork.io/v3"
+  attachment_model: "per_tx"
+
+  # Use `scopes` INSTEAD OF the single-scope `signer_url` + top-level `signer`. (Setting both is rejected.)
+  scopes:
+    # Scope 1 — the operations book, key held in Vault.
+    - page: "acc://demo-org.acme/book/1"
+      # book: "acc://demo-org.acme/book"   # optional; derived from `page` when omitted
+      key:
+        provider: "vault-transit"
+        vault:
+          addr: "https://vault.internal:8200"
+          key_name: "demo-org-ops"
+          token: "env:VAULT_TOKEN"
+
+    # Scope 2 — a SECOND key page under the same ADI, a different key.
+    - page: "acc://demo-org.acme/book2/1"
+      key:
+        provider: "vault-transit"
+        vault:
+          addr: "https://vault.internal:8200"
+          key_name: "demo-org-book2"
+          token: "env:VAULT_TOKEN"
+
+    # Scope 3 — a separate identity (a treasury), local seed posture.
+    - page: "acc://treasury.acme/book/1"
+      key:
+        provider: "local"
+        local:
+          seed_hex: "env:TREASURY_SEED_HEX"   # or seed_file: "/run/secrets/treasury_seed"
+
+policy:
+  url: "https://policy.internal.demo-org/decision"   # ONE policy engine gates every scope
+  mode: "sync"
+  auth: "hmac"
+  hmac_secret: "env:POLICY_HMAC_SECRET"
+  timeout_ms: 10000
+
+trigger:
+  webhook:
+    enabled: true
+    hmac_secret: "env:WEBHOOK_HMAC_SECRET"
+    bind: "0.0.0.0:8080"
+  poller:
+    enabled: true
+    interval_seconds: 20                    # applied to EACH scope's poller
+
+behavior:
+  submit_reject_vote: false
+  max_bad_version_retries: 3
+
+store:
+  path: "/data/wallet-state.json"
+
+health:
+  bind: "0.0.0.0:8080"                       # /healthz is unhealthy if ANY scope's poller stalls
+
+# Governance (POST /v1/admin/key-page) targets one page at a time: pass {"page":"acc://…/book2/1", …}.
+# Omitting `page` defaults to the first scope. A page the wallet holds no key for is rejected.
+admin:
+  api_key: "env:ADMIN_API_KEY"
+  governance_admin_key: "env:GOVERNANCE_ADMIN_KEY"
+
+observability:
+  log_level: "info"
+  metrics: true
