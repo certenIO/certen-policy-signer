@@ -11,6 +11,8 @@ import { TxBody } from './decode/types.js';
 
 export type ResolveResult =
   | { kind: 'resolved'; tx: ResolvedTx }
+  /** We could not read the transaction. NOT a statement about whether it still exists — retry. */
+  | { kind: 'unavailable'; error: string }
   | { kind: 'gone'; reason: 'not_found' | 'executed' | 'expired' };
 
 export class Resolver {
@@ -23,6 +25,7 @@ export class Resolver {
 
   async resolve(ref: PendingRef): Promise<ResolveResult> {
     const pend = await this.acc.getPendingTx(ref.txHash, ref.signerUrl);
+    if (pend.unavailable) return { kind: 'unavailable', error: 'the node could not be queried' };
     if (!pend.found) return { kind: 'gone', reason: 'not_found' };
     if (pend.executed) return { kind: 'gone', reason: 'executed' };
     if (pend.expired) return { kind: 'gone', reason: 'expired' };

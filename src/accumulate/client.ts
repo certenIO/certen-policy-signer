@@ -2,6 +2,13 @@
 
 export interface PendingTxResult {
   found: boolean;
+  /**
+   * We could not ASK — the node was unreachable, timed out, or answered with something that is not a
+   * definitive "no such record". Deliberately distinct from `found: false`, which is the chain telling
+   * us the transaction is gone. Collapsing the two marks a live pending tx `expired`, and `expired` is
+   * terminal, so a single flaky query would retire a transaction the signer still owes a vote on.
+   */
+  unavailable?: boolean;
   rawTransaction?: unknown;
   body?: { type: string; [k: string]: unknown };
   principal?: string;
@@ -54,10 +61,13 @@ export class MockAccumulateClient implements AccumulateClient {
   submissions: unknown[] = [];
   /** queue of submit results; when empty defaults to ok. */
   submitQueue: SubmitResult[] = [];
+  /** When true, getPendingTx reports that the node could not be queried (not that the tx is gone). */
+  unavailable = false;
 
   addPending(txHash: string, p: MockPending) { this.pending.set(txHash, p); }
 
   async getPendingTx(txHash: string): Promise<PendingTxResult> {
+    if (this.unavailable) return { found: false, unavailable: true };
     const p = this.pending.get(txHash);
     if (!p) return { found: false };
     return {

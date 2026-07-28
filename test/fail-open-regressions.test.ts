@@ -17,6 +17,7 @@ import { Resolver } from '../src/resolver.js';
 import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
 import { Orchestrator } from '../src/orchestrator.js';
+import { isDefinitiveNotFound } from '../src/accumulate/raw-client.js';
 import { loadConfig } from '../src/config.js';
 
 const silent = pino({ level: 'silent' });
@@ -69,6 +70,58 @@ describe('a reject vote that cannot be submitted is a failure, not a rejection',
     const r = await orch.handle({ txHash: TX, signerUrl: SIGNER });
     expect(r.status).toBe('rejected');
     expect((await store.getReceipt(TX))?.vote).toBe('reject');
+  });
+});
+
+describe('an unreachable node is not evidence that a transaction is gone', () => {
+  const pipeline = () => {
+    const acc = new MockAccumulateClient();
+    acc.addPending(TX, {
+      body: { type: 'sendTokens', to: [{ url: 'acc://alice.acme/tokens', amount: '5000' }] },
+      principal: 'acc://alice.acme/tokens',
+    });
+    const store = new MemoryStore();
+    const policy = new MockPolicyClient({ decision: 'approve' });
+    const orch = new Orchestrator({
+      accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9))),
+      policy, store, resolver: new Resolver(acc), logger: silent,
+    });
+    return { acc, store, policy, orch };
+  };
+
+  it('does not mark a tx expired because the query failed', async () => {
+    const { acc, orch } = pipeline();
+    acc.unavailable = true;
+    const r = await orch.handle({ txHash: TX, signerUrl: SIGNER });
+    // 'expired' is terminal — it would retire a transaction still awaiting our vote.
+    expect(r.status).not.toBe('expired');
+    expect(r.lastError).toMatch(/resolve/);
+  });
+
+  it('signs it on the next poll once the node comes back', async () => {
+    const { acc, orch } = pipeline();
+    acc.unavailable = true;
+    await orch.handle({ txHash: TX, signerUrl: SIGNER });
+    acc.unavailable = false;
+    const r = await orch.handle({ txHash: TX, signerUrl: SIGNER });
+    expect(r.status).toBe('signed');
+    expect(acc.submissions.length).toBe(1);
+  });
+
+  it('a chain that really says "not found" is still terminal', async () => {
+    const { orch } = pipeline();
+    const r = await orch.handle({ txHash: 'cd'.repeat(32), signerUrl: SIGNER });
+    expect(r.status).toBe('expired');
+  });
+
+  it('only a definitive answer counts as gone', async () => {
+    for (const m of ['record not found', 'account does not exist', 'no such record', 'unknown transaction x']) {
+      expect(isDefinitiveNotFound(m)).toBe(true);
+    }
+    for (const m of ['timeout of 15000ms exceeded', 'connect ECONNREFUSED 127.0.0.1:16695',
+                     'Request failed with status code 502', 'socket hang up', '<html>502 Bad Gateway</html>']) {
+      expect(isDefinitiveNotFound(m)).toBe(false);
+    }
   });
 });
 

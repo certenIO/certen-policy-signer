@@ -51,8 +51,17 @@ export class RawAccumulateClient implements AccumulateClient {
         expired,
       };
     } catch (e) {
-      this.logger.debug({ tx: hash, err: (e as Error).message }, 'getPendingTx: not found / query error');
-      return { found: false };
+      // "The chain has no such record" and "we could not reach the chain" are different answers, and the
+      // caller turns the first one into a TERMINAL status. Returning `found: false` for a timeout or a
+      // 502 therefore retired live transactions on one bad query — silently, since this was logged at
+      // debug. Only a definitive answer from the node counts as gone; everything else is retryable.
+      const msg = (e as Error).message ?? String(e);
+      if (isDefinitiveNotFound(msg)) {
+        this.logger.debug({ tx: hash, err: msg }, 'getPendingTx: the chain reports no such record');
+        return { found: false };
+      }
+      this.logger.warn({ tx: hash, err: msg }, 'getPendingTx: could not query the node — will retry');
+      return { found: false, unavailable: true };
     }
   }
 
@@ -172,6 +181,17 @@ export function splitTxId(txId: string): { hash: string; principal: string } {
   const clean = String(txId ?? '').replace(/^acc:\/\//, '');
   const [hash, principal] = clean.split('@');
   return { hash: (hash ?? '').toLowerCase(), principal: principal ?? '' };
+}
+
+/**
+ * Does this query error mean "the chain has no such record", as opposed to "we could not ask"?
+ *
+ * Deliberately a whitelist: anything unrecognised — a timeout, ECONNREFUSED, a 502 from a load balancer,
+ * an HTML error page — is treated as UNKNOWN and retried, because the cost of being wrong in that
+ * direction is one more query, while the other direction abandons a transaction permanently.
+ */
+export function isDefinitiveNotFound(msg: string): boolean {
+  return /not\s*found|does not exist|no such|unknown (record|transaction|url)/i.test(msg);
 }
 
 function classify(msg: string): SubmitResult['code'] {

@@ -97,6 +97,12 @@ export class Orchestrator {
 
     // 1. Resolve
     const r = await resolver.resolve(ref);
+    // Could not read it. Record nothing terminal about a transaction we failed to look at — leave the row
+    // retryable so the next poll asks again once the node is back.
+    if (r.kind === 'unavailable') {
+      logger.warn({ tx: ref.txHash, err: r.error }, 'could not resolve pending tx; leaving it for the next poll');
+      return store.update(ref.txHash, { lastError: `resolve: ${r.error}` });
+    }
     if (r.kind === 'gone') {
       const status = r.reason === 'executed' ? 'signed' : 'expired';
       logger.info({ tx: ref.txHash, reason: r.reason }, 'tx gone before signing');
