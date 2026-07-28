@@ -172,7 +172,16 @@ export class Orchestrator {
       logger.info({ tx: ref.txHash, reason: decision.reason }, 'policy denied');
       await store.update(ref.txHash, { status: 'denied', decision: 'deny' });
       if (this.opt.submitRejectVote) {
-        await this.signAndSubmit(tx, 'reject');
+        // A reject vote that could not be submitted is a FAILURE, exactly as an approve vote is — the
+        // result was being discarded here. That mattered: `rejected` is terminal, so the tx was never
+        // retried, while the receipt below recorded `vote: reject` for a vote that never reached the
+        // chain. The transaction stayed pending on-chain until expiry with the audit trail claiming it
+        // had been actively killed. Leave it retryable and write no receipt, as the approve path does.
+        const res = await this.signAndSubmit(tx, 'reject');
+        if (!res.ok) {
+          logger.error({ tx: ref.txHash, err: res.error }, 'reject vote submission failed');
+          return store.update(ref.txHash, { status: 'error', lastError: res.error });
+        }
       }
       const final = await store.update(ref.txHash, { status: 'rejected' });
       await store.saveReceipt({
