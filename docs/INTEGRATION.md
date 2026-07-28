@@ -52,6 +52,7 @@ POST <policy.url>    content-type: application/json
   "target":        "0xabc…",
   "value":         "25000",           // first amount only — for display
   "values":        ["25000", "500"],  // EVERY amount — gate on these
+  "unpricedLegs":  0,                 // absent or 0 => `values` is complete. > 0 => it is NOT
   "expiresAt":     "2026-07-26T12:00:00Z"
 }
 ```
@@ -59,6 +60,12 @@ POST <policy.url>    content-type: application/json
 **Gate on `values`, not `value`.** A transaction can move value in several legs. `value` is the first,
 carried for display; `values` is all of them. Check one and the rest are ungated — an amount over your
 limit can ride along beside one under it.
+
+**Treat `unpricedLegs > 0` as a deny.** It means the decoder found legs that move value but could not read
+their amounts, so `values` is a *partial* list. Every entry in it can sit under your limit while the leg
+missing from it does not — "all the amounts I can see are fine" is not the same statement as "all the
+amounts are fine". The signer's own value ceiling refuses to sign in this case; your engine should too,
+unless you have another way to bound what you cannot see. A well-formed payload never sets it.
 
 ### Response
 

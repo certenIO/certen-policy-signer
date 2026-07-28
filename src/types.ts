@@ -17,6 +17,15 @@ export interface ActionSummary {
   target?: string;
   value?: string;                 // representative amount (leg 0) — display / back-compat
   values?: string[];              // ALL gate-relevant amounts (one per intent leg); all-or-nothing gate
+  /**
+   * Legs that move value but whose amount could NOT be read.
+   *
+   * `values` holds only amounts a decoder could actually parse, so a leg it could not price simply is not
+   * in the list — and a gate that walks `values` would pass it without ever looking at it. Counting those
+   * legs here is what lets both the local ceiling and your policy engine tell "every amount is under the
+   * limit" apart from "every amount I could read is under the limit". Absent or 0 means all legs priced.
+   */
+  unpricedLegs?: number;
   calldataDecoded?: string;
   raw?: Record<string, unknown>;  // fallback / extra fields
 }
@@ -45,6 +54,9 @@ export interface PolicyRequest {
   target?: string;
   value?: string;                 // representative amount (leg 0)
   values?: string[];              // ALL leg amounts — policy engine gates all-or-nothing across these
+  /** Value-moving legs whose amount could not be read; if > 0, `values` is INCOMPLETE. Deny unless you
+   *  have another way to bound them — the signer's own ceiling refuses to sign in this case. */
+  unpricedLegs?: number;
   calldataDecoded?: string;
   /** How long THIS DECISION REQUEST is valid (policy TTL, default 15 min) — NOT the tx's on-chain deadline. */
   expiresAt: string;              // ISO

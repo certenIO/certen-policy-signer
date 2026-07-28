@@ -42,7 +42,7 @@ need to change how transactions are built** to put a policy gate on them.
 
 ```bash
 npm install                     # also applies a required accumulate.js patch — see docs/DEPLOY.md
-npm test                        # 216 tests, no network needed
+npm test                        # 226 tests, no network needed
 npm run smoke                   # prove the Ed25519 preimage is valid and deterministic
 ```
 
@@ -127,7 +127,9 @@ Everything is fail-closed: the signer stops rather than signs when it cannot pro
   network will reject.
 - **Signs only after an `approve`**, optionally over an HMAC-authenticated channel with a replay window.
 - **Value ceiling (SR4, optional).** Refuses to sign if *any* amount exceeds it, compared as a big
-  integer — at wei scale, `Number()` silently rounds and would wave an over-limit amount through.
+  integer — at wei scale, `Number()` silently rounds and would wave an over-limit amount through. It also
+  refuses when a leg moves value the decoder could not price: an amount you cannot read is not an amount
+  under the limit.
 - **Emergency pause.** `POST /v1/admin/pause` halts signing immediately, including reject votes — a
   reject is still a signature.
 - **Durable state.** Signing history and receipts survive restart, so it never double-votes and the audit

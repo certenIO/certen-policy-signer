@@ -111,7 +111,8 @@ Helm chart enforces `replicaCount: 1` and `strategy: Recreate` for exactly that 
 - **`/healthz` is honest** — 503 if the key provider is unreachable *or* the discovery poller has stalled.
   A signer that cannot see pending work is not healthy, even though its HTTP server is up.
 - **SR4 value ceiling (optional)** — `behavior.value_ceiling` refuses to sign if **any leg** of an intent
-  exceeds it, all-or-nothing. It is compared as a big integer, so wei-scale amounts do not overflow.
+  exceeds it, all-or-nothing. It is compared as a big integer, so wei-scale amounts do not overflow, and a
+  leg whose amount could not be read at all is refused rather than skipped.
 - **Optional HMAC** — set `policy.auth: hmac` + `POLICY_HMAC_SECRET` and the signer will only act on
   decisions it can authenticate as coming from the org's engine. Turning it on and leaving the secret
   empty **stops the boot**: the one thing worse than an unauthenticated channel is an unauthenticated

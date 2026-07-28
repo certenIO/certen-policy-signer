@@ -24,6 +24,7 @@
  *       "target":        "0xBe00…9251",
  *       "value":         "4000",           // representative amount (first leg) — for display
  *       "values":        ["4000"],         // EVERY amount in the transaction — GATE ON THESE
+ *       "unpricedLegs":  0,                // > 0 means `values` is INCOMPLETE — deny (see checkAmountCeiling)
  *       "expiresAt":     "2026-…Z"         // how long THIS REQUEST is valid, NOT the tx's on-chain deadline
  *     }
  *
@@ -134,11 +135,19 @@ function checkPolicy(request) {
 /**
  * An all-or-nothing amount ceiling, as an example of gating on `values` correctly.
  *
- * Not called by default — wire it into checkPolicy if you want it. Two details that matter in real use:
+ * Not called by default — wire it into checkPolicy if you want it. Three details that matter in real use:
  * compare as BigInt (at wei scale Number() silently rounds, and would wave through an amount just over
- * the limit), and treat an unparseable amount as a FAILURE rather than skipping it.
+ * the limit); treat an unparseable amount as a FAILURE rather than skipping it; and refuse outright when
+ * `unpricedLegs` says the list is incomplete.
  */
 export function checkAmountCeiling(request, ceiling) {
+  // `values` holds the amounts the signer could READ. When unpricedLegs > 0 there are legs moving value
+  // that it could not, so passing here would mean "the amounts I can see are fine" while something
+  // unbounded rides along beside them. An amount you cannot read is not an amount under the limit.
+  const unpriced = Number(request?.unpricedLegs ?? 0);
+  if (unpriced > 0) {
+    return { ok: false, reason: `${unpriced} leg(s) move value with no readable amount`, evidence: { unpricedLegs: unpriced } };
+  }
   const amounts = request?.values?.length ? request.values : [request?.value].filter((v) => v != null);
   if (amounts.length === 0) return { ok: true, reason: 'no amounts to check' };
   for (const a of amounts) {

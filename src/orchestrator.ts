@@ -14,8 +14,9 @@ export interface OrchestratorOptions {
   submitRejectVote?: boolean;   // default false: deny => withhold signature (tx expires)
   maxBadVersionRetries?: number; // default 3
   policyTtlSeconds?: number;    // default 900
-  /** SR4 local guard. Receives EVERY leg amount (`values`), not just the representative one. */
-  guard?: (tx: { account: string; summary: string; value?: string; values?: string[] }) => boolean;
+  /** SR4 local guard. Receives EVERY leg amount (`values`), not just the representative one, plus the
+   *  count of legs whose amount could not be read at all. */
+  guard?: (tx: { account: string; summary: string; value?: string; values?: string[]; unpricedLegs?: number }) => boolean;
   isPaused?: () => boolean;     // SR8 emergency kill switch
   delegators?: string[];        // delegate attachment model: user page(s) delegating to our book
 }
@@ -133,6 +134,9 @@ export class Orchestrator {
       target: tx.summary.target,
       value: tx.summary.value,
       values: tx.summary.values,
+      // Tells the engine whether `values` is the WHOLE picture. Without it, a partial list of amounts is
+      // indistinguishable from a complete one, and the engine's own ceiling has the same blind spot ours had.
+      unpricedLegs: tx.summary.unpricedLegs,
       calldataDecoded: tx.summary.calldataDecoded,
       expiresAt: new Date(this.now() + this.opt.policyTtlSeconds * 1000).toISOString(),
     };
@@ -200,8 +204,11 @@ export class Orchestrator {
     }
 
     // SR4 local guard (defense-in-depth even if policy approved)
-    if (this.opt.guard && !this.opt.guard({ account: tx.account, summary: tx.summary.action, value: tx.summary.value, values: tx.summary.values })) {
-      logger.warn({ tx: ref.txHash, values: tx.summary.values }, 'local guard blocked an approved tx');
+    if (this.opt.guard && !this.opt.guard({
+      account: tx.account, summary: tx.summary.action,
+      value: tx.summary.value, values: tx.summary.values, unpricedLegs: tx.summary.unpricedLegs,
+    })) {
+      logger.warn({ tx: ref.txHash, values: tx.summary.values, unpricedLegs: tx.summary.unpricedLegs }, 'local guard blocked an approved tx');
       // Keep the engine's reason and evidence on the record: the receipt must show that the engine
       // approved and WE refused, not merely that something was blocked.
       await store.saveReceipt({

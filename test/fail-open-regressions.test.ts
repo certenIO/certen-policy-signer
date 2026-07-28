@@ -18,6 +18,9 @@ import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
 import { Orchestrator } from '../src/orchestrator.js';
 import { isDefinitiveNotFound } from '../src/accumulate/raw-client.js';
+import { certenIntentDecoder } from '../src/decode/decoders/certen-intent.js';
+import { makeValueCeilingGuard } from '../src/guard.js';
+import { Metrics } from '../src/metrics.js';
 import { loadConfig } from '../src/config.js';
 
 const silent = pino({ level: 'silent' });
@@ -70,6 +73,84 @@ describe('a reject vote that cannot be submitted is a failure, not a rejection',
     const r = await orch.handle({ txHash: TX, signerUrl: SIGNER });
     expect(r.status).toBe('rejected');
     expect((await store.getReceipt(TX))?.vote).toBe('reject');
+  });
+});
+
+describe('a leg whose amount cannot be read is not a leg under the ceiling', () => {
+  const CEILING = 1_000_000n;
+  const guard = makeValueCeilingGuard(CEILING);
+  const intent = (...legs: Array<Record<string, unknown>>) => ({
+    type: 'writeData',
+    entry: {
+      data: [
+        Buffer.from(JSON.stringify({ description: 'Transfer', intent_id: 'i-1' })).toString('hex'),
+        Buffer.from(JSON.stringify({ legs })).toString('hex'),
+      ],
+    },
+  });
+
+  it('counts the legs it could not price', () => {
+    const d = certenIntentDecoder.decode(
+      intent({ amountWei: '10', to: '0xa', chain: 'x' }, { amountEth: '0.5', to: '0xb' }),
+      { principal: 'acc://a.acme/data' },
+    );
+    expect(d?.summary.values).toEqual(['10']);   // only the leg it could read
+    expect(d?.summary.unpricedLegs).toBe(1);     // and it says so, instead of hiding the other
+  });
+
+  it('reports nothing when every leg is priced', () => {
+    const d = certenIntentDecoder.decode(
+      intent({ amountWei: '10', to: '0xa' }, { amountWei: '20', to: '0xb' }),
+      { principal: 'acc://a.acme/data' },
+    );
+    expect(d?.summary.unpricedLegs).toBeUndefined();
+  });
+
+  it('the ceiling refuses a partial list, even though every amount in it is under the limit', () => {
+    expect(guard({ values: ['10'] })).toBe(true);
+    expect(guard({ values: ['10'], unpricedLegs: 1 })).toBe(false);
+  });
+
+  it('still passes a transaction that moves no value at all', () => {
+    expect(guard({})).toBe(true);
+  });
+
+  it('the guard the daemon actually uses gets the count', async () => {
+    const acc = new MockAccumulateClient();
+    acc.addPending(TX, { body: intent({ amountWei: '10', to: '0xa' }, { amountEth: '0.5' }) as any, principal: 'acc://a.acme/data' });
+    const store = new MemoryStore();
+    const policy = new MockPolicyClient({ decision: 'approve' });
+    const orch = new Orchestrator({
+      accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9))),
+      policy, store, resolver: new Resolver(acc), logger: silent,
+      options: { guard },
+    });
+    const r = await orch.handle({ txHash: TX, signerUrl: SIGNER });
+    expect(r.status).toBe('rejected');
+    expect(r.lastError).toBe('local_guard_block');
+    expect(acc.submissions.length).toBe(0);
+    expect(policy.calls[0].unpricedLegs).toBe(1); // the engine is told too, not just our own guard
+  });
+});
+
+describe('metrics stay scrapeable when a family gains a second label set', () => {
+  it('emits one # TYPE per family, with its series contiguous', () => {
+    const m = new Metrics();
+    m.inc('wallet_errors_total{stage="poller"}');
+    m.inc('wallet_pending_seen_total', 3);
+    m.inc('wallet_errors_total{stage="submit"}', 2);
+    m.gauge('wallet_poller_last_success_seconds', 42);
+    const out = m.render();
+
+    // Prometheus rejects a duplicate TYPE for one family — that would fail the ENTIRE scrape.
+    expect(out.match(/# TYPE wallet_errors_total counter/g)?.length).toBe(1);
+    const lines = out.trim().split('\n');
+    const at = lines.indexOf('# TYPE wallet_errors_total counter');
+    expect(lines.slice(at + 1, at + 3)).toEqual([
+      'wallet_errors_total{stage="poller"} 1',
+      'wallet_errors_total{stage="submit"} 2',
+    ]);
+    expect(out).toContain('# TYPE wallet_poller_last_success_seconds gauge');
   });
 });
 

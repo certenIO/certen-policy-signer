@@ -86,6 +86,12 @@ export const certenIntentDecoder: SummaryDecoder = {
       .map((l) => (l?.amountWei != null ? String(l.amountWei) : undefined))
       .filter((x): x is string => x != null);
 
+    // Legs we could NOT price. `amountWei` is this format's authoritative amount, so a leg without one is
+    // malformed — but it used to vanish here, silently shortening `values`. A ceiling then saw only the
+    // legs that happened to parse and passed the transaction on their strength. Report the count so the
+    // gate can tell a complete list from a partial one; the local guard refuses to sign when it is > 0.
+    const unpricedLegs = legs!.length - values.length;
+
     const legSuffix = legs!.length > 1 ? ` (+${legs!.length - 1} more leg${legs!.length > 2 ? 's' : ''})` : '';
 
     return {
@@ -95,6 +101,7 @@ export const certenIntentDecoder: SummaryDecoder = {
         target: leg0.to,
         value: leg0.amountWei != null ? String(leg0.amountWei) : undefined,
         values,
+        ...(unpricedLegs > 0 ? { unpricedLegs } : {}),
         raw: { certenIntent: intent?.intent, legCount: legs!.length },
       },
       operationId: intent?.intent?.intent_id ?? ((body.operationId as string) || undefined),
