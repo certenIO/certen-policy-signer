@@ -28,14 +28,34 @@ const CTX = { principal: 'acc://acme.acme/orders' };
 
 describe('the shipped example configs are valid', () => {
   // A config file that does not parse is a broken front door: it is the first thing anyone copies.
+  // Both examples set `policy.auth: hmac` with `hmac_secret: "env:POLICY_HMAC_SECRET"`, so loading them
+  // the way a real deployment does means having that variable populated.
+  const withSecret = <T>(fn: () => T): T => {
+    const prev = process.env.POLICY_HMAC_SECRET;
+    process.env.POLICY_HMAC_SECRET = 'test-secret';
+    try { return fn(); } finally {
+      if (prev === undefined) delete process.env.POLICY_HMAC_SECRET; else process.env.POLICY_HMAC_SECRET = prev;
+    }
+  };
+
   for (const f of ['config.example.yaml', 'config.multi-scope.example.yaml']) {
     it(`${f} loads through the real config loader`, () => {
-      expect(() => loadConfig(join(ROOT, f))).not.toThrow();
+      withSecret(() => expect(() => loadConfig(join(ROOT, f))).not.toThrow());
+    });
+
+    // The other half of the contract, and the reason the variable matters. Copying the example and
+    // forgetting the secret must STOP the signer, not quietly give it an unauthenticated policy channel
+    // while the config on disk still reads `auth: "hmac"`.
+    it(`${f} refuses to load when POLICY_HMAC_SECRET is not set`, () => {
+      const prev = process.env.POLICY_HMAC_SECRET;
+      delete process.env.POLICY_HMAC_SECRET;
+      try { expect(() => loadConfig(join(ROOT, f))).toThrow(/hmac_secret is empty/); }
+      finally { if (prev !== undefined) process.env.POLICY_HMAC_SECRET = prev; }
     });
   }
 
   it('config.example.yaml documents decoder options that the loader actually accepts', () => {
-    const cfg = loadConfig(join(ROOT, 'config.example.yaml'));
+    const cfg = withSecret(() => loadConfig(join(ROOT, 'config.example.yaml')));
     expect(cfg.resolver).toBeDefined();
     // Commented out in the file, so the built-in chain applies — which is what the comment claims.
     expect(cfg.resolver.decoders).toBeUndefined();

@@ -171,6 +171,28 @@ export function loadConfig(path: string): Config {
     throw new Error('gateway.enabled requires gateway.url, gateway.api_key and gateway.identity');
   }
   if (cfg.policy.hmac_secret) cfg.policy.hmac_secret = resolveSecret(cfg.policy.hmac_secret);
+
+  // `policy.auth` states an intent, and a stated intent must not silently downgrade to no protection.
+  //
+  // The shipped example writes `auth: "hmac"` with `hmac_secret: "env:POLICY_HMAC_SECRET"`. If that
+  // variable is unset the ref resolves to undefined, and the signer would then neither sign its requests
+  // nor verify the replies — while the operator reads `auth: "hmac"` and believes the channel is
+  // authenticated. Anything on the network path could return `{"decision":"approve"}` and be obeyed.
+  // Refuse to start instead; this is the same rule the gateway block already follows.
+  if (cfg.policy.auth === 'hmac' && !cfg.policy.hmac_secret) {
+    throw new Error(
+      'config: policy.auth is "hmac" but policy.hmac_secret is empty — set it, make sure the `env:` ref it '
+      + 'points at is populated, or set policy.auth: "none" to state plainly that the channel is unauthenticated',
+    );
+  }
+  // mTLS is not implemented (there is no client-certificate agent on the policy request). Accepting it
+  // here would send plain, unauthenticated HTTP under a name that promises the opposite.
+  if (cfg.policy.auth === 'mtls') {
+    throw new Error(
+      'config: policy.auth "mtls" is not implemented — the decision request would go out unauthenticated. '
+      + 'Use "hmac", or terminate mTLS in a proxy in front of your engine and set "none".',
+    );
+  }
   if (cfg.trigger.webhook.hmac_secret) cfg.trigger.webhook.hmac_secret = resolveSecret(cfg.trigger.webhook.hmac_secret);
   if (cfg.admin.api_key) cfg.admin.api_key = resolveSecret(cfg.admin.api_key);
   if (cfg.admin.governance_admin_key) cfg.admin.governance_admin_key = resolveSecret(cfg.admin.governance_admin_key);

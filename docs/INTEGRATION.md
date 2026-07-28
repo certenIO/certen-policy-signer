@@ -120,6 +120,11 @@ policy:
   timestamp_header: "x-signer-timestamp"
 ```
 
+`auth: hmac` with an empty secret — including an `env:` ref pointing at a variable that is not set — is
+**refused at startup**. The signer will not run in a state where its own config says the channel is
+authenticated and it is in fact signing nothing and verifying nothing. `auth: mtls` is refused for the
+same reason: it is not implemented, so terminate mTLS in a proxy in front of your engine and use `none`.
+
 The MAC is `HMAC-SHA256(secret, "<timestamp>.<raw body>")`, with a five-minute freshness window bounding
 replay. **Sign the exact bytes you send.** The signer verifies the raw response body, not a re-parse of
 it, so signing a re-serialized copy fails the MAC forever — and because a bad MAC is a policy failure,

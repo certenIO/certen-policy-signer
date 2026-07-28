@@ -113,7 +113,9 @@ Helm chart enforces `replicaCount: 1` and `strategy: Recreate` for exactly that 
 - **SR4 value ceiling (optional)** — `behavior.value_ceiling` refuses to sign if **any leg** of an intent
   exceeds it, all-or-nothing. It is compared as a big integer, so wei-scale amounts do not overflow.
 - **Optional HMAC** — set `policy.auth: hmac` + `POLICY_HMAC_SECRET` and the signer will only act on
-  decisions it can authenticate as coming from the org's engine.
+  decisions it can authenticate as coming from the org's engine. Turning it on and leaving the secret
+  empty **stops the boot**: the one thing worse than an unauthenticated channel is an unauthenticated
+  channel whose config claims otherwise.
 
 ## Verifying a deploy
 

@@ -42,7 +42,7 @@ need to change how transactions are built** to put a policy gate on them.
 
 ```bash
 npm install                     # also applies a required accumulate.js patch — see docs/DEPLOY.md
-npm test                        # 207 tests, no network needed
+npm test                        # 216 tests, no network needed
 npm run smoke                   # prove the Ed25519 preimage is valid and deterministic
 ```
 

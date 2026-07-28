@@ -77,8 +77,13 @@ policy:
   # replies {"decision":"pending"} and the signer asks again next poll — see examples/policy-engine.mjs.
   mode: "sync"
 
-  # none | hmac | mtls. With hmac, the signer signs its request and REQUIRES a valid signature on the
-  # response, so a decision cannot be forged or replayed by anything on the network path.
+  # none | hmac. With hmac, the signer signs its request and REQUIRES a valid signature on the response,
+  # so a decision cannot be forged or replayed by anything on the network path.
+  #
+  # "hmac" with an empty secret is REFUSED at startup rather than quietly falling back to unauthenticated
+  # — so if POLICY_HMAC_SECRET below is not set in the environment, the signer will not boot. "mtls" is
+  # also refused: it is not implemented, so it would mean plaintext under a name promising otherwise.
+  # Terminate mTLS in a proxy in front of your engine and set "none".
   auth: "hmac"
   hmac_secret: "env:POLICY_HMAC_SECRET"
 

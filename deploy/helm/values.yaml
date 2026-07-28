@@ -42,6 +42,12 @@ signerSeedHex: ""
 
 # Secret values -> injected as env vars, referenced by config `env:NAME`.
 # The signing key is deliberately NOT here (see signerSeedHex above) — env vars show up in the pod spec.
+#
+# POLICY_HMAC_SECRET must be set before this chart will run: `policy.auth: hmac` above with an empty
+# secret is REFUSED at startup (the pod exits with a config error rather than CrashLooping on something
+# obscure). That is deliberate — the alternative is a signer that reads `auth: hmac` in its own config
+# while accepting unauthenticated decisions. Set it here, or via external-secrets / sealed-secrets, or
+# set policy.auth to "none" to state plainly that the channel is unauthenticated.
 secretEnv:
   POLICY_HMAC_SECRET: ""
   WEBHOOK_HMAC_SECRET: ""
