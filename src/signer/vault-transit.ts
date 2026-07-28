@@ -1,6 +1,7 @@
 /**
- * VaultTransitSigner — native Ed25519 signing via HashiCorp Vault Transit (SPEC §7.4, POC provider).
- * The private key never leaves Vault. We send the 32-byte preimage and receive a 64-byte signature.
+ * VaultTransitSigner — native Ed25519 signing via HashiCorp Vault Transit. The PRODUCTION key posture:
+ * the private key is generated in Vault and never leaves it. We send the 32-byte preimage and receive a
+ * 64-byte signature. Proven end to end by test/vault-transit.test.ts and `npm run test:vault`.
  *
  * Vault (ed25519 key):
  *   POST {addr}/v1/transit/sign/{key}   { input: base64(msg), prehashed:false }  -> data.signature "vault:v1:<b64>"

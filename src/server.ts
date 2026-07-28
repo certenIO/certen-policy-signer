@@ -1,4 +1,4 @@
-/** HTTP surface: health, metrics, webhook trigger, async decision callback, admin (SPEC §6.5). */
+/** HTTP surface: health, metrics, webhook trigger, admin. Routes are documented in docs/OPERATIONS.md. */
 import http from 'node:http';
 import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import { bytesToHex } from './accumulate/signing.js';

@@ -32,7 +32,7 @@ export function buildSignerFromSpec(spec: SignerSpec, logger: Logger, label: str
   }
   const seed = resolveLocalSeed(spec.local);
   if (seed) {
-    logger.warn({ scope: label }, 'using LOCAL signer: this key is held in this process (see README "Key posture")');
+    logger.warn({ scope: label }, 'using LOCAL signer: this key is held in this process (see README "Security posture")');
     return new LocalSigner(seed);
   }
   if (spec.local?.allow_ephemeral) {

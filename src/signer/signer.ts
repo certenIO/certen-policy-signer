@@ -12,7 +12,11 @@ export interface EdSigner {
 
 /**
  * LocalSigner — ed25519 via tweetnacl from a 32-byte seed.
- * DEV/TEST ONLY. Production uses vault-transit (see SPEC §7.4).
+ *
+ * The PILOT key posture: the key is held in this process, from an `env:` ref or a mounted secret file.
+ * That is a real, documented tradeoff rather than a test-only path (deploy/config.pilot.yaml and the Helm
+ * chart both ship it) — but the key is readable by anything that can read this process's memory. For
+ * production, VaultTransitSigner keeps the key inside Vault. See README "Security posture".
  */
 export class LocalSigner implements EdSigner {
   private readonly kp: nacl.SignKeyPair;

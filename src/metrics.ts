@@ -1,4 +1,4 @@
-/** Minimal Prometheus-style metrics (SPEC §12). No external dep. */
+/** Minimal Prometheus-style metrics, served on /metrics. No external dep. */
 export class Metrics {
   private counters = new Map<string, number>();
   private gauges = new Map<string, number>();

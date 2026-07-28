@@ -5,7 +5,8 @@ image:
 
 replicaCount: 1   # signing is idempotent + DB-locked; >1 is safe but unnecessary for POC
 
-# The wallet config (SPEC §11). Secrets come from `secretEnv`, referenced as env:NAME.
+# The signer config — every field is documented in config.example.yaml at the repo root.
+# Secrets come from `secretEnv` below, referenced as env:NAME.
 config:
   wallet:
     org_id: "demo-org"

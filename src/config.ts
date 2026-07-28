@@ -1,4 +1,4 @@
-/** Config load + validation (SPEC §11). Secrets resolved from env via `env:NAME` refs. */
+/** Config load + validation. Every field is documented in config.example.yaml; secrets use `env:NAME` refs. */
 import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
 import { z } from 'zod';
