@@ -46,6 +46,9 @@ export class Poller {
 
   lastSuccess(): number { return this.lastSuccessAt; }
 
+  /** Which page this poller watches — so health can name the stalled scope instead of just counting one. */
+  page(): string { return this.signerUrl; }
+
   /**
    * Healthy = we have polled successfully recently. A poller that has NEVER succeeded is unhealthy once
    * it has had a fair chance to (previously `lastSuccess === 0` was treated as healthy forever, so a

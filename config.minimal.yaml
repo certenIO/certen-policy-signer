@@ -1,0 +1,27 @@
+# The whole config. Every other option in config.example.yaml has a working default.
+#
+# Five things have to be true before this signs anything: we know who we are, which network to watch,
+# which key page we act for, where the key is, and who to ask. That is this file.
+
+wallet:
+  org_id: "your-org"                                       # a label for logs and receipts
+  accumulate_endpoints: ["https://kermit.accumulatenetwork.io/v3"]
+  signer_url: "acc://your-org.acme/book/1"                 # the key page this signer acts for
+
+signer:
+  provider: "local"                                        # move to "vault-transit" for production
+  local:
+    seed_file: "/run/secrets/signer_seed"                  # 32-byte hex seed
+
+policy:
+  url: "http://127.0.0.1:9099/decision"                    # your engine. This is the integration.
+
+# ── The four you will want next, in the order you will want them ──────────────────────────────────────
+#
+# store:    { path: "/data/signer-state.json" }   without it, a restart can double-vote
+# admin:    { api_key: "env:ADMIN_API_KEY" }      enables the emergency pause; unset = every admin route 403s
+# policy:   auth: "hmac" + hmac_secret            authenticates the decision channel
+# notify:   { sms: { to: [...], ... } }           text you when a transaction needs your signature
+#
+# Everything else — poll interval, ports, reject-vote behavior, value ceiling, decoders, metrics,
+# multi-page signing, the gateway vote backend — is in config.example.yaml with the reasoning attached.

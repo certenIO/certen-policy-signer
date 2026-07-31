@@ -1,6 +1,9 @@
 image:
-  repository: certen/external-policy-signer
+  # Prefer `digest` over `tag` in production: a tag can be moved to different bytes, a digest cannot,
+  # and this pod holds your signing key. When digest is set it wins and tag is ignored.
+  repository: ghcr.io/certen/certen-policy-signer
   tag: "0.1.0"
+  digest: ""          # e.g. sha256:abc123...
   pullPolicy: IfNotPresent
 
 replicaCount: 1   # signing is idempotent + DB-locked; >1 is safe but unnecessary for POC

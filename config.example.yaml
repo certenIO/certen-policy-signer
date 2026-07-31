@@ -27,11 +27,19 @@ wallet:
   # Multi-scope alternative: watch several pages, each with its own key and custody. Mutually exclusive
   # with signer_url. One poller per scope, one shared decision pipeline; the keyring picks the key by
   # page. See config.multi-scope.example.yaml.
+  #
+  # A scope may also override `policy` and `behavior` — the top-level blocks below are the DEFAULTS, and a
+  # scope states only what differs. This is how a fleet of agents with divergent rules runs in one process:
+  # each overriding scope gets its own policy client, credential, and ceiling, so one agent's engine going
+  # down (or its secret leaking) does not reach the others. An unknown key inside a scope's policy/behavior
+  # STOPS THE BOOT rather than being ignored — a typo would silently mean "inherit".
   # scopes:
   #   - page: "acc://team-a.acme/book/1"
   #     key: { provider: "local", local: { seed_file: "/run/secrets/team_a_seed" } }
   #   - page: "acc://team-b.acme/book/1"
   #     key: { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "team-b", token: "env:VAULT_TOKEN" } }
+  #     policy: { url: "https://rules.internal/team-b/decide", hmac_secret: "env:TEAM_B_HMAC" }
+  #     behavior: { value_ceiling: "100000", submit_reject_vote: true }
 
   # How this signer is attached to the transactions it signs.
   #   authority — the key book is named as an authority (the usual case)
@@ -72,6 +80,15 @@ signer:
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 policy:
   url: "https://policy.internal.example-org/decision"
+
+  # Already have an approvals API? Point the signer at it directly instead of deploying a translating
+  # shim. A module default-exporting { name, buildRequest?, parseResponse? } reshapes the request, the
+  # response, or both — see examples/policy-adapter.mjs.
+  #
+  # The fail-closed rule is enforced AROUND it, not delegated to it: only approve/deny/pending count as
+  # decisions, the response MAC is verified before your parser sees the body, and an adapter that throws
+  # withholds the signature. It describes where to find a decision; it cannot widen what one is.
+  # adapter_module: "./adapters/our-approvals-api.mjs"
 
   # Only "sync" is implemented: the signer POSTs and waits. An engine that cannot answer immediately
   # replies {"decision":"pending"} and the signer asks again next poll — see examples/policy-engine.mjs.
@@ -123,6 +140,54 @@ trigger:
     hmac_secret: "env:WEBHOOK_HMAC_SECRET"
     signature_header: "x-signer-signature"
     bind: "0.0.0.0:8080"
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+#  OUTBOUND NOTIFICATIONS — text message, email, Slack, or your own webhook. Omit the block to disable.
+#
+#  Configure any combination. Every channel is a single HTTPS POST, so none of this adds a dependency.
+#
+#  DELIVERY IS BEST-EFFORT — the one place this signer does NOT fail closed. A notification that cannot be
+#  delivered is logged and dropped; it never delays, blocks, or changes a signing decision. A signer that
+#  stopped signing because Twilio was down would be a worse signer. The durable record is the receipt
+#  store, not this.
+#
+#  THE EVENTS
+#    pending.discovered   a tx naming your book needs a decision. Fired ONCE per tx, on first sighting.
+#    decision.approved    signed an accept vote
+#    decision.denied      denied
+#    signature.failed     you decided to vote and the vote could not be submitted — the one to page on
+#    signer.paused        someone hit the emergency stop (and signer.resumed)
+#
+#  There is no "still waiting" event: it would fire every poll for the life of the transaction. For a live
+#  work queue use GET /v1/requests?status=awaiting_policy.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# notify:
+#   # Which events to send. Omitted: webhook and slack get everything, while sms and email get only
+#   # pending.discovered + signature.failed — they cost money per message and interrupt a person.
+#   # events: ["pending.discovered", "signature.failed"]
+#
+#   # Text message. Twilio, or any Twilio-compatible gateway.
+#   sms:
+#     to: ["+15551234567"]                 # one or more; a failure to one does not mute the others
+#     from: "+15559876543"                 # your Twilio number
+#     account_sid: "env:TWILIO_ACCOUNT_SID"
+#     auth_token: "env:TWILIO_AUTH_TOKEN"
+#
+#   email:                                  # SendGrid
+#     to: ["ops@example-org.com"]
+#     from: "signer@example-org.com"
+#     api_key: "env:SENDGRID_API_KEY"
+#
+#   slack:
+#     webhook_url: "env:SLACK_WEBHOOK_URL"  # the URL IS the credential — keep it in the environment
+#
+#   # Anything the above does not cover: your pager, a ticket queue, a channel none of these speak.
+#   # Receiver with the payload documented: examples/notifier.mjs
+#   webhook:
+#     url: "https://hooks.internal.example-org/certen-signer"
+#     hmac_secret: "env:NOTIFY_HMAC_SECRET" # same MAC scheme as the policy channel; unsigned if omitted
+#     timeout_ms: 5000
+#     signature_header: "x-signer-signature"
 
 behavior:
   # On a deny: true casts an explicit REJECT vote, killing the transaction now. false withholds the

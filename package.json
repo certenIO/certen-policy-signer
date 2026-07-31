@@ -1,19 +1,30 @@
 {
-  "name": "certen-external-policy-signer",
+  "name": "certen-policy-signer",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Headless policy-gated signer for Accumulate — your off-chain policy engine decides, your key signs, and nothing signs without an approval",
+  "license": "Apache-2.0",
+  "keywords": ["accumulate", "certen", "policy", "signer", "multisig", "blockchain"],
   "engines": {
     "node": ">=20"
   },
+  "//bin": "Two names for one binary: the short one is current, the long one is what earlier deployments call it. Removing the alias would break an existing install for no benefit.",
   "bin": {
+    "certen-policy-signer": "dist/signer.cjs",
     "certen-external-policy-signer": "dist/signer.cjs"
   },
+  "//files": "The published package is the esbuild bundle plus the two configs and the reference examples — the things you need to RUN it. src/ and test/ stay in the repo. Note the bundle already contains the patched accumulate.js (see postinstall below), so an npm consumer needs no patch step of their own.",
+  "files": [
+    "dist/",
+    "config.minimal.yaml",
+    "config.example.yaml",
+    "examples/",
+    "docs/",
+    "LICENSE"
+  ],
   "scripts": {
-    "postinstall": "node scripts/fix-accumulate-encoding.mjs",
-    "//prepare": "runs after postinstall — a plain clone has no dist/, so without this the bin is a dead path. --if-possible: a production or dependency-only install has nothing to build, and that is not an error",
-    "prepare": "node scripts/build.mjs --if-possible",
+    "//prepare": "Patch, then build. `prepare` runs on `npm install` in a clone (a plain clone has no dist/, so without this the bin is a dead path) and before `npm publish` — but NOT when a consumer installs the published tarball, which is exactly what we want: the accumulate.js patch is a DEV-TREE fix that the esbuild bundle then inlines, so a consumer inherits the fix in dist/ and has nothing to patch. This was a `postinstall`, which npm does run for installed dependencies; there it found no node_modules/accumulate.js to patch and printed a warning that read like a broken install. --if-possible: a production or dependency-only install has nothing to build, and that is not an error.",
+    "prepare": "node scripts/fix-accumulate-encoding.mjs && node scripts/build.mjs --if-possible",
     "build": "node scripts/build.mjs",
     "start": "node dist/signer.cjs",
     "dev": "tsx watch src/index.ts",

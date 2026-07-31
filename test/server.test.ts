@@ -100,6 +100,70 @@ describe('http server', () => {
   });
 
   /**
+   * Per-scope discovery health.
+   *
+   * On a fleet the aggregate boolean is not actionable: twelve agent pages report as one value, so an
+   * operator paged at 3am learns that discovery stopped but not which agent stopped. `/healthz` names them,
+   * and `reasons` carries the stalled pages so an alert built on the reason string is specific too.
+   */
+  describe('/healthz per-scope detail', () => {
+    /** A health source standing in for N pollers, with chosen pages healthy. */
+    function withScopes(pages: Array<{ page: string; healthy: boolean; lastSuccess: number | null }>) {
+      const acc = new MockAccumulateClient();
+      const keyring = singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)));
+      const store = new MemoryStore();
+      const pause: PauseController = { paused: false };
+      return createServer({
+        orchestrator: new Orchestrator({
+          accumulate: acc, keyring, policy: new MockPolicyClient({ decision: 'approve' }),
+          store, resolver: new Resolver(acc), logger: silent,
+        }),
+        store, keyring, accumulate: acc, pause, logger: silent, adminApiKey: ADMIN_KEY,
+        poller: {
+          healthy: () => pages.every((p) => p.healthy),
+          lastSuccess: () => Math.min(...pages.map((p) => p.lastSuccess ?? 0)),
+          scopes: () => pages,
+        },
+      });
+    }
+
+    async function get(server: http.Server, path: string) {
+      await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+      const p = (server.address() as AddressInfo).port;
+      try { return await req(p, 'GET', path); } finally { server.close(); }
+    }
+
+    it('lists every page when there is more than one', async () => {
+      const r = await get(withScopes([
+        { page: 'acc://a.acme/book/1', healthy: true, lastSuccess: 1000 },
+        { page: 'acc://b.acme/book/1', healthy: true, lastSuccess: 2000 },
+      ]), '/healthz');
+      expect(r.status).toBe(200);
+      expect(r.json.scopes.map((s: any) => s.page)).toEqual(['acc://a.acme/book/1', 'acc://b.acme/book/1']);
+    });
+
+    it('names the stalled page in reasons, not just that something stalled', async () => {
+      const r = await get(withScopes([
+        { page: 'acc://healthy.acme/book/1', healthy: true, lastSuccess: 1000 },
+        { page: 'acc://stuck.acme/book/1', healthy: false, lastSuccess: null },
+      ]), '/healthz');
+      expect(r.status).toBe(503);
+      expect(r.json.ok).toBe(false);
+      expect(r.json.reasons).toContain('poller_stalled:acc://stuck.acme/book/1');
+      // The healthy one must not be implicated — that would send an operator after the wrong agent.
+      expect(r.json.reasons.join(' ')).not.toContain('healthy.acme');
+    });
+
+    /** One page is the single-scope case; repeating it as a `scopes` array is noise the console would
+     *  then render as a pointless one-row table and a one-option filter. */
+    it('omits scopes for a single-page signer', async () => {
+      const r = await get(withScopes([{ page: 'acc://solo.acme/book/1', healthy: true, lastSuccess: 1000 }]), '/healthz');
+      expect(r.json.scopes).toBeUndefined();
+      expect(r.json.poller.healthy).toBe(true);
+    });
+  });
+
+  /**
    * GET /v1/requests — the operator audit view, backing the console's activity table.
    *
    * Returns each request WITH its receipt: the request says what happened, the receipt says why. An
@@ -159,6 +223,70 @@ describe('http server', () => {
       const r = await reqH(port, 'GET', '/v1/requests', ADMIN);
       expect(r.status).toBe(200);
       expect(r.json.requests).toEqual([]);
+    });
+
+    /**
+     * ?status= — the work queue. `awaiting_policy` is "the engine has seen it and not yet decided", i.e.
+     * exactly the transactions a human still owes an answer on.
+     */
+    describe('?status=', () => {
+      /** A store holding a mix: two waiting, three settled. */
+      async function seedMixed() {
+        const rows: Array<[string, 'awaiting_policy' | 'signed' | 'rejected']> = [
+          ['a1', 'awaiting_policy'], ['a2', 'awaiting_policy'],
+          ['b1', 'signed'], ['b2', 'signed'], ['c1', 'rejected'],
+        ];
+        for (const [tag, status] of rows) {
+          await ctx.store.create({
+            txHash: tag.charCodeAt(1).toString(16).padStart(2, '0').repeat(31) + (tag === 'a1' ? '11' : tag === 'a2' ? '22' : tag === 'b1' ? '33' : tag === 'b2' ? '44' : '55'),
+            signerUrl: SIGNER, status, actionSummary: tag, attempts: 0, createdAt: Date.now(), updatedAt: Date.now(),
+          });
+        }
+      }
+
+      it('returns only the requested status', async () => {
+        await seedMixed();
+        const r = await reqH(port, 'GET', '/v1/requests?status=awaiting_policy', ADMIN);
+        expect(r.status).toBe(200);
+        expect(r.json.requests).toHaveLength(2);
+        expect(r.json.requests.every((x: any) => x.request.status === 'awaiting_policy')).toBe(true);
+      });
+
+      it('accepts several statuses, comma-separated', async () => {
+        await seedMixed();
+        const r = await reqH(port, 'GET', '/v1/requests?status=signed,rejected', ADMIN);
+        expect(r.json.requests).toHaveLength(3);
+      });
+
+      /**
+       * The filter runs BEFORE the limit. Otherwise a queue UI on a busy signer shows an empty work list:
+       * the recent window fills with settled transactions and the waiting ones fall off the end.
+       */
+      it('filters before applying the limit, not after', async () => {
+        await seedMixed();
+        const r = await reqH(port, 'GET', '/v1/requests?status=awaiting_policy&limit=2', ADMIN);
+        expect(r.json.requests).toHaveLength(2);
+        expect(r.json.requests.every((x: any) => x.request.status === 'awaiting_policy')).toBe(true);
+      });
+
+      /**
+       * A typo'd status is REJECTED, not ignored. A silently-dropped filter returns a plausible-looking
+       * list of the wrong rows — an operator would read "nothing is waiting" off a full queue.
+       */
+      it('rejects an unknown status instead of ignoring the filter', async () => {
+        await seedMixed();
+        const r = await reqH(port, 'GET', '/v1/requests?status=awaiting_polcy', ADMIN);
+        expect(r.status).toBe(400);
+        expect(r.json.error).toMatch(/unknown status/);
+        expect(r.json.valid).toContain('awaiting_policy');
+      });
+
+      it('an empty status param is treated as no filter', async () => {
+        await seedMixed();
+        const r = await reqH(port, 'GET', '/v1/requests?status=', ADMIN);
+        expect(r.status).toBe(200);
+        expect(r.json.requests).toHaveLength(5);
+      });
     });
   });
 

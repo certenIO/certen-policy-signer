@@ -1,18 +1,19 @@
 /** Entry point: wire modules from config, run the startup self-check, start servers + poller. */
 import { createHash } from 'node:crypto';
 import { parseArgs, helpText, VERSION, BIN } from './cli.js';
-import { loadConfig, parseBind } from './config.js';
+import { loadConfig, parseBind, effectiveScopeRules, Config } from './config.js';
 import { logger as baseLogger } from './logger.js';
 import { MapKeyring, buildSignerFromSpec, bookOf, SigningScope } from './signer/keyring.js';
 import { RawAccumulateClient } from './accumulate/raw-client.js';
-import { HttpPolicyClient } from './policy/policy.js';
+import { HttpPolicyClient, loadPolicyAdapter } from './policy/policy.js';
 import { MemoryStore, FileStore } from './store/store.js';
 import { Resolver } from './resolver.js';
 import { buildRegistry, loadDecoderModules } from './decode/registry.js';
 import { makeValueCeilingGuard } from './guard.js';
 import { applyKeyPageOp } from './ops/keypage.js';
 import { GatewayClient, GatewayVoteBackend } from './vote/adapters/certen-gateway.js';
-import { Orchestrator } from './orchestrator.js';
+import { buildNotifier, MultiNotifier, NotifyConfig } from './notify.js';
+import { Orchestrator, ScopeRules } from './orchestrator.js';
 import { Poller } from './poller.js';
 import { createServer, PauseController, HealthSource } from './server.js';
 import { bytesToHex } from './accumulate/signing.js';
@@ -58,18 +59,40 @@ async function main() {
   );
 
   const accumulate = new RawAccumulateClient(cfg.wallet.accumulate_endpoints[0], logger);
-  const policy = new HttpPolicyClient({
-    url: cfg.policy.url,
-    timeoutMs: cfg.policy.timeout_ms,
-    hmacSecret: cfg.policy.auth === 'hmac' ? cfg.policy.hmac_secret : undefined,
-    signatureHeader: cfg.policy.signature_header,
-    timestampHeader: cfg.policy.timestamp_header,
-    onLegacyHeader: (h) =>
-      logger.warn(
-        { header: h, configured: cfg.policy.signature_header },
-        'policy engine authenticated its response with the legacy header; set policy.signature_header to match your engine',
-      ),
-  });
+
+  /**
+   * Build the policy client for one effective policy block.
+   *
+   * Shared by the process default and every per-scope override so the two cannot diverge — an override
+   * gets the same adapter loading, the same HMAC handling, and the same legacy-header warning. Adapter
+   * modules are loaded here, at boot, so a broken or missing one stops the process rather than silently
+   * leaving the default shape in place and talking the wrong protocol to a real engine.
+   */
+  const buildPolicyClient = async (p: Config['policy'], label: string) => {
+    const adapter = await loadPolicyAdapter(p.adapter_module);
+    if (adapter) {
+      logger.info({
+        scope: label,
+        adapter: adapter.name,
+        reshapes: [adapter.buildRequest ? 'request' : undefined, adapter.parseResponse ? 'response' : undefined].filter(Boolean),
+      }, 'policy adapter loaded');
+    }
+    return new HttpPolicyClient({
+      adapter,
+      url: p.url,
+      timeoutMs: p.timeout_ms,
+      hmacSecret: p.auth === 'hmac' ? p.hmac_secret : undefined,
+      signatureHeader: p.signature_header,
+      timestampHeader: p.timestamp_header,
+      onLegacyHeader: (h) =>
+        logger.warn(
+          { scope: label, header: h, configured: p.signature_header },
+          'policy engine authenticated its response with the legacy header; set policy.signature_header to match your engine',
+        ),
+    });
+  };
+
+  const policy = await buildPolicyClient(cfg.policy, 'default');
 
   // Durable state: which txs we have already voted on (never vote twice) + the receipt audit trail.
   // In memory, a restart forgets both.
@@ -97,6 +120,37 @@ async function main() {
     ? [cfg.wallet.delegator_url]
     : undefined;
 
+  // --- per-scope rules: a fleet rarely shares one rulebook ---
+  //
+  // Each scope may override `policy` and `behavior`; what it does not state, it inherits. Built here, at
+  // boot, so a scope pointing at an unreachable adapter module or an unresolvable secret stops the process
+  // — the alternative is discovering it the first time that one agent has work, which could be days later.
+  //
+  // Only scopes that actually differ get an entry; the map is consulted per transaction, and an absent
+  // key means "use the defaults" without allocating a duplicate client per page.
+  const scopeRules = new Map<string, ScopeRules>();
+  for (const s of cfg.wallet.scopes ?? []) {
+    const eff = effectiveScopeRules(cfg, s);
+    if (!eff.overridden) continue;
+    const rules: ScopeRules = {};
+    if (s.policy && Object.keys(s.policy).length) {
+      rules.policy = await buildPolicyClient(eff.policy, s.page);
+    }
+    if (s.behavior?.value_ceiling !== undefined) {
+      rules.guard = makeValueCeilingGuard(BigInt(eff.behavior.value_ceiling!));
+    }
+    if (s.behavior?.submit_reject_vote !== undefined) {
+      rules.submitRejectVote = eff.behavior.submit_reject_vote;
+    }
+    scopeRules.set(s.page.toLowerCase(), rules);
+    logger.info({
+      scope: s.page,
+      policyUrl: eff.policy.url,
+      valueCeiling: eff.behavior.value_ceiling ?? null,
+      submitRejectVote: eff.behavior.submit_reject_vote,
+    }, 'scope runs under its own rules');
+  }
+
   // --- how votes reach the chain: DIRECT (we submit) or GATEWAY (the api-gateway relays) ---
   // Either way the org's key stays here and the policy gate is unchanged. Discovery and intent decoding
   // are always ours: the gateway's pending list has no transaction body to gate on.
@@ -113,8 +167,22 @@ async function main() {
     logger.info('vote backend: DIRECT (submitting to Accumulate ourselves)');
   }
 
+  // --- outbound notifications (optional): SMS / email / Slack / webhook, all fire-and-forget ---
+  const notifier = buildNotifier(cfg.notify as NotifyConfig, logger);
+  if (notifier instanceof MultiNotifier) {
+    // Log which channel gets which events. A filter typo shows up here at boot, not as a text message
+    // that never arrives during the incident it was configured for.
+    for (const { channel, events } of notifier.describe()) {
+      logger.info({ channel, events }, 'notification channel enabled');
+    }
+    if (cfg.notify.webhook?.url && !cfg.notify.webhook.hmac_secret) {
+      logger.warn('notify.webhook.url is set without hmac_secret — events go out unsigned, so the receiver cannot tell they came from this signer');
+    }
+  }
+
   const orchestrator = new Orchestrator({
     accumulate, keyring, policy, store, resolver, logger, votes,
+    notifier, orgId: cfg.wallet.org_id, scopeRules,
     options: {
       submitRejectVote: cfg.behavior.submit_reject_vote,
       maxBadVersionRetries: cfg.behavior.max_bad_version_retries,
@@ -165,8 +233,13 @@ async function main() {
       ))
     : [];
   // Unhealthy if ANY scope's discovery loop is stalled; lastSuccess is the oldest success across them.
+  // `scopes()` additionally names WHICH page stalled — on a fleet, the aggregate boolean is not actionable.
   const pollerHealth: HealthSource | undefined = pollers.length
-    ? { healthy: () => pollers.every((p) => p.healthy()), lastSuccess: () => Math.min(...pollers.map((p) => p.lastSuccess())) }
+    ? {
+        healthy: () => pollers.every((p) => p.healthy()),
+        lastSuccess: () => Math.min(...pollers.map((p) => p.lastSuccess())),
+        scopes: () => pollers.map((p) => ({ page: p.page(), healthy: p.healthy(), lastSuccess: p.lastSuccess() || null })),
+      }
     : undefined;
 
   // --- server (health/metrics/webhook/admin) ---
@@ -177,6 +250,7 @@ async function main() {
     adminApiKey: cfg.admin.api_key,
     governanceAdminKey: cfg.admin.governance_admin_key,
     metricsPublic: cfg.observability.metrics_public,
+    notify: (event) => notifier.emit({ event, at: new Date().toISOString(), orgId: cfg.wallet.org_id }),
     // The set of governable pages is bound HERE, from our own config: `keyring.forPage` throws for any page
     // we do not hold a key for, so a caller can never point governance at an arbitrary page. Default: scope 0.
     keyPage: (op, page) => {

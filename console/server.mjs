@@ -38,6 +38,25 @@ const SIGNER_URL = (process.env.SIGNER_URL ?? 'http://127.0.0.1:8080').replace(/
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY ?? '';
 const GOVERNANCE_KEY = process.env.GOVERNANCE_KEY ?? '';
 
+// ---- the escalation panel ---------------------------------------------------
+//
+// Optional. Set these and the console grows a queue of what the automated seats
+// could not settle, plus a button to sign one with the operator's own seat.
+//
+// The seat's key never lives here: KEYSTORE_PATH points at an encrypted file and
+// the passphrase is typed per signature, used once, and discarded. There is no
+// unlocked key and no cached passphrase, so nothing can sign while the operator
+// is away — which is the entire reason the escalation seat is separate from the
+// automated ones.
+const POLICY_URL = (process.env.POLICY_URL ?? '').replace(/\/$/, '');
+const POLICY_TOKEN = process.env.POLICY_TOKEN ?? '';
+const KEYSTORE_PATH = process.env.CERTEN_KEYSTORE ?? '';
+const GATEWAY_URL = (process.env.CERTEN_GATEWAY ?? 'https://gateway.kompendium.co').replace(/\/$/, '');
+const GATEWAY_KEY = process.env.CERTEN_API_KEY ?? '';
+const PANEL_IDENTITY = process.env.CERTEN_IDENTITY ?? '';
+const PANEL_PAGE = process.env.CERTEN_PAGE ?? '';
+const ACC_RPC = process.env.ACC_RPC ?? 'https://kermit.accumulatenetwork.io/v3';
+
 /**
  * Exactly which signer routes the browser may reach, and with which method.
  *
@@ -167,6 +186,75 @@ async function testPolicyEngine({ url, hmacSecret, values }) {
       : 'sign nothing and ask again next poll'}.` };
 }
 
+/**
+ * Is this transaction still awaiting signatures on chain?
+ *
+ * null when unknown — unknown items are still shown, because hiding real work
+ * because the network hiccuped is the worse failure of the two.
+ */
+async function stillPending(txHash) {
+  if (!PANEL_IDENTITY) return null;
+  try {
+    const r = await fetch(ACC_RPC, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'query',
+        params: { scope: `acc://${txHash}@${PANEL_IDENTITY.replace('acc://', '')}/data` },
+      }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const j = await r.json();
+    if (j.error) return null;
+    return j.result?.status === 'pending';
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Add the operator's signature to a pending transaction, on their own key page.
+ *
+ * Their page is higher priority and satisfies the book on its own, so this one
+ * signature completes work the routine page could never finish.
+ */
+async function signEscalation(txHash, passphrase) {
+  if (!GATEWAY_KEY) throw new Error('CERTEN_API_KEY is not configured');
+  if (!PANEL_IDENTITY || !PANEL_PAGE) throw new Error('CERTEN_IDENTITY and CERTEN_PAGE must be set');
+
+  const { loadKeystore, signWithKeystore } = await import('../../certen-carp-starter/examples/keystore.mjs');
+  const store = await loadKeystore(KEYSTORE_PATH);
+
+  const gw = async (path, body) => {
+    const r = await fetch(`${GATEWAY_URL}${path}`, {
+      method: 'POST',
+      headers: { 'X-API-Key': GATEWAY_KEY, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const text = await r.text();
+    let json; try { json = JSON.parse(text); } catch { json = text; }
+    if (!r.ok) throw new Error(`gateway ${path} -> ${r.status}: ${JSON.stringify(json).slice(0, 200)}`);
+    return json;
+  };
+
+  const prep = await gw('/v1/sign', {
+    type: 'pending_tx',
+    target_id: txHash,
+    identity: PANEL_IDENTITY,
+    signer_url: PANEL_PAGE,        // OUR page — the one this signature satisfies
+    public_key: store.publicKey,
+  });
+  const sd = prep.signing_data ?? {};
+  const toSign = sd.data_for_signature ?? sd.hash_to_sign;
+  if (!toSign) throw new Error('gateway returned no hash to sign');
+
+  // Opens the keystore, signs, and wipes the seed — see keystore.mjs.
+  const signature = await signWithKeystore(store, passphrase, toSign);
+
+  const submitted = await gw(prep.submit_url, { signature, public_key: store.publicKey });
+  return { signed: txHash, page: PANEL_PAGE, result: submitted };
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://x');
   const path = url.pathname;
@@ -181,6 +269,10 @@ const server = http.createServer(async (req, res) => {
       signerUrl: SIGNER_URL,
       hasAdminKey: !!ADMIN_API_KEY,
       hasGovernanceKey: !!GOVERNANCE_KEY,
+      // The escalation panel needs all four to be useful; the UI hides it
+      // otherwise rather than offering a button that cannot work.
+      hasApprovals: !!(POLICY_URL && KEYSTORE_PATH && GATEWAY_KEY && PANEL_PAGE),
+      panelPage: PANEL_PAGE,
     });
   }
 
@@ -189,6 +281,61 @@ const server = http.createServer(async (req, res) => {
     try { input = JSON.parse(await readBody(req) || '{}'); } catch { return send(res, 400, { error: 'bad JSON' }); }
     if (!input.url) return send(res, 400, { error: 'url required' });
     return send(res, 200, await testPolicyEngine(input));
+  }
+
+  // ---- escalation queue ----------------------------------------------------
+  //
+  // What the automated seats could not settle. It comes from the operator's own
+  // policy engine; the signer has no opinion about it and is not consulted.
+  if (req.method === 'GET' && path === '/api/approvals') {
+    if (!POLICY_URL) return send(res, 200, { configured: false, pending: [] });
+    try {
+      const r = await fetch(`${POLICY_URL}/pending`, {
+        headers: POLICY_TOKEN ? { authorization: `Bearer ${POLICY_TOKEN}` } : {},
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!r.ok) return send(res, 502, { error: `policy engine returned ${r.status}` });
+      const { pending = [] } = await r.json();
+      // Reconcile against the chain: the engine records what IT withheld on and
+      // never learns a transaction settled some other way. Listing finished work
+      // invites signing something already done.
+      const live = await Promise.all(pending.map(async (p) => ({ p, open: await stillPending(p.txHash) })));
+      return send(res, 200, {
+        configured: true,
+        settled: live.filter((x) => x.open === false).length,
+        pending: live.filter((x) => x.open !== false).map((x) => x.p),
+      });
+    } catch (err) {
+      return send(res, 502, { error: `policy engine unreachable: ${err.message}` });
+    }
+  }
+
+  /**
+   * Sign one escalation with the operator's own seat.
+   *
+   * The passphrase arrives per request, is used once, and is never stored,
+   * cached or logged. The console holds no key: the keystore stays encrypted on
+   * disk and is opened only for the moment of signing. Nothing here can sign
+   * while the operator is away, which is the property that makes an escalation
+   * seat worth having.
+   */
+  if (req.method === 'POST' && path === '/api/approve') {
+    let input;
+    try { input = JSON.parse(await readBody(req) || '{}'); } catch { return send(res, 400, { error: 'bad JSON' }); }
+    try {
+      if (!KEYSTORE_PATH) return send(res, 400, { error: 'CERTEN_KEYSTORE is not configured' });
+      if (!/^[a-fA-F0-9]{64}$/.test(String(input.txHash ?? ''))) {
+        return send(res, 400, { error: 'txHash must be 64-character hex' });
+      }
+      if (!input.passphrase) return send(res, 400, { error: 'passphrase required' });
+      const out = await signEscalation(String(input.txHash), String(input.passphrase));
+      return send(res, 200, out);
+    } catch (err) {
+      // The message may say "wrong passphrase"; it must never echo the value.
+      return send(res, 400, { error: err.message });
+    } finally {
+      if (input) input.passphrase = '';
+    }
   }
 
   // Everything else is a proxied signer call.

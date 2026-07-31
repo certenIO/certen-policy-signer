@@ -60,9 +60,19 @@ describe('argument parsing', () => {
 
 describe('help text', () => {
   const text = helpText();
+  const pkg = JSON.parse(
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'),
+  ) as { bin: Record<string, string> };
 
-  it('names the binary that npm actually installs', () => {
-    expect(BIN).toBe('certen-external-policy-signer');
+  /**
+   * Asserted against package.json rather than a literal, because the literal is the thing that goes stale.
+   * What must hold is that the name in `USAGE` is a command the user actually has — copying a line out of
+   * --help and getting "command not found" is the failure being prevented, and renaming the binary without
+   * renaming BIN produces exactly that.
+   */
+  it('names a binary that npm actually installs', () => {
+    const installed = Object.keys(pkg.bin as Record<string, string>);
+    expect(installed).toContain(BIN);
     expect(text).toContain(BIN);
   });
 

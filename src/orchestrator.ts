@@ -8,6 +8,7 @@ import { Store } from './store/store.js';
 import { Resolver } from './resolver.js';
 import { Logger } from './logger.js';
 import { VoteBackend, VoteResult, DirectVoteBackend } from './vote/backend.js';
+import { Notifier, NotifyEvent, NULL_NOTIFIER } from './notify.js';
 import { PendingRef, PolicyRequest, ResolvedTx, SigningRequest } from './types.js';
 
 export interface OrchestratorOptions {
@@ -21,15 +22,38 @@ export interface OrchestratorOptions {
   delegators?: string[];        // delegate attachment model: user page(s) delegating to our book
 }
 
+/**
+ * The rules one key page runs under, when they differ from the process defaults.
+ *
+ * A fleet rarely shares one rulebook: a trading agent and a treasury page belong on different engines,
+ * under different ceilings. Overrides are keyed by page because that is what the poller already carries —
+ * `PendingRef.signerUrl` IS the page the work was discovered for, so no extra plumbing is needed to know
+ * whose rules apply.
+ *
+ * Every field is optional and falls back to the process default; a scope states only what differs.
+ */
+export interface ScopeRules {
+  policy?: PolicyClient;
+  guard?: OrchestratorOptions['guard'];
+  submitRejectVote?: boolean;
+}
+
 export interface OrchestratorDeps {
   accumulate: AccumulateClient;
-  keyring: Keyring;
+  /** The default policy client. Used for any page without an override. */
   policy: PolicyClient;
+  keyring: Keyring;
   store: Store;
   resolver: Resolver;
   logger: Logger;
   /** How the vote reaches the chain. Defaults to DIRECT (submit to Accumulate ourselves). */
   votes?: VoteBackend;
+  /** Outbound notifications. Best-effort and non-blocking by contract — see notify.ts. */
+  notifier?: Notifier;
+  /** Label carried on every notification so a receiver watching several signers can tell them apart. */
+  orgId?: string;
+  /** Per-page rule overrides, keyed by the page URL LOWERCASED. Absent pages use the defaults. */
+  scopeRules?: Map<string, ScopeRules>;
   options?: OrchestratorOptions;
   now?: () => number; // injectable clock (ms) for tests
 }
@@ -38,6 +62,7 @@ export class Orchestrator {
   private readonly opt: Required<Pick<OrchestratorOptions, 'maxBadVersionRetries' | 'policyTtlSeconds' | 'submitRejectVote'>> & OrchestratorOptions;
   private readonly now: () => number;
   private readonly votes: VoteBackend;
+  private readonly notifier: Notifier;
 
   constructor(private readonly d: OrchestratorDeps) {
     this.opt = {
@@ -49,11 +74,56 @@ export class Orchestrator {
       delegators: d.options?.delegators,
     };
     this.now = d.now ?? Date.now;
+    this.notifier = d.notifier ?? NULL_NOTIFIER;
     this.votes = d.votes ?? new DirectVoteBackend(d.accumulate, d.keyring, d.logger, {
       maxBadVersionRetries: this.opt.maxBadVersionRetries,
       delegators: this.opt.delegators,
       now: this.now,
     });
+  }
+
+  /**
+   * The policy engine, local guard, and reject-vote behavior for the page this work belongs to.
+   *
+   * Falls back field by field rather than all-or-nothing: a scope that overrides only its ceiling keeps
+   * the default engine. Matching is case-insensitive because an Accumulate URL is, and a scope written
+   * `acc://Agent.acme/book/1` in config must still match the `acc://agent.acme/book/1` the node reports —
+   * a miss here would silently run that page under the DEFAULT rules, which is the exact failure the
+   * feature exists to prevent.
+   */
+  private rulesFor(signerUrl: string): Required<Pick<ScopeRules, 'policy' | 'submitRejectVote'>> & Pick<ScopeRules, 'guard'> {
+    const o = this.d.scopeRules?.get(signerUrl.toLowerCase());
+    return {
+      policy: o?.policy ?? this.d.policy,
+      guard: o?.guard !== undefined ? o.guard : this.opt.guard,
+      submitRejectVote: o?.submitRejectVote ?? this.opt.submitRejectVote,
+    };
+  }
+
+  /**
+   * Fire an outbound notification. Never throws and never awaited — a notification is a courtesy to the
+   * operator's systems, not a step in the decision. See notify.ts for why this is the one place in the
+   * codebase that does NOT fail closed.
+   */
+  private notify(event: NotifyEvent, tx: ResolvedTx | undefined, extra?: { reason?: string; error?: string; txHash?: string }): void {
+    try {
+      this.notifier.emit({
+        event,
+        at: new Date(this.now()).toISOString(),
+        orgId: this.d.orgId ?? '',
+        txHash: tx?.txHash ?? extra?.txHash,
+        operationId: tx?.operationId,
+        account: tx?.account,
+        actionSummary: tx?.summary.action,
+        chain: tx?.summary.chain,
+        target: tx?.summary.target,
+        values: tx?.summary.values,
+        reason: extra?.reason,
+        error: extra?.error,
+      });
+    } catch (e) {
+      this.d.logger.warn({ event, err: (e as Error).message }, 'notifier threw (ignored)');
+    }
   }
 
   /** Handle one pending-tx reference. Idempotent + single-flight per txHash. */
@@ -92,7 +162,9 @@ export class Orchestrator {
   }
 
   private async run(ref: PendingRef): Promise<SigningRequest> {
-    const { store, resolver, policy, logger } = this.d;
+    const { store, resolver, logger } = this.d;
+    // Which page this work belongs to decides which engine answers for it and under which ceiling.
+    const rules = this.rulesFor(ref.signerUrl);
     const priorStatus = (await store.get(ref.txHash))?.status; // was this tx already known? (gates the discovery log)
     await this.ensure(ref);
 
@@ -121,6 +193,9 @@ export class Orchestrator {
         { tx: tx.txHash, account: tx.account, authority: ref.signerUrl, action: tx.summary.action },
         'discovered pending intent; our book is a required authority',
       );
+      // Fired once, on first sighting, for the same reason the log line is: a notification on every poll
+      // would text the operator every 20 seconds for the life of the transaction.
+      this.notify('pending.discovered', tx);
     }
 
     // 2. Decide
@@ -147,7 +222,7 @@ export class Orchestrator {
     logger.info({ tx: tx.txHash, policyRequestId: policyReq.requestId, action: tx.summary.action }, 'requesting decision from policy engine');
     let decision;
     try {
-      decision = await policy.decide(policyReq);
+      decision = await rules.policy.decide(policyReq);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logger.warn({ tx: ref.txHash, err: msg }, 'policy decision failed');
@@ -181,7 +256,7 @@ export class Orchestrator {
     if (decision.decision === 'deny') {
       logger.info({ tx: ref.txHash, reason: decision.reason }, 'policy denied');
       await store.update(ref.txHash, { status: 'denied', decision: 'deny' });
-      if (this.opt.submitRejectVote) {
+      if (rules.submitRejectVote) {
         // A reject vote that could not be submitted is a FAILURE, exactly as an approve vote is — the
         // result was being discarded here. That mattered: `rejected` is terminal, so the tx was never
         // retried, while the receipt below recorded `vote: reject` for a vote that never reached the
@@ -190,21 +265,23 @@ export class Orchestrator {
         const res = await this.signAndSubmit(tx, 'reject');
         if (!res.ok) {
           logger.error({ tx: ref.txHash, err: res.error }, 'reject vote submission failed');
+          this.notify('signature.failed', tx, { reason: decision.reason, error: res.error });
           return store.update(ref.txHash, { status: 'error', lastError: res.error });
         }
       }
       const final = await store.update(ref.txHash, { status: 'rejected' });
       await store.saveReceipt({
         txHash: tx.txHash, operationId: tx.operationId, decision: 'deny',
-        vote: this.opt.submitRejectVote ? 'reject' : undefined,
+        vote: rules.submitRejectVote ? 'reject' : undefined,
         reason: decision.reason,
         policyEvidence: decision.evidence,
       });
+      this.notify('decision.denied', tx, { reason: decision.reason });
       return final;
     }
 
     // SR4 local guard (defense-in-depth even if policy approved)
-    if (this.opt.guard && !this.opt.guard({
+    if (rules.guard && !rules.guard({
       account: tx.account, summary: tx.summary.action,
       value: tx.summary.value, values: tx.summary.values, unpricedLegs: tx.summary.unpricedLegs,
     })) {
@@ -229,11 +306,13 @@ export class Orchestrator {
         reason: decision.reason,
         policyEvidence: decision.evidence,
       });
+      this.notify('decision.approved', tx, { reason: decision.reason });
       return store.update(ref.txHash, { status: 'signed', timestampMicros: res.timestamp });
     }
     // A vote we decided to cast but could not is a real failure — say so. It used to be recorded in the
     // store and nowhere else, so an operator watching the logs saw the policy decision and then silence.
     logger.error({ tx: ref.txHash, err: res.error }, 'vote submission failed');
+    this.notify('signature.failed', tx, { reason: decision.reason, error: res.error });
     return store.update(ref.txHash, { status: 'error', lastError: res.error });
   }
 

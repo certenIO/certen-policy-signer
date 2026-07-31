@@ -6,7 +6,9 @@
 import pkg from '../package.json';
 
 export const VERSION: string = pkg.version;
-export const BIN = 'certen-external-policy-signer';
+/** The short name. `certen-external-policy-signer` is still installed as an alias for existing deployments,
+ *  but help output should teach the current one. */
+export const BIN = 'certen-policy-signer';
 
 export type Invocation =
   | { mode: 'run'; configPath: string }
@@ -44,6 +46,7 @@ HTTP (one listener, address from health.bind)
   GET  /metrics              Prometheus text; public only if observability.metrics_public
   POST /v1/pending           Webhook trigger; requires an HMAC when trigger.webhook is enabled
   GET  /v1/requests          Decision + receipt audit trail          (admin)
+                             ?limit=N&status=a,b — status=awaiting_policy is the work queue
   POST /v1/admin/pause       Withhold all signatures                 (admin)
   POST /v1/admin/resume      Resume signing                          (admin)
   GET  /v1/admin/pubkey      Public key per scope                    (admin)
@@ -53,8 +56,10 @@ HTTP (one listener, address from health.bind)
   when no admin.api_key is configured.
 
 GETTING STARTED
-  cp config.example.yaml config.yaml    Every option, documented inline
+  cp config.minimal.yaml config.yaml    The five fields that have no default
   ${BIN} config.yaml
+
+  config.example.yaml    Every option, documented inline, with the reasoning attached
 
   docs/QUICKSTART.md     A running signer against a test network
   docs/INTEGRATION.md    The policy-engine contract and custom intent decoders

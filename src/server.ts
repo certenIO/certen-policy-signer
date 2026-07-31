@@ -10,6 +10,8 @@ import { AccumulateClient } from './accumulate/client.js';
 import { metrics } from './metrics.js';
 import { Logger } from './logger.js';
 import { DEFAULT_SIGNATURE_HEADER, LEGACY_SIGNATURE_HEADER } from './policy/policy.js';
+import { REQUEST_STATUSES, RequestStatus } from './types.js';
+import { NotifyEvent } from './notify.js';
 
 export interface PauseController { paused: boolean; }
 
@@ -17,6 +19,14 @@ export interface PauseController { paused: boolean; }
 export interface HealthSource {
   healthy(): boolean;
   lastSuccess(): number;
+  /**
+   * Per-scope breakdown, when this signer watches more than one page.
+   *
+   * The aggregate above answers "is discovery working"; on a fleet that is not actionable — twelve agent
+   * pages report as one boolean, and an operator paged at 3am cannot tell which agent stopped. This names
+   * them. Absent for a single-scope signer, where the aggregate already IS the answer.
+   */
+  scopes?(): Array<{ page: string; healthy: boolean; lastSuccess: number | null }>;
 }
 
 export interface ServerDeps {
@@ -40,6 +50,8 @@ export interface ServerDeps {
   poller?: HealthSource;
   /** Serve /metrics without authentication (only when the port is already private). */
   metricsPublic?: boolean;
+  /** Fire a lifecycle notification. Absent when no `notify.url` is configured. Best-effort by contract. */
+  notify?: (event: NotifyEvent) => void;
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -88,11 +100,19 @@ export function createServer(d: ServerDeps): http.Server {
         const pollerOk = d.poller ? d.poller.healthy() : true;
         if (!pollerOk) reasons.push('poller_stalled');
         const ok = keyOk && pollerOk;
+        // Name the stalled scopes in `reasons`, not just the fact that something stalled. On a fleet,
+        // "poller_stalled" alone sends an operator digging through logs to find which of twelve agents it
+        // was; the page is the first thing they need and it is already known here.
+        const scopeHealth = d.poller?.scopes?.();
+        const stalled = scopeHealth?.filter((s) => !s.healthy).map((s) => s.page) ?? [];
+        if (stalled.length) reasons.push(...stalled.map((p) => `poller_stalled:${p}`));
         return json(res, ok ? 200 : 503, {
           ok,
           paused: d.pause.paused,
           reasons,
           poller: d.poller ? { healthy: pollerOk, lastSuccess: d.poller.lastSuccess() || null } : undefined,
+          // Only when there is more than one; a single-scope signer would just be repeating `poller`.
+          scopes: scopeHealth && scopeHealth.length > 1 ? scopeHealth : undefined,
         });
       }
       // --- metrics ---
@@ -138,14 +158,28 @@ export function createServer(d: ServerDeps): http.Server {
         if (!d.adminApiKey) return json(res, 403, { error: 'admin disabled: no admin.api_key configured' });
         if (!safeEqual(req.headers['x-api-key'], d.adminApiKey)) return json(res, 401, { error: 'unauthorized' });
       }
-      // GET /v1/requests?limit=N — the audit view: recent requests, each with its receipt.
+      // GET /v1/requests?limit=N[&status=a,b] — the audit view: recent requests, each with its receipt.
+      //
+      // `status` is what a work-queue UI is built on: `?status=awaiting_policy` is "everything the engine
+      // has seen and not yet decided", i.e. the transactions a human still owes an answer on. Filtering
+      // happens in the store, before the limit — see listRecent. An unknown status name is REJECTED rather
+      // than ignored, because a silently-dropped filter returns a plausible-looking list of the wrong rows.
       if (method === 'GET' && path === '/v1/requests') {
         const raw = Number(url.searchParams.get('limit') ?? 50);
         // Clamp rather than reject: this backs an operator UI, and an out-of-range limit should show
         // something sensible instead of an error. The upper bound keeps a full history rewrite off the
         // response path of a store that holds thousands of rows.
         const limit = Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 1), 500) : 50;
-        return json(res, 200, { requests: await d.store.listRecent(limit) });
+        const statusParam = url.searchParams.get('status');
+        let statuses: RequestStatus[] | undefined;
+        if (statusParam) {
+          statuses = statusParam.split(',').map((s) => s.trim()).filter(Boolean) as RequestStatus[];
+          const unknown = statuses.filter((s) => !REQUEST_STATUSES.includes(s));
+          if (unknown.length) {
+            return json(res, 400, { error: `unknown status: ${unknown.join(', ')}`, valid: REQUEST_STATUSES });
+          }
+        }
+        return json(res, 200, { requests: await d.store.listRecent(limit, statuses) });
       }
 
       // GET /v1/requests/:tx
@@ -165,8 +199,18 @@ export function createServer(d: ServerDeps): http.Server {
         return json(res, 202, { retrying: m[1] });
       }
       // POST /v1/admin/pause | resume
-      if (method === 'POST' && path === '/v1/admin/pause') { d.pause.paused = true; d.logger.warn('SIGNING PAUSED'); return json(res, 200, { paused: true }); }
-      if (method === 'POST' && path === '/v1/admin/resume') { d.pause.paused = false; d.logger.warn('SIGNING RESUMED'); return json(res, 200, { paused: false }); }
+      if (method === 'POST' && path === '/v1/admin/pause') {
+        d.pause.paused = true;
+        d.logger.warn('SIGNING PAUSED');
+        d.notify?.('signer.paused');
+        return json(res, 200, { paused: true });
+      }
+      if (method === 'POST' && path === '/v1/admin/resume') {
+        d.pause.paused = false;
+        d.logger.warn('SIGNING RESUMED');
+        d.notify?.('signer.resumed');
+        return json(res, 200, { paused: false });
+      }
 
       // GET /v1/admin/pubkey — the wallet's signing key(s) + Accumulate key hash(es), per page (for setup / SR6).
       // Multi-scope returns them all; the flat public_key/key_hash (first scope) stays for single-scope callers.

@@ -18,8 +18,13 @@ export interface Store {
    * Returns receipts alongside requests deliberately: the request says what happened, the receipt says
    * WHY (the policy engine's reason and evidence). Separating them would make the common question —
    * "why did we sign that?" — an N+1 walk.
+   *
+   * `statuses`, when given, filters BEFORE the limit is applied — so asking for the 50 most recent
+   * `awaiting_policy` rows returns 50 of them, not whatever share of the 50 most recent rows happens to be
+   * waiting. That distinction is the whole point of the filter: a queue UI on a busy signer would otherwise
+   * show an empty work list because the recent window is full of settled transactions.
    */
-  listRecent(limit?: number): Promise<Array<{ request: SigningRequest; receipt?: Receipt }>>;
+  listRecent(limit?: number, statuses?: RequestStatus[]): Promise<Array<{ request: SigningRequest; receipt?: Receipt }>>;
   /** Best-effort single-flight lock. Returns false if already locked. */
   tryLock(txHash: string): boolean;
   unlock(txHash: string): void;
@@ -49,8 +54,10 @@ export class MemoryStore implements Store {
   async listNonTerminal() {
     return [...this.reqs.values()].filter((r) => !TERMINAL.includes(r.status));
   }
-  async listRecent(limit = 50) {
+  async listRecent(limit = 50, statuses?: RequestStatus[]) {
+    const wanted = statuses?.length ? new Set(statuses) : undefined;
     return [...this.reqs.values()]
+      .filter((r) => !wanted || wanted.has(r.status))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, Math.max(0, limit))
       .map((request) => ({ request, receipt: this.receipts.get(request.txHash) }));

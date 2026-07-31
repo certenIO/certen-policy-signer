@@ -1,0 +1,125 @@
+# Release: build the container image (the product) and publish the npm package (the convenience).
+#
+# Docker is the primary artifact deliberately. This process holds a signing key, and the image is what
+# carries the things that posture needs — a pinned runtime, a non-root user, a declared volume for the
+# durable store, a healthcheck. `npx` gives you none of those; it is for evaluating the signer and for
+# embedding its pieces, not for running one that holds production custody.
+#
+# Triggered by pushing a version tag:
+#
+#   npm version minor            # bump, commit, tag
+#   git push --follow-tags
+#
+# Both jobs verify before they publish. A tag whose tests fail publishes nothing.
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify without publishing"
+        type: boolean
+        default: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: npm }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # The tag must match what package.json claims, or `npx certen-policy-signer@1.2.3` and
+      # `ghcr.io/.../policy-signer:1.2.3` would be different builds wearing the same number.
+      - name: Tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          test "$TAG" = "$PKG" || { echo "tag v$TAG != package.json $PKG"; exit 1; }
+
+  image:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write        # keyless signing, so a consumer can verify provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # Full version, minor series, and latest. A deployment pins the digest (see deploy/README);
+          # these tags are for humans reading `docker images`.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ !inputs.dry_run }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # The image must be able to answer --help before anyone deploys it. This catches a broken bundle,
+      # a missing runtime dependency, or an entrypoint that cannot start — failures that otherwise show up
+      # as a crash-looping container in someone else's cluster.
+      - name: Smoke the built image
+        if: ${{ !inputs.dry_run }}
+        run: |
+          docker run --rm "${{ env.IMAGE }}:${GITHUB_REF_NAME#v}" --version
+          docker run --rm "${{ env.IMAGE }}:${GITHUB_REF_NAME#v}" --help | grep -q "certen-policy-signer"
+      - name: Digest
+        if: ${{ !inputs.dry_run }}
+        run: echo "Pin this digest in your compose/Helm values: ${{ steps.build.outputs.digest }}"
+
+  npm:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write        # npm provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: npm, registry-url: "https://registry.npmjs.org" }
+      - run: npm ci
+      # `prepare` (patch + build) runs during pack, so the tarball carries a freshly built dist/. Verify
+      # the packed artifact actually contains it — `files` narrowing the tarball is easy to get wrong, and
+      # a package whose bin points at a missing file installs cleanly and then fails on first run.
+      - name: Pack and inspect
+        run: |
+          npm pack --dry-run
+          npm pack
+          tar -tzf certen-policy-signer-*.tgz | grep -q "package/dist/signer.cjs" || { echo "dist/signer.cjs missing from tarball"; exit 1; }
+      - name: Run the packed artifact
+        run: |
+          mkdir -p /tmp/consumer && cd /tmp/consumer && npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE"/certen-policy-signer-*.tgz
+          npx certen-policy-signer --version
+      - name: Publish
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

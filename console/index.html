@@ -27,6 +27,14 @@
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
   .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
   .spread { justify-content: space-between; }
+  /* Page column + scope filter appear only when this signer watches more than one key page (JS adds
+     .multi-scope to <body>). A column that always says the same thing is worse than no column, and a
+     filter with one option is noise — a single-scope console should look exactly as it did before. */
+  .scope-col { display: none; }
+  body.multi-scope .scope-col { display: table-cell; }
+  body.multi-scope select.scope-col { display: inline-block; }
+  select { font: inherit; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--ink); max-width: 260px; }
   button { font: inherit; font-weight: 550; padding: 8px 15px; border-radius: 7px;
            border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
   button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
@@ -71,6 +79,18 @@
 </header>
 
 <main>
+
+  <!-- ─────────────  AWAITING YOUR APPROVAL  ─────────────
+       What the automated seats could not settle. Everything else was dealt with
+       without you; this is the exception list, and usually it is empty. -->
+  <section class="panel" id="approvals-panel" style="display:none">
+    <div class="row spread">
+      <h2 style="margin:0">Awaiting your approval</h2>
+      <button onclick="refreshApprovals()">Refresh</button>
+    </div>
+    <p class="muted" id="approvals-note" style="margin:.4rem 0 0"></p>
+    <div id="approvals-list"></div>
+  </section>
 
   <!-- ─────────────  STATUS + EMERGENCY STOP  ───────────── -->
   <section class="panel">
@@ -149,6 +169,39 @@
     </section>
   </div>
 
+  <!-- ─────────────  WORK QUEUE  ─────────────
+       Everything the signer has seen and nobody has decided yet. Distinct from the escalation panel
+       above: that one is disputes routed to YOU personally, this is every transaction still waiting on
+       the policy engine for any reason — a human approval, a biometric challenge, or an engine that is
+       simply down. If this list is growing, something upstream has stopped answering. -->
+  <section class="panel">
+    <div class="row spread">
+      <h2 style="margin:0">Waiting on a decision</h2>
+      <div class="row" style="gap:10px">
+        <!-- Populated from /healthz scopes + whatever pages appear in the data, so it is useful even
+             before a scope has had any work. Hidden entirely on a single-scope signer. -->
+        <select id="scope-filter" class="scope-col" onchange="refreshAll()">
+          <option value="">all pages</option>
+        </select>
+        <span class="muted">discovered, not yet decided</span>
+      </div>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Transaction</th><th class="scope-col">Page</th><th>What it does</th><th>Waiting</th><th>Last error</th></tr>
+        </thead>
+        <tbody id="queue"><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="note">
+      An empty list is the healthy state. A row that has been here a long time is either a slow human
+      approval or an engine that is not answering — the <strong>Last error</strong> column tells you which.
+      Nothing here has been signed; the signer is withholding, which is what it does whenever it has no
+      explicit approval.
+    </div>
+  </section>
+
   <!-- ─────────────  ACTIVITY / AUDIT  ───────────── -->
   <section class="panel">
     <div class="row spread">
@@ -158,9 +211,9 @@
     <div class="scroll">
       <table>
         <thead>
-          <tr><th>Transaction</th><th>What it does</th><th>Status</th><th>Decision</th><th>Reason given</th></tr>
+          <tr><th>Transaction</th><th class="scope-col">Page</th><th>What it does</th><th>Status</th><th>Decision</th><th>Reason given</th></tr>
         </thead>
-        <tbody id="activity"><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+        <tbody id="activity"><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
       </table>
     </div>
     <div class="note">
@@ -212,12 +265,31 @@ async function refreshStatus() {
       (data.poller.lastSuccess ? ` · last success ${new Date(data.poller.lastSuccess).toLocaleTimeString()}` : '')
     : 'not enabled';
 
+  // Per-scope discovery. `scopes` is present only when this signer watches more than one page — and then
+  // the aggregate above is not actionable on its own: twelve agents reporting one boolean tells an operator
+  // that something stopped, not which agent. Each page gets its own line, stalled ones first.
+  const scopes = Array.isArray(data.scopes) ? data.scopes : [];
+  for (const s of scopes) if (s.page) KNOWN_PAGES.add(s.page);
+  if (scopes.length) renderScopeFilter();
+
+  const scopeRows = scopes.length
+    ? [...scopes].sort((a, b) => Number(a.healthy) - Number(b.healthy)).map((s) => `
+        <tr>
+          <td><span class="pill ${s.healthy ? 'ok' : 'bad'}">${s.healthy ? 'running' : 'STALLED'}</span></td>
+          <td class="tx">${esc(shortPage(s.page))}</td>
+          <td class="muted">${s.lastSuccess ? esc(new Date(s.lastSuccess).toLocaleTimeString()) : 'no success yet'}</td>
+        </tr>`).join('')
+    : '';
+
   $('status-body').innerHTML =
     `<div class="row" style="gap:28px">
-       <div><strong>Discovery</strong><br><span class="muted">${esc(poller)}</span></div>
+       <div><strong>Discovery</strong><br><span class="muted">${esc(poller)}${scopes.length ? ` · ${scopes.filter((s) => s.healthy).length}/${scopes.length} pages` : ''}</span></div>
        <div><strong>Signing</strong><br><span class="muted">${paused ? 'PAUSED — nothing will be signed' : 'active'}</span></div>
        ${data.reasons?.length ? `<div><strong>Notes</strong><br><span class="muted">${esc(data.reasons.join(', '))}</span></div>` : ''}
-     </div>`;
+     </div>
+     ${scopeRows ? `<div class="scroll" style="margin-top:14px"><table>
+        <thead><tr><th>Discovery</th><th>Page</th><th>Last success</th></tr></thead>
+        <tbody>${scopeRows}</tbody></table></div>` : ''}`;
   $('btn-pause').disabled = paused || !CONFIG.hasAdminKey;
   $('btn-resume').disabled = !paused || !CONFIG.hasAdminKey;
 }
@@ -260,26 +332,112 @@ async function keyPage(op, mode) {
 
 /* ─── activity ───────────────────────────────────────────────────────────────── */
 async function refreshActivity() {
-  const { ok, data } = await signer('/v1/requests?limit=25');
+  const { ok, data } = await signer('/v1/requests?limit=100');
   const tbody = $('activity');
   if (!ok) {
-    tbody.innerHTML = `<tr><td colspan="5" class="muted">Unavailable — ${esc(data.error || 'the admin API key may not be set')}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="muted">Unavailable — ${esc(data.error || 'the admin API key may not be set')}</td></tr>`;
     return;
   }
-  const rows = data.requests || [];
+  const all = data.requests || [];
+  notePages(all);
+  const rows = all.filter(({ request: q }) => inScope(q.signerUrl)).slice(0, 25);
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="muted">Nothing yet. Decisions appear here as transactions are discovered.</td></tr>';
+    const scoped = selectedScope() ? ` for ${esc(shortPage(selectedScope()))}` : '';
+    tbody.innerHTML = `<tr><td colspan="6" class="muted">Nothing yet${scoped}. Decisions appear here as transactions are discovered.</td></tr>`;
     return;
   }
   const cls = { signed: 'ok', rejected: 'bad', error: 'bad', awaiting_policy: 'warn' };
   tbody.innerHTML = rows.map(({ request: q, receipt }) => `
     <tr>
       <td class="tx">${esc(q.txHash.slice(0, 16))}…</td>
+      <td class="scope-col muted">${esc(shortPage(q.signerUrl))}</td>
       <td>${esc(q.actionSummary || '—')}</td>
       <td><span class="pill ${cls[q.status] || 'warn'}">${esc(q.status)}</span></td>
       <td>${esc(receipt?.vote || q.decision || '—')}</td>
       <td class="muted">${esc(receipt?.reason || q.lastError || '—')}</td>
     </tr>`).join('');
+}
+
+/* ─── work queue ─────────────────────────────────────────────────────────────────
+   Server-side filtering, not client-side: ?status= filters BEFORE the limit, so on a busy signer this
+   shows the waiting transactions rather than however many happen to fall inside the recent window. */
+async function refreshQueue() {
+  const { ok, data } = await signer('/v1/requests?status=awaiting_policy&limit=200');
+  const tbody = $('queue');
+  if (!ok) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">Unavailable — ${esc(data.error || 'the admin API key may not be set')}</td></tr>`;
+    return;
+  }
+  const all = data.requests || [];
+  notePages(all);
+  const rows = all.filter(({ request: q }) => inScope(q.signerUrl));
+  if (!rows.length) {
+    const scoped = selectedScope() ? ` for ${esc(shortPage(selectedScope()))}` : '';
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">Nothing waiting${scoped}.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(({ request: q }) => `
+    <tr>
+      <td class="tx">${esc(q.txHash.slice(0, 16))}…</td>
+      <td class="scope-col muted">${esc(shortPage(q.signerUrl))}</td>
+      <td>${esc(q.actionSummary || '—')}</td>
+      <td class="muted">${esc(since(q.createdAt))}</td>
+      <td class="muted">${esc(q.lastError || '—')}</td>
+    </tr>`).join('');
+}
+
+/* ─── scope awareness ────────────────────────────────────────────────────────────
+   One process can watch a dozen key pages under different rules, so "which page" is the first question
+   an operator asks about any row. Filtering is CLIENT-side here on purpose: the admin API filters by
+   status server-side (that one matters — it decides which rows are fetched at all), but page is a cheap
+   post-filter over rows already in hand, and doing it locally keeps the filter instant and the endpoint
+   simple. The limit is raised to 200 so filtering a fleet does not silently truncate one agent's work. */
+const KNOWN_PAGES = new Set();
+
+function selectedScope() { return $('scope-filter')?.value || ''; }
+function inScope(page) {
+  const want = selectedScope();
+  return !want || (page || '').toLowerCase() === want.toLowerCase();
+}
+
+/** Accumulate URLs are long and share a prefix; the identity is the part that differs between agents. */
+function shortPage(url) {
+  if (!url) return '—';
+  return String(url).replace(/^acc:\/\//, '');
+}
+
+/** Learn pages from the data as well as from /healthz, so a page shows up even if its poller is absent. */
+function notePages(rows) {
+  let added = false;
+  for (const r of rows) {
+    const p = r.request && r.request.signerUrl;
+    if (p && !KNOWN_PAGES.has(p)) { KNOWN_PAGES.add(p); added = true; }
+  }
+  if (added) renderScopeFilter();
+}
+
+function renderScopeFilter() {
+  const sel = $('scope-filter');
+  if (!sel) return;
+  const multi = KNOWN_PAGES.size > 1;
+  // A filter with one option is noise, and a "Page" column that always says the same thing is worse —
+  // hide both on a single-scope signer so it looks exactly as it did before fleets existed.
+  document.body.classList.toggle('multi-scope', multi);
+  const keep = sel.value;
+  const pages = [...KNOWN_PAGES].sort();
+  sel.innerHTML = '<option value="">all pages</option>'
+    + pages.map((p) => `<option value="${esc(p)}">${esc(shortPage(p))}</option>`).join('');
+  if (pages.includes(keep)) sel.value = keep;
+}
+
+/** Coarse on purpose — "3h" is the useful precision for "how long has this been stuck". */
+function since(ms) {
+  if (!ms) return '—';
+  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
 }
 
 /* ─── policy engine tester ───────────────────────────────────────────────────── */
@@ -305,8 +463,86 @@ async function testPolicy() {
 }
 
 /* ─── boot ───────────────────────────────────────────────────────────────────── */
+const wei = (v) => {
+  try { return (Number(BigInt(v)) / 1e18).toFixed(6) + ' ETH'; } catch { return String(v); }
+};
+const ageOf = (iso) => {
+  const m = Math.floor((Date.now() - Date.parse(iso)) / 60000);
+  if (!Number.isFinite(m)) return '';
+  return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.floor(m / 60)}h ago` : `${Math.floor(m / 1440)}d ago`;
+};
+
+async function refreshApprovals() {
+  if (!CONFIG.hasApprovals) return;
+  const note = $('approvals-note');
+  const list = $('approvals-list');
+  let data;
+  try {
+    const r = await fetch('/api/approvals');
+    data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.status);
+  } catch (e) {
+    note.textContent = 'Policy engine unreachable — that is where the queue lives. ' + e.message;
+    list.innerHTML = '';
+    return;
+  }
+
+  const items = data.pending || [];
+  note.textContent = items.length
+    ? `Signing on ${CONFIG.panelPage}. Your page satisfies the book on its own.`
+    : 'Nothing is waiting for you.'
+      + (data.settled ? ` (${data.settled} already settled on chain.)` : '');
+
+  list.innerHTML = items.map((it) => {
+    const amounts = (it.values || []).map(wei).join(' / ');
+    // textContent everywhere below would be safer still, but these fields come
+    // from the operator's own engine; escaping the two free-text ones is enough
+    // to keep a reason string from becoming markup.
+    const esc = (s) => String(s ?? '').replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+    return `
+      <div style="border:1px solid var(--border,#2a3040);border-radius:8px;padding:.7rem;margin:.6rem 0">
+        <div class="row spread">
+          <strong>${esc(String(it.orderId || it.txHash).slice(0, 26))}…</strong>
+          <span class="muted">${ageOf(it.firstSeen)}</span>
+        </div>
+        ${amounts ? `<div>split <strong>${esc(amounts)}</strong></div>` : ''}
+        <div class="muted">${esc(it.ruleReason || it.kind || 'needs a person')}</div>
+        <div class="row" style="margin-top:.5rem;gap:.4rem">
+          <input type="password" placeholder="keystore passphrase"
+                 id="pw-${it.txHash}" style="flex:1" autocomplete="off">
+          <button onclick="approve('${it.txHash}')">Sign</button>
+        </div>
+        <div class="muted" id="res-${it.txHash}"></div>
+      </div>`;
+  }).join('');
+}
+
+async function approve(txHash) {
+  const input = $('pw-' + txHash);
+  const out = $('res-' + txHash);
+  const passphrase = input.value;
+  if (!passphrase) { out.textContent = 'Passphrase required.'; return; }
+  out.textContent = 'Signing…';
+  try {
+    const r = await fetch('/api/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ txHash, passphrase }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.status);
+    out.textContent = 'Signed. Your page satisfies the book, so this should now execute.';
+  } catch (e) {
+    out.textContent = 'Failed: ' + e.message;
+  } finally {
+    // Clear it from the field immediately; it was never stored server-side.
+    input.value = '';
+  }
+  refreshApprovals();
+}
+
 async function refreshAll() {
-  await Promise.all([refreshStatus(), refreshKeys(), refreshActivity()]);
+  await Promise.all([refreshStatus(), refreshKeys(), refreshQueue(), refreshActivity(), refreshApprovals()]);
 }
 
 (async function init() {
@@ -314,8 +550,11 @@ async function refreshAll() {
   $('signer-url').textContent = CONFIG.signerUrl;
   $('gov-panel').style.display = CONFIG.hasGovernanceKey ? 'block' : 'none';
   $('gov-disabled').style.display = CONFIG.hasGovernanceKey ? 'none' : 'block';
+  // Hidden unless every piece it needs is configured — better absent than a
+  // button that cannot work.
+  $('approvals-panel').style.display = CONFIG.hasApprovals ? 'block' : 'none';
   await refreshAll();
-  setInterval(() => { refreshStatus(); refreshActivity(); }, 5000);
+  setInterval(() => { refreshStatus(); refreshQueue(); refreshActivity(); }, 5000);
 })();
 </script>
 </body>

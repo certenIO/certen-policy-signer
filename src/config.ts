@@ -2,6 +2,12 @@
 import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
 import { z } from 'zod';
+import { NOTIFY_EVENTS } from './notify.js';
+
+/** Event names as a zod enum source — derived from the one list in notify.ts so the two cannot drift. */
+const NOTIFY_EVENT_NAMES = NOTIFY_EVENTS as [string, ...string[]] as unknown as readonly [
+  'pending.discovered', 'decision.approved', 'decision.denied', 'signature.failed', 'signer.paused', 'signer.resumed',
+];
 
 /** Resolve the local signer's 32-byte seed from `seed_hex` (already env-resolved) or a mounted `seed_file`. */
 export function resolveLocalSeed(local?: { seed_hex?: string; seed_file?: string; allow_ephemeral?: boolean }): Uint8Array | undefined {
@@ -44,6 +50,33 @@ function section<T extends z.ZodTypeAny>(schema: T) {
   return z.preprocess((v) => (v === null ? undefined : v), schema);
 }
 
+/**
+ * The per-scope forms of `policy` and `behavior`.
+ *
+ * Every field optional, because these are patches over the top-level blocks rather than replacements —
+ * see `effectiveScopeRules`. `.strict()` on both: a misspelled key here silently means "inherit", and the
+ * failure that produces is a scope quietly running under the wrong ceiling or against the wrong engine.
+ * Better to refuse the boot and name the key.
+ */
+const PolicyOverrideSchema = z.object({
+  url: z.string().url(),
+  adapter_module: z.string(),
+  auth: z.enum(['none', 'hmac', 'mtls']),
+  hmac_secret: z.string(),
+  signature_header: z.string(),
+  timestamp_header: z.string(),
+  timeout_ms: z.number(),
+}).partial().strict();
+
+const BehaviorOverrideSchema = z.object({
+  submit_reject_vote: z.boolean(),
+  max_bad_version_retries: z.number(),
+  value_ceiling: z.string(),
+}).partial().strict();
+
+export type PolicyOverride = z.infer<typeof PolicyOverrideSchema>;
+export type BehaviorOverride = z.infer<typeof BehaviorOverrideSchema>;
+
 const Schema = z.object({
   wallet: z.object({
     org_id: z.string(),
@@ -60,6 +93,16 @@ const Schema = z.object({
       page: z.string().startsWith('acc://'),
       book: z.string().startsWith('acc://').optional(),
       key: SignerSpecSchema,
+      // Per-scope overrides, MERGED over the top-level blocks of the same name. A fleet of agents rarely
+      // shares one rulebook: a trading bot and a treasury page belong on different engines, under
+      // different ceilings, with different secrets. State only what differs — a scope that just needs a
+      // lower ceiling does not restate the policy URL.
+      //
+      // The top-level `policy` remains required, and is the default every scope inherits. That is
+      // deliberate: a scope with a typo'd override key would otherwise fall through to NO policy engine,
+      // and "no engine configured" must never be a reachable state.
+      policy: PolicyOverrideSchema.optional(),
+      behavior: BehaviorOverrideSchema.optional(),
     })).optional(),
     attachment_model: z.enum(['authority', 'delegate', 'per_tx']).default('authority'),
     delegator_url: z.string().nullish(),
@@ -86,6 +129,11 @@ const Schema = z.object({
     // calls back to /v1/decisions later) is NOT implemented — /v1/decisions only acknowledges. Accepting
     // it here would mean running synchronously while the operator believes otherwise, so it is rejected.
     url: z.string().url(),
+    // Reshape the decision call to fit an API you already have, instead of deploying a translating shim.
+    // A module (path or package name) default-exporting { name, buildRequest?, parseResponse? }.
+    // The fail-closed rule is enforced around it: only approve/deny/pending count, whatever it returns.
+    // See examples/policy-adapter.mjs and docs/INTEGRATION.md §1.
+    adapter_module: z.string().optional(),
     mode: z.literal('sync').default('sync'),
     auth: z.enum(['none', 'hmac', 'mtls']).default('none'),
     hmac_secret: z.string().optional(),
@@ -109,6 +157,44 @@ const Schema = z.object({
     signer_url: z.string().optional(),   // defaults gateway-side to the identity's key page
     timeout_ms: z.number().default(20_000),
   }).partial({ url: true, api_key: true, identity: true }).default({ enabled: false })),
+
+  // Outbound notifications. Configure any combination of channels; absent = disabled. Every channel is a
+  // single HTTPS POST, so none of this adds a dependency. Delivery is best-effort and can never affect
+  // signing — the one subsystem here that does not fail closed. See src/notify.ts.
+  //
+  // `events` filters what a channel sends. Omitted, webhook and slack get everything, while sms and email
+  // default to the two a human must act on (pending.discovered, signature.failed) because they are metered
+  // and interrupt someone.
+  notify: section(z.object({
+    events: z.array(z.enum(NOTIFY_EVENT_NAMES)).optional(),
+    webhook: z.object({
+      url: z.string().url(),
+      hmac_secret: z.string().optional(),
+      timeout_ms: z.number().default(5_000),
+      signature_header: z.string().default('x-signer-signature'),
+      events: z.array(z.enum(NOTIFY_EVENT_NAMES)).optional(),
+    }).optional(),
+    // Twilio, or any Twilio-compatible gateway.
+    sms: z.object({
+      to: z.array(z.string()).min(1),
+      from: z.string(),
+      account_sid: z.string(),
+      auth_token: z.string(),
+      events: z.array(z.enum(NOTIFY_EVENT_NAMES)).optional(),
+    }).optional(),
+    // SendGrid.
+    email: z.object({
+      to: z.array(z.string().email()).min(1),
+      from: z.string().email(),
+      api_key: z.string(),
+      events: z.array(z.enum(NOTIFY_EVENT_NAMES)).optional(),
+    }).optional(),
+    // Slack incoming webhook. The URL is the credential — use an env: ref.
+    slack: z.object({
+      webhook_url: z.string().url(),
+      events: z.array(z.enum(NOTIFY_EVENT_NAMES)).optional(),
+    }).optional(),
+  }).default({})),
 
   trigger: section(z.object({
     webhook: z.object({
@@ -143,6 +229,62 @@ const Schema = z.object({
 
 export type Config = z.infer<typeof Schema>;
 
+/** The policy and behavior a given scope actually runs under: its overrides merged over the defaults. */
+export interface EffectiveScopeRules {
+  page: string;
+  policy: Config['policy'];
+  behavior: Config['behavior'];
+  /** True when this scope differs from the process defaults — used to decide what is worth logging. */
+  overridden: boolean;
+}
+
+/**
+ * Resolve one scope's effective rules.
+ *
+ * A shallow merge is correct and a deep one would be wrong: these blocks are flat, and every field is a
+ * single decision (which URL, which ceiling) rather than a structure to be combined. `undefined` values
+ * from an absent override must not clobber a default, which is why the spread is over explicitly-present
+ * keys rather than the raw object.
+ */
+export function effectiveScopeRules(
+  cfg: Config,
+  scope: { page: string; policy?: PolicyOverride; behavior?: BehaviorOverride } | undefined,
+): EffectiveScopeRules {
+  const present = <T extends object>(o: T | undefined): Partial<T> =>
+    Object.fromEntries(Object.entries(o ?? {}).filter(([, v]) => v !== undefined)) as Partial<T>;
+  const p = present(scope?.policy);
+  const b = present(scope?.behavior);
+  return {
+    page: scope?.page ?? cfg.wallet.signer_url ?? '',
+    policy: { ...cfg.policy, ...p },
+    behavior: { ...cfg.behavior, ...b },
+    overridden: Object.keys(p).length > 0 || Object.keys(b).length > 0,
+  };
+}
+
+/**
+ * The `policy.auth` sanity rules, applied to whatever block is in play.
+ *
+ * Factored out so a per-scope override is held to exactly the same standard as the top-level block. It
+ * would be easy to validate only the default and let a scope quietly downgrade itself to an
+ * unauthenticated channel — the override path is precisely where that mistake is least visible.
+ */
+function validatePolicyAuth(policy: { auth: string; hmac_secret?: string }, where: string): void {
+  if (policy.auth === 'hmac' && !policy.hmac_secret) {
+    throw new Error(
+      `config: ${where} policy.auth is "hmac" but policy.hmac_secret is empty — set it, make sure the `
+      + '`env:` ref it points at is populated, or set policy.auth: "none" to state plainly that the '
+      + 'channel is unauthenticated',
+    );
+  }
+  if (policy.auth === 'mtls') {
+    throw new Error(
+      `config: ${where} policy.auth "mtls" is not implemented — the decision request would go out `
+      + 'unauthenticated. Use "hmac", or terminate mTLS in a proxy in front of your engine and set "none".',
+    );
+  }
+}
+
 /** Resolve `env:NAME` refs inside a key spec, in place. */
 function resolveKeySecrets(spec: SignerSpec | undefined): void {
   if (!spec) return;
@@ -158,7 +300,18 @@ export function loadConfig(path: string): Config {
   const multi = (cfg.wallet.scopes?.length ?? 0) > 0;
   if (multi) {
     if (cfg.wallet.signer_url) throw new Error('config: set EITHER wallet.scopes[] OR wallet.signer_url, not both');
-    for (const s of cfg.wallet.scopes!) resolveKeySecrets(s.key);
+    const seen = new Set<string>();
+    for (const s of cfg.wallet.scopes!) {
+      resolveKeySecrets(s.key);
+      // Two scopes on one page means two pollers racing on the same work and two entries competing in the
+      // keyring. Duplicates are always a mistake — usually a copy-paste while adding an agent.
+      const key = s.page.toLowerCase();
+      if (seen.has(key)) throw new Error(`config: wallet.scopes has two entries for ${s.page} — each page may appear once`);
+      seen.add(key);
+      // A scope's own HMAC secret is a distinct credential from the default one, and gets the same
+      // `env:` treatment and the same refusal to run under a stated-but-absent authentication.
+      if (s.policy?.hmac_secret) s.policy.hmac_secret = resolveSecret(s.policy.hmac_secret);
+    }
   } else {
     if (!cfg.wallet.signer_url) throw new Error('config: set wallet.signer_url (+ a top-level signer), or wallet.scopes[]');
     if (!cfg.signer) throw new Error('config: single-scope mode requires a top-level `signer` block');
@@ -179,19 +332,49 @@ export function loadConfig(path: string): Config {
   // nor verify the replies — while the operator reads `auth: "hmac"` and believes the channel is
   // authenticated. Anything on the network path could return `{"decision":"approve"}` and be obeyed.
   // Refuse to start instead; this is the same rule the gateway block already follows.
-  if (cfg.policy.auth === 'hmac' && !cfg.policy.hmac_secret) {
-    throw new Error(
-      'config: policy.auth is "hmac" but policy.hmac_secret is empty — set it, make sure the `env:` ref it '
-      + 'points at is populated, or set policy.auth: "none" to state plainly that the channel is unauthenticated',
-    );
+  validatePolicyAuth(cfg.policy, 'top-level');
+
+  // Every scope is validated on its EFFECTIVE rules, not on its override in isolation. A scope that sets
+  // only `auth: "hmac"` inherits the default secret and is fine; a scope that sets a different `url` but
+  // no secret inherits the default secret and is also fine — but one that sets `auth: "hmac"` while the
+  // default has no secret is not, and checking the patch alone would miss both directions.
+  for (const s of cfg.wallet.scopes ?? []) {
+    const eff = effectiveScopeRules(cfg, s);
+    validatePolicyAuth(eff.policy, `scope ${s.page}:`);
+    if (eff.behavior.value_ceiling !== undefined && !/^\d+$/.test(eff.behavior.value_ceiling)) {
+      throw new Error(`config: scope ${s.page}: behavior.value_ceiling must be a whole number as a string, got ${JSON.stringify(eff.behavior.value_ceiling)}`);
+    }
   }
-  // mTLS is not implemented (there is no client-certificate agent on the policy request). Accepting it
-  // here would send plain, unauthenticated HTTP under a name that promises the opposite.
-  if (cfg.policy.auth === 'mtls') {
-    throw new Error(
-      'config: policy.auth "mtls" is not implemented — the decision request would go out unauthenticated. '
-      + 'Use "hmac", or terminate mTLS in a proxy in front of your engine and set "none".',
-    );
+  if (cfg.behavior.value_ceiling !== undefined && !/^\d+$/.test(cfg.behavior.value_ceiling)) {
+    throw new Error(`config: behavior.value_ceiling must be a whole number as a string, got ${JSON.stringify(cfg.behavior.value_ceiling)}`);
+  }
+  // Notification credentials. Unlike the policy channel, an unauthenticated notification is not a security
+  // failure — the receiver is being TOLD what happened, not asked what to do, and nothing it says comes
+  // back. So a missing webhook secret warns at boot (in index.ts) rather than refusing to start.
+  //
+  // A channel credential that resolves to nothing is a different matter: it is not "unsigned", it is
+  // "will fail on every send". Refuse to start, the same way an empty policy HMAC does — a notification
+  // channel that silently never delivers is worse than one that was never configured, because the operator
+  // believes they are covered.
+  if (cfg.notify.webhook?.hmac_secret) cfg.notify.webhook.hmac_secret = resolveSecret(cfg.notify.webhook.hmac_secret);
+  if (cfg.notify.sms) {
+    cfg.notify.sms.account_sid = resolveSecret(cfg.notify.sms.account_sid) ?? '';
+    cfg.notify.sms.auth_token = resolveSecret(cfg.notify.sms.auth_token) ?? '';
+    if (!cfg.notify.sms.account_sid || !cfg.notify.sms.auth_token) {
+      throw new Error('config: notify.sms is configured but account_sid or auth_token resolved to nothing — check the env: refs, or remove the block');
+    }
+  }
+  if (cfg.notify.email) {
+    cfg.notify.email.api_key = resolveSecret(cfg.notify.email.api_key) ?? '';
+    if (!cfg.notify.email.api_key) {
+      throw new Error('config: notify.email is configured but api_key resolved to nothing — check the env: ref, or remove the block');
+    }
+  }
+  if (cfg.notify.slack) {
+    cfg.notify.slack.webhook_url = resolveSecret(cfg.notify.slack.webhook_url) ?? '';
+    if (!cfg.notify.slack.webhook_url) {
+      throw new Error('config: notify.slack is configured but webhook_url resolved to nothing — check the env: ref, or remove the block');
+    }
   }
   if (cfg.trigger.webhook.hmac_secret) cfg.trigger.webhook.hmac_secret = resolveSecret(cfg.trigger.webhook.hmac_secret);
   if (cfg.admin.api_key) cfg.admin.api_key = resolveSecret(cfg.admin.api_key);

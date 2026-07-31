@@ -84,16 +84,21 @@ export interface Decision {
   assertion?: string;            // optional signed JWS
 }
 
-export type RequestStatus =
-  | 'discovered'
-  | 'awaiting_policy'
-  | 'approved'
-  | 'denied'
-  | 'signing'
-  | 'signed'
-  | 'rejected'
-  | 'expired'
-  | 'error';
+/** Every status a request can hold. Exported as a value so the HTTP layer can validate a caller's filter
+ *  against it rather than keeping a second copy that drifts. */
+export const REQUEST_STATUSES = [
+  'discovered',
+  'awaiting_policy',
+  'approved',
+  'denied',
+  'signing',
+  'signed',
+  'rejected',
+  'expired',
+  'error',
+] as const;
+
+export type RequestStatus = (typeof REQUEST_STATUSES)[number];
 
 export interface SigningRequest {
   txHash: string;

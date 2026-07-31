@@ -36,13 +36,16 @@ The user submitting the transaction names your key book as a required authority.
 transaction cannot execute without you, and this signer is what decides whether it does. **You do not
 need to change how transactions are built** to put a policy gate on them.
 
+New to Accumulate and Certen? **[docs/PRIMER.md](docs/PRIMER.md)** explains both networks in a page —
+what an ADI, key book, and key page are, why a transaction sits pending, and how the proof cycle works.
+
 ---
 
 ## Quick start (10 minutes, no blockchain)
 
 ```bash
 npm install                     # also applies a required accumulate.js patch — see docs/DEPLOY.md
-npm test                        # 226 tests, no network needed
+npm test                        # 293 tests, no network needed
 npm run smoke                   # prove the Ed25519 preimage is valid and deterministic
 ```
 
@@ -53,10 +56,14 @@ Now run the signer against the reference policy engine:
 POLICY_MODE=parity node examples/policy-engine.mjs      # :9099
 
 # terminal 2 — the signer
-cp config.example.yaml config.yaml && $EDITOR config.yaml
+cp config.minimal.yaml config.yaml && $EDITOR config.yaml
 npx tsx src/index.ts config.yaml
 curl localhost:8080/healthz
 ```
+
+**[`config.minimal.yaml`](config.minimal.yaml) is the whole config** — five fields, because everything else
+has a working default. [`config.example.yaml`](config.example.yaml) is the same file with every option and
+the reasoning behind it, for when you need one.
 
 Then swap the engine for yours: **[`examples/policy-engine.mjs`](examples/policy-engine.mjs) has exactly
 one function to replace.** That is the whole integration.
@@ -96,17 +103,78 @@ Full details, including the signed channel and how to answer asynchronously:
 
 ## Extending it without forking
 
-Three seams, all configuration rather than code changes to this repo:
+Five seams, all configuration rather than code changes to this repo:
 
 | Seam | What it decides | How |
 |---|---|---|
 | **Policy engine** | Whether to sign | `policy.url` → your HTTP endpoint |
+| **Policy adapter** | What that call looks like on the wire | `policy.adapter_module` → your module ([example](examples/policy-adapter.mjs)) |
 | **Intent decoder** | What your engine is shown | `resolver.decoder_modules` → your module ([example](examples/custom-decoder.mjs)) |
+| **Notifications** | Who gets told | `notify.sms` / `email` / `slack` / `webhook` |
 | **Vote backend** | How the vote reaches the chain | `direct` (default), or an optional gateway adapter |
 
 The decoder seam matters more than it looks. A pending transaction is bytes; something has to turn them
 into *"Transfer 25000 USDC to Northwind"* before a policy decision means anything. Your payload format is
 yours, so you supply that translation — a small module, loaded at boot, no fork required.
+
+---
+
+## Notifications
+
+Get a text message when something needs your signature. Fill in a phone number and a Twilio credential:
+
+```yaml
+notify:
+  sms:
+    to: ["+15551234567"]
+    from: "+15559876543"
+    account_sid: "env:TWILIO_ACCOUNT_SID"
+    auth_token: "env:TWILIO_AUTH_TOKEN"
+```
+
+Email (SendGrid), Slack, and a generic signed webhook are configured the same way, in any combination —
+each is a single HTTPS POST, so none of them add a dependency. Five events:
+`pending.discovered`, `decision.approved`, `decision.denied`, `signature.failed`, `signer.paused`.
+
+SMS and email default to the two a human must act on — work arrived, or a vote failed to submit — because
+they cost money per message and interrupt someone. Webhook and Slack get everything. Override per channel
+with `events: [...]`. For anything these four do not cover, the webhook channel carries the same payload to
+your own endpoint: [`examples/notifier.mjs`](examples/notifier.mjs).
+
+**Delivery is best-effort, and it is the one thing here that does not fail closed.** An undeliverable
+notification is logged and dropped; it never delays or changes a signing decision, because a signer that
+stopped signing because Twilio was down would be a worse signer. The durable record is the receipt store.
+
+For a live work queue rather than a push — "what is waiting on a human right now" — poll
+`GET /v1/requests?status=awaiting_policy`.
+
+---
+
+## Already have an approvals API?
+
+Point the signer at it. A **policy adapter** reshapes the request, the response, or both, so you do not
+deploy a translating shim:
+
+```yaml
+policy:
+  url: "https://approvals.internal/api/v2/authorize"
+  adapter_module: "./adapters/our-approvals-api.mjs"
+```
+
+```js
+export default {
+  name: 'acme-approvals-v2',
+  buildRequest: (req) => ({ body: { reference: req.operationId, amounts: req.values } }),
+  parseResponse: ({ status, body }) => status === 403        // their API denies with a 403
+    ? { decision: 'deny' }
+    : { decision: JSON.parse(body).outcome === 'ALLOW' ? 'approve' : 'deny' },
+};
+```
+
+The fail-closed rule is enforced around it, not delegated to it: only `approve`/`deny`/`pending` count, the
+response MAC is verified before your parser sees the body, and an adapter that throws withholds. See
+[`examples/policy-adapter.mjs`](examples/policy-adapter.mjs) and
+[INTEGRATION.md](docs/INTEGRATION.md#pointing-the-signer-at-an-api-you-already-have).
 
 ---
 
@@ -143,20 +211,41 @@ A note on discovery, since it trips people up: header authorities are enforced b
 
 ## Deploy
 
+**Run the container.** It is the supported way to hold a key: pinned runtime, non-root user, a declared
+volume for the durable store, a healthcheck, and the seed arriving as a mounted file rather than an
+environment variable that `docker inspect` will happily print.
+
 ```bash
 cd deploy
 printf '%s' '<64-hex seed>' > signer-seed.txt && chmod 600 signer-seed.txt
 cp .env.example .env          # ADMIN_API_KEY
 $EDITOR config.pilot.yaml     # org_id + signer_url (your key page)
-docker compose up -d --build
+docker compose up -d
+```
+
+Images are published to `ghcr.io/certen/certen-policy-signer`. **Pin a digest in production** — a tag can
+be moved to different bytes, a digest cannot, and this container holds your signing key:
+
+```bash
+SIGNER_IMAGE=ghcr.io/certen/certen-policy-signer@sha256:<digest> docker compose up -d
 ```
 
 For the production key posture (key born in Vault, never leaves it):
-`docker compose -f docker-compose.vault.yml up -d --build`.
+`docker compose -f docker-compose.vault.yml up -d`.
 
-A Helm chart is in [`deploy/helm`](deploy/helm).
+A Helm chart is in [`deploy/helm`](deploy/helm) — set `image.digest` there for the same reason. It pins
+`replicaCount: 1` and `strategy: Recreate` deliberately: two replicas sharing one state volume could both
+vote on the same transaction.
 
-- **[docs/DEPLOY.md](docs/DEPLOY.md)** — key posture, guardrails, and why the `postinstall` hook exists
+The npm package is for evaluation and embedding — `npx certen-policy-signer config.yaml` to try it in two
+minutes, or `import` the pieces into your own service. It gives you none of the custody posture above, so
+it is not what you run in production.
+
+- **[docs/](docs/)** — the documentation index, in reading order.
+- **[docs/PATTERNS.md](docs/PATTERNS.md)** — the four deployment shapes: single-org gate, one seat of an
+  M-of-N panel, a fleet of identities in one process, delegated authority. Read yours; the other docs
+  assume the first.
+- **[docs/DEPLOY.md](docs/DEPLOY.md)** — key posture, guardrails, and why the `prepare` hook exists
   (it patches a real `accumulate.js` encoding bug — **do not delete it**).
 - **[docs/OPERATIONS.md](docs/OPERATIONS.md)** — key rotation, production cutover, backup and restore,
   upgrades, and the signing gap.
@@ -190,11 +279,37 @@ Two implementation decisions worth knowing:
 
 ---
 
-## Multi-page signing
+## Fleets — many pages, divergent rules, one process
 
-One process can watch several key pages, each with its own key and its own custody — one poller per
-scope, one shared decision pipeline, and a keyring that selects the key by page.
-See [`config.multi-scope.example.yaml`](config.multi-scope.example.yaml).
+One process can watch several key pages, each with its own key and its own custody. **Each page can also
+carry its own rules**: the top-level `policy` and `behavior` blocks are defaults, and a scope states only
+what differs.
+
+```yaml
+wallet:
+  scopes:
+    - page: "acc://seller-bot.acme/book/1"        # inherits everything
+      key: { provider: "local", local: { seed_file: "/run/secrets/seller_seed" } }
+
+    - page: "acc://trading-agent.acme/book/1"     # own engine, own secret, own ceiling
+      key: { provider: "local", local: { seed_file: "/run/secrets/trading_seed" } }
+      policy: { url: "https://rules.internal/trading/decide", hmac_secret: "env:TRADING_HMAC" }
+      behavior: { value_ceiling: "100000" }
+
+policy:
+  url: "https://policy.internal/decision"
+```
+
+Each overriding scope gets its own policy client, credential, and guard — so an agent whose engine is down
+stalls **that page only**, and a leaked per-agent secret does not authorize decisions for the rest. An
+unknown key inside a scope's `policy`/`behavior` stops the boot rather than silently meaning "inherit".
+
+Per-scope rules cover divergent *policy*. They do not partition the store, the admin credential, or the
+pause switch — `POST /v1/admin/pause` stops every scope. A tenant needing its own operator or genuine
+failure isolation is a container boundary, not a config one.
+
+See [`config.multi-scope.example.yaml`](config.multi-scope.example.yaml) and
+[docs/PATTERNS.md §C](docs/PATTERNS.md).
 
 ---
 
@@ -204,22 +319,23 @@ The signer takes one argument — the config file — and `--help` describes the
 the HTTP routes and which of them are admin-only:
 
 ```bash
-npm install                  # builds dist/signer.cjs as part of the install
-npm install -g .             # optional — puts `certen-external-policy-signer` on PATH
-certen-external-policy-signer --help
+npm install -g certen-policy-signer          # or: npx certen-policy-signer config.yaml
+certen-policy-signer --help
 
-node dist/signer.cjs --help                        # from a build, no global install
-npx tsx src/index.ts --help                        # from source
-docker run --rm certen/external-policy-signer --help
+npm install                                  # from a clone; builds dist/signer.cjs during install
+node dist/signer.cjs --help                  # from a build, no global install
+npx tsx src/index.ts --help                  # from source
+docker run --rm certen/policy-signer --help
 ```
 
-> Install from a clone, not `npm install -g <git-url>`. npm prepares a git dependency by running
-> `prepare` in a temp clone that has no devDependencies, so the esbuild build fails there. Cloning
-> first is the supported path.
+> Install from the registry or from a clone — not `npm install -g <git-url>`. npm prepares a git dependency
+> by running `prepare` in a temp clone with no devDependencies, so the esbuild build fails there.
+>
+> `certen-external-policy-signer` remains installed as an alias for deployments that already call it that.
 
 | | |
 |---|---|
-| `certen-external-policy-signer [config-path]` | Run. Config resolves from the argument, then `$CONFIG_PATH`, then `./config.yaml` |
+| `certen-policy-signer [config-path]` | Run. Config resolves from the argument, then `$CONFIG_PATH`, then `./config.yaml` |
 | `--help`, `-h` | Usage, environment, and the HTTP surface |
 | `--version`, `-v` | Package version |
 | `$LOG_LEVEL` | Pino level; `info` by default |

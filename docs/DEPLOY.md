@@ -21,7 +21,7 @@ cd deploy
 printf '%s' '<64-hex-char seed>' > signer-seed.txt && chmod 600 signer-seed.txt   # the org's key (gitignored)
 cp .env.example .env            # ADMIN_API_KEY — protects the admin routes and /metrics
 $EDITOR config.pilot.yaml       # set signer.org_id and signer.signer_url (the org's key page)
-docker compose up -d --build
+docker compose up -d            # pulls ghcr.io/certen/certen-policy-signer; add --build to build locally
 curl localhost:8080/healthz     # 200 {"ok":true,...,"poller":{"healthy":true}}
 docker compose logs -f signer   # expect "SR6 self-check OK" then "poller started"
 ```
@@ -39,6 +39,33 @@ as an authority, decodes the intent, `POST`s a decision request to the policy en
 signs an Accept vote with the org's key and submits it. On `deny` it submits a Reject vote
 (`behavior.submit_reject_vote: true`) or, if you set that to `false`, simply withholds its signature and
 lets the transaction expire.
+
+## Pin the image by digest
+
+Images are published to `ghcr.io/certen/certen-policy-signer` on every version tag — multi-arch, with
+build provenance and an SBOM.
+
+**In production, pin a digest rather than a tag.** A tag is a mutable pointer: `:0.1.0` can be repushed to
+different bytes, and the thing those bytes hold is your signing key. A digest names the content itself.
+
+```bash
+docker pull ghcr.io/certen/certen-policy-signer:0.1.0
+docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/certen/certen-policy-signer:0.1.0
+
+# compose
+SIGNER_IMAGE=ghcr.io/certen/certen-policy-signer@sha256:<digest> docker compose up -d
+
+# helm — image.digest wins over image.tag when both are set
+helm upgrade --install signer deploy/helm --set image.digest=sha256:<digest>
+```
+
+The release workflow refuses to publish when the git tag and `package.json` version disagree, and it
+smoke-runs the built image (`--version`, `--help`) before pushing — so a broken bundle or a bad entrypoint
+fails in CI rather than as a crash-looping container in your cluster.
+
+**npm is not the deployment path.** `npx certen-policy-signer config.yaml` is for evaluating the signer in
+two minutes and for embedding its pieces in your own service. It gives you no pinned runtime, no non-root
+user, no declared state volume, and no healthcheck — none of the posture this page is about.
 
 ## Key posture
 
@@ -131,12 +158,13 @@ re-voted**.
 ```bash
 npx tsx scripts/verify/deployed-container.ts        # ~5 min against a live test network
 npm run test:vault                          # proves the Vault-Transit key path (boots a dev Vault)
-npm test                                    # 89 offline tests
+npm test                                    # 293 offline tests
 ```
 
-## The `postinstall` hook — do not delete it
+## The `prepare` hook — do not delete it
 
-`npm install` runs `scripts/fix-accumulate-encoding.mjs`, which patches a **real bug in accumulate.js 0.12**:
+`npm install` (in a clone) runs `scripts/fix-accumulate-encoding.mjs`, which patches a **real bug in
+accumulate.js 0.12**:
 it encodes `time.Time` transaction-header fields (`expire`, `holdUntil`) as an *unsigned* varint of
 *fractional* seconds, while Accumulate core uses a *signed* varint of *whole* Unix seconds
 (`EncodeInt(v.UTC().Unix())`). The header hash then disagrees with the network and any transaction carrying
@@ -146,3 +174,9 @@ The patch is idempotent and warns loudly if upstream changes shape. It must run 
 bundle, since the bundle inlines accumulate.js — the Dockerfile therefore copies the script before `npm ci`,
 and the runtime stage uses `--ignore-scripts` (the fix is already baked into `dist/signer.cjs`). Removing the
 hook silently reintroduces the bug. Remove it only when accumulate.js fixes this upstream.
+
+It lives in `prepare` rather than `postinstall` deliberately. npm runs `postinstall` for installed
+*dependencies* too, so a consumer of the published package used to see it fire in their tree, find no
+`node_modules/accumulate.js` to patch, and print a warning that read like a broken install. `prepare` runs on
+a local install and before `npm publish`, but not on a registry install — which is correct, because the
+published `dist/signer.cjs` already contains the patched code.

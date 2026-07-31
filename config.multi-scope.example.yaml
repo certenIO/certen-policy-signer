@@ -1,13 +1,23 @@
-# certen-signing-wallet — MULTI-SCOPE example config.
+# certen-policy-signer — MULTI-SCOPE example config.
 #
-# One running wallet watches SEVERAL key pages and signs on each with its own key. Use this when an ADI has
-# more than one key book / key page (e.g. an operations book and a treasury book), or when you custody keys
-# for several identities in one process. The wallet runs one poller per scope (each scans that page's
-# pending index AND its book's signature chain), all feeding one shared policy-gated orchestrator; the
-# keyring picks the key by the page a given transaction needs.
+# One running signer watches SEVERAL key pages and signs on each with its own key. Use this when an ADI has
+# more than one key book / key page (e.g. an operations book and a treasury book), when you custody keys for
+# several identities in one process, or when you run a fleet of agents that each hold their own page.
 #
-# Every scope is verified at boot (SR6): its key MUST be on its page, or the wallet refuses to start.
-# A transaction naming a page this wallet holds no key for is refused (fail-closed) — it never signs blind.
+# One poller per scope (each scans that page's pending index AND its book's signature chain), all feeding
+# one shared orchestrator; the keyring picks the key by the page a given transaction needs.
+#
+# ── PER-SCOPE RULES ──────────────────────────────────────────────────────────────────────────────────
+# The top-level `policy` and `behavior` blocks are the DEFAULTS. Any scope may override either, and states
+# only what differs — a scope that just needs a lower ceiling keeps the default engine. This is what makes
+# a fleet with divergent rulebooks expressible in one process rather than one container per agent.
+#
+# Overrides are strict: an unknown key inside a scope's `policy`/`behavior` STOPS THE BOOT rather than
+# being ignored, because a typo would silently mean "inherit" and leave that page running under rules its
+# own config appears to contradict.
+#
+# Every scope is verified at boot (SR6): its key MUST be on its page, or the signer refuses to start.
+# A transaction naming a page this signer holds no key for is refused (fail-closed) — it never signs blind.
 wallet:
   org_id: "demo-org"
   network: "kermit"
@@ -17,7 +27,7 @@ wallet:
 
   # Use `scopes` INSTEAD OF the single-scope `signer_url` + top-level `signer`. (Setting both is rejected.)
   scopes:
-    # Scope 1 — the operations book, key held in Vault.
+    # ── Scope 1 — the operations book. Inherits every default: the shared engine, the shared ceiling. ──
     - page: "acc://demo-org.acme/book/1"
       # book: "acc://demo-org.acme/book"   # optional; derived from `page` when omitted
       key:
@@ -27,28 +37,52 @@ wallet:
           key_name: "demo-org-ops"
           token: "env:VAULT_TOKEN"
 
-    # Scope 2 — a SECOND key page under the same ADI, a different key.
-    - page: "acc://demo-org.acme/book2/1"
+    # ── Scope 2 — a trading agent with its OWN rules engine, its OWN secret, and a tight ceiling. ──
+    # Its engine being down stalls only this page; the others keep signing.
+    - page: "acc://trading-agent.acme/book/1"
+      key:
+        provider: "local"
+        local: { seed_file: "/run/secrets/trading_agent_seed" }
+      policy:
+        url: "https://rules.internal.demo-org/agents/trading/decide"
+        hmac_secret: "env:TRADING_AGENT_HMAC"   # a distinct credential; blast radius is this page only
+      behavior:
+        value_ceiling: "100000"                 # far below the default — this agent trades small
+
+    # ── Scope 3 — a treasury page: high ceiling, and an explicit veto rather than a quiet withhold. ──
+    - page: "acc://treasury.acme/book/1"
       key:
         provider: "vault-transit"
         vault:
           addr: "https://vault.internal:8200"
-          key_name: "demo-org-book2"
+          key_name: "treasury"
           token: "env:VAULT_TOKEN"
+      behavior:
+        value_ceiling: "5000000000"
+        submit_reject_vote: true                # a deny here KILLS the transaction immediately
 
-    # Scope 3 — a separate identity (a treasury), local seed posture.
-    - page: "acc://treasury.acme/book/1"
+    # ── Scope 4 — an agent whose approvals live in a system that predates this signer. ──
+    # The adapter reshapes the call to that API's shape; no shim service to deploy.
+    - page: "acc://legacy-desk.acme/book/1"
       key:
         provider: "local"
-        local:
-          seed_hex: "env:TREASURY_SEED_HEX"   # or seed_file: "/run/secrets/treasury_seed"
+        local: { seed_file: "/run/secrets/legacy_desk_seed" }
+      policy:
+        url: "https://approvals.internal/api/v2/authorize"
+        adapter_module: "./adapters/legacy-approvals.mjs"
 
+# ── DEFAULTS — every scope above inherits these unless it says otherwise ──────────────────────────────
 policy:
-  url: "https://policy.internal.demo-org/decision"   # ONE policy engine gates every scope
+  url: "https://policy.internal.demo-org/decision"
   mode: "sync"
   auth: "hmac"
   hmac_secret: "env:POLICY_HMAC_SECRET"
   timeout_ms: 10000
+
+behavior:
+  submit_reject_vote: false
+  max_bad_version_retries: 3
+  value_ceiling: "1000000"
 
 trigger:
   webhook:
@@ -59,18 +93,22 @@ trigger:
     enabled: true
     interval_seconds: 20                    # applied to EACH scope's poller
 
-behavior:
-  submit_reject_vote: false
-  max_bad_version_retries: 3
+# Notifications carry the account, so one on-call number covers the whole fleet and still says which agent.
+# notify:
+#   sms:
+#     to: ["+15551234567"]
+#     from: "+15559876543"
+#     account_sid: "env:TWILIO_ACCOUNT_SID"
+#     auth_token: "env:TWILIO_AUTH_TOKEN"
 
 store:
-  path: "/data/wallet-state.json"
+  path: "/data/signer-state.json"
 
 health:
   bind: "0.0.0.0:8080"                       # /healthz is unhealthy if ANY scope's poller stalls
 
 # Governance (POST /v1/admin/key-page) targets one page at a time: pass {"page":"acc://…/book2/1", …}.
-# Omitting `page` defaults to the first scope. A page the wallet holds no key for is rejected.
+# Omitting `page` defaults to the first scope. A page the signer holds no key for is rejected.
 admin:
   api_key: "env:ADMIN_API_KEY"
   governance_admin_key: "env:GOVERNANCE_ADMIN_KEY"

@@ -3,8 +3,8 @@
 FROM node:20-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
-# Both hooks `npm ci` fires must exist before it runs: postinstall patches accumulate.js's Time.encode,
-# and prepare invokes the build (which no-ops here — src/ arrives below, so this layer stays cacheable).
+# Both scripts `npm ci`'s prepare hook runs must exist before it fires: the patch fixes accumulate.js's
+# Time.encode, and the build no-ops here (src/ arrives below, so this layer stays cacheable).
 COPY scripts/fix-accumulate-encoding.mjs scripts/build.mjs ./scripts/
 RUN npm ci
 COPY tsconfig.json ./
@@ -16,7 +16,7 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY package.json package-lock.json* ./
 # only pino is external at runtime (kept out of the bundle). --ignore-scripts: the patch is already
-# baked into the bundle, and this stage has no scripts/ dir for postinstall to find.
+# baked into the bundle, and this stage has no scripts/ dir to run it from anyway.
 RUN npm install --omit=dev --no-save --ignore-scripts pino@^9 && npm cache clean --force
 COPY --from=build /app/dist ./dist
 # The durable store (store.path) lives here. Own it as `node` in the image so an empty volume mounted

@@ -24,6 +24,11 @@ services:
     restart: unless-stopped
 
   signer:
+    # The published image is the default; `SIGNER_IMAGE=` (empty) with `--build` builds from source
+    # instead. Pin a DIGEST rather than a tag in production — a tag can be moved, a digest cannot, and
+    # what this container holds is your signing key:
+    #   SIGNER_IMAGE=ghcr.io/certen/certen-policy-signer@sha256:<digest>
+    image: "${SIGNER_IMAGE:-ghcr.io/certen/certen-policy-signer:latest}"
     build: ..
     depends_on: [policy]
     environment:

@@ -34,7 +34,27 @@ The signer sends one HTTP POST per pending transaction and reads one field off t
 opinion about what computes the answer: a rules engine, a biometric check, a review queue, a human with
 a button, a call to the approvals service you already run.
 
-**Start here:** [`examples/policy-engine.mjs`](../examples/policy-engine.mjs) is a complete, runnable
+**There are two supported ways in, and neither is the fallback.** Pick by whether the endpoint exists yet.
+
+| | **A — write an endpoint** | **B — use one you already have** |
+|---|---|---|
+| You have | no approvals endpoint yet, or you want one scoped to this | a rules engine / approvals API already deployed |
+| You write | a handler speaking the contract below | an adapter module mapping to your API's shape |
+| Config | `policy.url` | `policy.url` + `policy.adapter_module` |
+| Start from | [`examples/policy-engine.mjs`](../examples/policy-engine.mjs) | [`examples/policy-adapter.mjs`](../examples/policy-adapter.mjs) |
+| Effort | one function | one file, two functions, both optional |
+
+Both end in the same place: an `approve` produces a signature and nothing else does. The fail-closed
+guarantees are identical — they are enforced by the signer either way, not by the code you write.
+
+**Path A** is the rest of this section: the request shape, the reply, the four outcomes. Read it even if
+you are taking path B, because an adapter maps *onto* this contract and the semantics of `pending`, `deny`,
+and `values` are the same on both sides.
+
+**Path B** is [Pointing the signer at an API you already have](#pointing-the-signer-at-an-api-you-already-have),
+below.
+
+**Start here for A:** [`examples/policy-engine.mjs`](../examples/policy-engine.mjs) is a complete, runnable
 implementation with a single function to replace. Run it against the signer before writing any code of
 your own.
 
@@ -113,6 +133,58 @@ The alternative designs are worse, and it is worth knowing why. Returning `deny`
 a real reject vote and kills a transaction you might have approved a minute later. Holding the HTTP
 response open until a human answers ties up the request until it times out — and a timeout is
 indistinguishable from an outage.
+
+### Pointing the signer at an API you already have
+
+Everything above assumes you are writing a new endpoint for the signer. If you already run an approvals
+service, a rules engine, or a fraud API, an **adapter** lets the signer speak its shape directly — no shim
+service to deploy, no fork.
+
+```yaml
+policy:
+  url: "https://approvals.internal/api/v2/authorize"
+  adapter_module: "./adapters/our-approvals-api.mjs"
+```
+
+The module default-exports `{ name, buildRequest?, parseResponse? }`. Supply only the direction you need —
+omit one and the default shape is used for it.
+
+**Start here:** [`examples/policy-adapter.mjs`](../examples/policy-adapter.mjs).
+
+```js
+export default {
+  name: 'acme-approvals-v2',
+  buildRequest: (req) => ({
+    body: { reference: req.operationId, amounts: req.values, counterparty: req.target },
+    headers: { 'x-api-key': process.env.APPROVALS_API_KEY },
+  }),
+  parseResponse: ({ status, body }) => {
+    if (status === 403) return { decision: 'deny', reason: 'blocked' };   // their API denies with a 403
+    const r = JSON.parse(body);
+    if (r.outcome === 'ALLOW') return { decision: 'approve', reason: r.rule_name, evidence: { ruleId: r.rule_id } };
+    if (r.outcome === 'REVIEW') return { decision: 'pending' };
+    throw new Error(`unrecognized outcome: ${r.outcome}`);               // unknown → withhold
+  },
+};
+```
+
+Being handed the status matters: some APIs answer `403` for "denied", and the default path treats every
+non-2xx as a failure — which withholds and leaves the transaction pending rather than killing it. An adapter
+decides what a status means; the signer does not guess on your behalf.
+
+**Three properties hold no matter what you write in there**, and they are enforced rather than trusted:
+
+1. **Only `approve`, `deny`, and `pending` count.** Returning anything else — a different string,
+   `undefined`, a stray object — is a failure to decide, and a failure to decide withholds. You cannot widen
+   what counts as an approval from inside an adapter; you can only describe where to find one. Throwing has
+   the same effect, so throwing on anything unrecognized is the correct default.
+2. **The MAC still covers the bytes you build**, and the response MAC is verified **before** `parseResponse`
+   sees the body. An adapter reshapes what a reply *means*; it has no say in whether the reply is authentic.
+3. **An adapter that throws withholds** and never falls back to the default shape — sending a request the
+   engine will misread is worse than sending none.
+
+A module that fails to load, or that defines neither method, **stops the boot**. Running on with the default
+shape against an engine expecting another one fails as transactions quietly never being signed.
 
 ### Authenticating the channel
 
