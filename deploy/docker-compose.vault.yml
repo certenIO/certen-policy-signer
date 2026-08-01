@@ -34,7 +34,7 @@ services:
 
   signer:
     # Pin a digest in production — see the note in docker-compose.yml.
-    image: "${SIGNER_IMAGE:-ghcr.io/certen/certen-policy-signer:latest}"
+    image: "${SIGNER_IMAGE:-ghcr.io/certenio/certen-policy-signer:latest}"
     build: ..
     depends_on: [vault, policy]
     environment:

@@ -54,7 +54,7 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Changed
 
-- **Container images published to `ghcr.io/certen/certen-policy-signer`**, multi-arch, with provenance and
+- **Container images published to `ghcr.io/certenio/certen-policy-signer`**, multi-arch, with provenance and
   an SBOM, via a `release` workflow triggered by a version tag. Docker is the primary artifact: this process
   holds a signing key, and the image is what carries the posture that needs — pinned runtime, non-root user,
   declared state volume, healthcheck, seed as a mounted file. Compose and the Helm chart now default to the

@@ -21,7 +21,7 @@ cd deploy
 printf '%s' '<64-hex-char seed>' > signer-seed.txt && chmod 600 signer-seed.txt   # the org's key (gitignored)
 cp .env.example .env            # ADMIN_API_KEY — protects the admin routes and /metrics
 $EDITOR config.pilot.yaml       # set signer.org_id and signer.signer_url (the org's key page)
-docker compose up -d            # pulls ghcr.io/certen/certen-policy-signer; add --build to build locally
+docker compose up -d            # pulls ghcr.io/certenio/certen-policy-signer; add --build to build locally
 curl localhost:8080/healthz     # 200 {"ok":true,...,"poller":{"healthy":true}}
 docker compose logs -f signer   # expect "SR6 self-check OK" then "poller started"
 ```
@@ -42,18 +42,18 @@ lets the transaction expire.
 
 ## Pin the image by digest
 
-Images are published to `ghcr.io/certen/certen-policy-signer` on every version tag — multi-arch, with
+Images are published to `ghcr.io/certenio/certen-policy-signer` on every version tag — multi-arch, with
 build provenance and an SBOM.
 
 **In production, pin a digest rather than a tag.** A tag is a mutable pointer: `:0.1.0` can be repushed to
 different bytes, and the thing those bytes hold is your signing key. A digest names the content itself.
 
 ```bash
-docker pull ghcr.io/certen/certen-policy-signer:0.1.0
-docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/certen/certen-policy-signer:0.1.0
+docker pull ghcr.io/certenio/certen-policy-signer:0.1.0
+docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/certenio/certen-policy-signer:0.1.0
 
 # compose
-SIGNER_IMAGE=ghcr.io/certen/certen-policy-signer@sha256:<digest> docker compose up -d
+SIGNER_IMAGE=ghcr.io/certenio/certen-policy-signer@sha256:<digest> docker compose up -d
 
 # helm — image.digest wins over image.tag when both are set
 helm upgrade --install signer deploy/helm --set image.digest=sha256:<digest>

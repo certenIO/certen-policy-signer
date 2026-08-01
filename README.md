@@ -223,11 +223,11 @@ $EDITOR config.pilot.yaml     # org_id + signer_url (your key page)
 docker compose up -d
 ```
 
-Images are published to `ghcr.io/certen/certen-policy-signer`. **Pin a digest in production** — a tag can
+Images are published to `ghcr.io/certenio/certen-policy-signer`. **Pin a digest in production** — a tag can
 be moved to different bytes, a digest cannot, and this container holds your signing key:
 
 ```bash
-SIGNER_IMAGE=ghcr.io/certen/certen-policy-signer@sha256:<digest> docker compose up -d
+SIGNER_IMAGE=ghcr.io/certenio/certen-policy-signer@sha256:<digest> docker compose up -d
 ```
 
 For the production key posture (key born in Vault, never leaves it):
