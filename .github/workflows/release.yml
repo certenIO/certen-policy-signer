@@ -24,7 +24,14 @@ on:
         default: true
 
 env:
-  IMAGE: ghcr.io/${{ github.repository }}
+  # Pinned rather than derived from ${{ github.repository }}.
+  #
+  # This repo is mirrored: the private origin is `certen-policy-signer` and the public one is
+  # `certen-external-policy-signer`, so `github.repository` resolves to a DIFFERENT image path
+  # depending on which remote the workflow runs from. The published docs, deploy/docker-compose.yml,
+  # and deploy/helm/values.yaml all name one path; a workflow that derives its own would silently
+  # publish somewhere none of them point.
+  IMAGE: ghcr.io/certenio/certen-policy-signer
 
 jobs:
   verify:
@@ -92,7 +99,12 @@ jobs:
           docker run --rm "${{ env.IMAGE }}:${GITHUB_REF_NAME#v}" --help | grep -q "certen-policy-signer"
       - name: Digest
         if: ${{ !inputs.dry_run }}
-        run: echo "Pin this digest in your compose/Helm values: ${{ steps.build.outputs.digest }}"
+        # Block scalar, not a plain one. A plain YAML scalar cannot contain ": " — with the colon
+        # after "values" this parsed as a nested mapping and made the ENTIRE workflow file invalid,
+        # which is why this release pipeline had never run and the image was being pushed by hand
+        # without cosign signatures, SBOM, or provenance.
+        run: |
+          echo "Pin this digest in your compose/Helm values: ${{ steps.build.outputs.digest }}"
 
   npm:
     needs: verify
