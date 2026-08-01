@@ -24,14 +24,15 @@ on:
         default: true
 
 env:
-  # Pinned rather than derived from ${{ github.repository }}.
+  # Derived from the repository, which resolves to ghcr.io/certenio/certen-policy-signer — matching
+  # the published docs, deploy/docker-compose.yml, deploy/helm/values.yaml, and the npm package name.
   #
-  # This repo is mirrored: the private origin is `certen-policy-signer` and the public one is
-  # `certen-external-policy-signer`, so `github.repository` resolves to a DIFFERENT image path
-  # depending on which remote the workflow runs from. The published docs, deploy/docker-compose.yml,
-  # and deploy/helm/values.yaml all name one path; a workflow that derives its own would silently
-  # publish somewhere none of them point.
-  IMAGE: ghcr.io/certenio/certen-policy-signer
+  # This was briefly pinned to a literal because the project was mirrored across two repositories and
+  # `github.repository` resolved differently depending on which one the workflow ran from. The mirror
+  # is gone. Deriving it is better than a literal: GHCR links a package to the repository it was
+  # published from, and that linkage is what puts the README on the package page and lets the package
+  # follow the repository's visibility.
+  IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   verify:

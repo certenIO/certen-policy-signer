@@ -1,5 +1,5 @@
 apiVersion: v2
-name: certen-external-policy-signer
+name: certen-policy-signer
 description: Certen policy-gated signing wallet (org-run headless Accumulate signer)
 type: application
 version: 0.1.0

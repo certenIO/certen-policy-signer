@@ -1,4 +1,4 @@
-# certen-external-policy-signer
+# certen-policy-signer
 
 **A headless signer for [Accumulate](https://accumulatenetwork.io) that will not sign anything your
 policy engine has not approved.**
