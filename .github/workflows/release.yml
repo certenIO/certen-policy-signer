@@ -32,7 +32,13 @@ env:
   # is gone. Deriving it is better than a literal: GHCR links a package to the repository it was
   # published from, and that linkage is what puts the README on the package page and lets the package
   # follow the repository's visibility.
-  IMAGE: ghcr.io/${{ github.repository }}
+  #
+  # NOT derived inline from `github.repository`: the org is `certenIO`, and a Docker reference may not
+  # contain uppercase. `docker/metadata-action` lowercases what it emits, so the push would have
+  # succeeded — and then the smoke step below, which uses this value directly, would have failed on
+  # `invalid reference format` AFTER the image was already public. Lowercased once, here, so both the
+  # tags and every raw use agree.
+  IMAGE: ghcr.io/certenio/certen-policy-signer
 
 jobs:
   verify:
