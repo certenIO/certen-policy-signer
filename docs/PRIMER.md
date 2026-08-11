@@ -10,8 +10,8 @@ the pieces are.*
 
 Accumulate is a public blockchain built around **identity** rather than around addresses. Instead of a
 wallet being a string of hex, an organization owns an **ADI** (Accumulate Digital Identifier) — a
-human-readable, hierarchical name like `acc://trust-stamp.acme`. Everything that organization owns lives
-underneath that name as its own account: `acc://trust-stamp.acme/tokens`, `acc://trust-stamp.acme/orders`,
+human-readable, hierarchical name like `acc://northwind.acme`. Everything that organization owns lives
+underneath that name as its own account: `acc://northwind.acme/tokens`, `acc://northwind.acme/orders`,
 and so on. Because the identity is the root object rather than a key, the keys underneath it can be added,
 removed, and rotated without the identity changing or anyone needing to be told a new address.
 
