@@ -65,6 +65,24 @@ gateway:
 Your key still never leaves the process either way. The gateway computes the bytes to be signed and hands
 them over; the decision to sign them is made here, by your engine.
 
+**Where those two values come from.** `GATEWAY_API_KEY` and the panel ADI are the only things this pattern
+needs that the rest of the signer does not, and the CLI produces both:
+
+```bash
+npm install -g @certen.io/cli
+certen login          # approve this machine once in the portal; the key lands in ~/.certen/config.json
+certen init           # creates the identity and waits until it can actually sign
+certen whoami         # confirms which key and which gateway you are pointed at
+```
+
+`certen login` uses the device authorization grant, so the key is never displayed and never passes through
+a clipboard or shell history — which matters more here than usual, because this one ends up in a config
+file on a server. `certen auth status` shows only its prefix afterwards; feed the real value to the process
+through the environment, as the `env:` prefix above expects.
+
+If the identity already exists, `certen init` reuses it rather than creating a second one, and
+`certen doctor` will say if it cannot sign or if its abstract account has no gas.
+
 **Two things that go wrong.**
 
 *Casting reject votes from a seat.* On a panel, a reject is not "I abstain" — depending on the book it can
