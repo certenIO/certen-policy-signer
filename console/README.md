@@ -85,6 +85,17 @@ rather than offering a button that cannot work):
 | `CERTEN_API_KEY` | gateway API key |
 | `CERTEN_IDENTITY` / `CERTEN_PAGE` | the panel ADI and **your** key page |
 
+The last three come from the CERTEN CLI, which is also the quickest way to check they are right:
+
+```bash
+npm install -g @certen.io/cli
+certen login      # device authorization: the key is never displayed or pasted
+certen init       # creates the identity, waits until it can sign, prints the ADI and its id
+certen doctor     # confirms the key is accepted and the identity is usable
+```
+
+`certen whoami` reports which key and which gateway are configured without revealing the key.
+
 ## Security
 
 **This is an operator tool, like `kubectl`.** It holds credentials that can pause your signing and
