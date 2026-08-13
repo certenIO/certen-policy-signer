@@ -303,6 +303,26 @@ A startup self-check (SR6) refuses to boot unless the configured key is verifiab
 on-chain key page. The failure it prevents is quiet: a signer on the wrong key produces votes the network
 rejects, and it would otherwise look healthy while nothing it did ever took effect.
 
+### A third posture: sign somewhere else entirely
+
+What this signer signs is `dataForSignature` — `SHA256(sigMdHash || txHash)`, 32 bytes, computed from the
+transaction hash and the signature metadata (see `src/accumulate/signing.ts`). Nothing about producing that
+signature requires this process, or a network connection.
+
+The CERTEN CLI signs exactly that shape, from a key it holds encrypted on disk:
+
+```bash
+certen keys sign --name <key> --hash <dataForSignature>   # prints 128 hex, sends nothing
+```
+
+It hex-decodes the input and Ed25519-signs the **raw bytes** — checked against a stock Ed25519 verifier,
+which is the same construction Accumulate uses. So the air-gapped split works: carry the 32-byte hash to a
+machine that holds the key, carry 128 hex characters back, and submit it through `certen tx sign` or the
+vote backend of your choice.
+
+That is the same seam an HSM uses. `certen keys sign` is just an implementation of it that needs no
+integration work, which makes it a reasonable way to prove the rest of your pipeline before wiring Vault.
+
 ---
 
 ## What you get for free
