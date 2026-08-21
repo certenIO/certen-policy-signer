@@ -74,3 +74,4 @@ Thumbs.db
 *.tsbuildinfo
 phase0-state.json
 e2e-state.json
+provider-mode-state.json
