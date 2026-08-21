@@ -610,9 +610,26 @@ export async function signPending(
 // ── 3c. Signing in the BROWSER, via the Key Vault extension ───────────────────────────────────────
 
 /**
+ * NOT AVAILABLE YET — the Key Vault extension it depends on is not released to users. Nothing below
+ * has been exercised against a real extension; only the signature construction has been verified,
+ * offline, as byte-identical to the local path. Do not present this as a working enrollment route.
+ *
+ * The two routes that DO work today:
+ *
+ *   - CLI / MCP / SDK — the user (or their agent) holds the key and signs. Verified end to end on
+ *     Kermit: `certen pending sign <hash|inbox-id>` then `certen pending submit`.
+ *   - Gateway provider-mode — the gateway holds the key and signs on the identity's behalf, so a
+ *     browser page needs no key and no extension at all. Note this changes WHAT IS PROVEN: that
+ *     whoever authenticated to Certen caused the identity to sign, not that they hold its private
+ *     key. For a custodial account that may be the right assertion, but it is a different one.
+ *
+ * Kept rather than deleted because it is the right shape for when the extension ships: enrollment
+ * ends in a biometric capture, which needs a camera, so the user is already in a browser and should
+ * not have to leave it to sign.
+ *
+ * ── Below: how it will work once the extension is available ──────────────────────────────────────
+ *
  * The same vote as `signPending`, but signed by the user's extension instead of a local private key.
- * THIS IS THE FUNCTION A REAL USER'S ENROLLMENT GOES THROUGH. `signPending` is for tests and for
- * non-browser signers; this is for people.
  *
  * Runs in the BROWSER — it needs `window.certen`, so bundle this module (or just this function) into
  * your enrollment page. Everything else in this file is server-side.
