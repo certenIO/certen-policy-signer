@@ -75,3 +75,6 @@ Thumbs.db
 phase0-state.json
 e2e-state.json
 provider-mode-state.json
+kv-browser-state.json
+kv-enrollment-state.json
+kv2-state.json
