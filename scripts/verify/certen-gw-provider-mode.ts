@@ -60,7 +60,18 @@ async function stepIdentity() {
     const name = `pm${Date.now().toString(36)}`;
     // No public_key / public_key_hash: supplying them is what makes an identity EXTERNAL. Provider
     // mode means the gateway generates the key, which is the whole point of this test.
-    const r = await gw('POST', '/v1/identity', { name, signing_mode: 'provider', credits: 5000 });
+    //
+    // `signing_provider` is mandatory here — the gateway rejects the create without it
+    // (identity.orchestrator.ts:268). `local` + `random` is the correct provider for this test
+    // specifically: the gateway generates a key and holds it itself, which IS the custody model
+    // under test. A callback or KMS provider would delegate the signature elsewhere and prove
+    // something about that service instead.
+    const r = await gw('POST', '/v1/identity', {
+      name,
+      signing_mode: 'provider',
+      signing_provider: { type: 'local', config: { method: 'random' } },
+      credits: 5000,
+    });
     console.log('POST /v1/identity ->', r.status, JSON.stringify(r.body).slice(0, 500));
     if (r.status >= 300) throw new Error('identity create failed');
     state.identity = { id: r.body.id, name };
