@@ -610,24 +610,29 @@ export async function signPending(
 // ── 3c. Signing in the BROWSER, via the Key Vault extension ───────────────────────────────────────
 
 /**
- * NOT AVAILABLE YET — the Key Vault extension it depends on is not released to users. Nothing below
- * has been exercised against a real extension; only the signature construction has been verified,
- * offline, as byte-identical to the local path. Do not present this as a working enrollment route.
+ * Sign in the BROWSER, via the Certen Key Vault extension (Chrome, Edge, Firefox).
  *
- * The two routes that DO work today:
+ * This is the route that lets enrollment happen on one page. It matters because enrollment ends in a
+ * biometric capture, which needs a camera — the user is already in a browser, and sending them to a
+ * terminal mid-flow to sign is a drop-off point in the funnel.
  *
- *   - CLI / MCP / SDK — the user (or their agent) holds the key and signs. Verified end to end on
- *     Kermit: `certen pending sign <hash|inbox-id>` then `certen pending submit`.
- *   - Gateway provider-mode — the gateway holds the key and signs on the identity's behalf, so a
- *     browser page needs no key and no extension at all. Note this changes WHAT IS PROVEN: that
- *     whoever authenticated to Certen caused the identity to sign, not that they hold its private
- *     key. For a custodial account that may be the right assertion, but it is a different one.
+ * The alternative, equally valid and verified end to end on Kermit, is the terminal:
+ *   `certen pending sign <hash|TxID|inbox-id>` then `certen pending submit`.
+ * Use it for agents, for CI, for air-gapped signers, and for anyone without the extension.
  *
- * Kept rather than deleted because it is the right shape for when the extension ships: enrollment
- * ends in a biometric capture, which needs a camera, so the user is already in a browser and should
- * not have to leave it to sign.
+ * NOT a route: having the gateway hold the user's key and sign for them. Certen runs the gateway and
+ * does not hold user keys, so a "just let the server sign it" shortcut is not available here by
+ * design, however convenient it would look in a browser flow.
  *
- * ── Below: how it will work once the extension is available ──────────────────────────────────────
+ * ── Verification status, so nobody over-reads this ───────────────────────────────────────────────
+ *
+ * The SIGNATURE CONSTRUCTION is verified: building the vote through `SimpleExternalKey` produces
+ * bytes identical to the locally-signed path, vote included, and the preimage handed to the
+ * extension matches a hand-computed `SHA256(SHA256(encode(metadata)) || txHash)`.
+ *
+ * What is NOT yet verified is the round trip through a real installed extension — the postMessage
+ * hop, the approval popup, and the shape the extension returns. That needs a browser with the Key
+ * Vault installed. Treat the plumbing below as correct-by-construction but unexercised.
  *
  * The same vote as `signPending`, but signed by the user's extension instead of a local private key.
  *
