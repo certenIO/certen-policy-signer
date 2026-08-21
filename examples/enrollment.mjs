@@ -59,18 +59,24 @@
  *
  * ── The browser half ─────────────────────────────────────────────────────────────────────────────
  *
- * This module is server-side. Step 3 happens in your page, and it is three lines — but do NOT feature
- * detect on `isCerten`. Two different Certen extensions inject `window.certen` and both set that flag;
- * only the Key Vault implements the method you need:
+ * This module is server-side. Step 5 happens in your page, and it is a TWO-STEP flow — key
+ * selection, then signature. Both steps are required; see `signPendingWithProvider` below, which
+ * implements them:
  *
  *      const p = window.certen || window.accumulate;
- *      if (typeof p?.signPendingTransaction !== 'function') {
+ *      if (typeof p?.selectKey !== 'function' || typeof p?.signHash !== 'function') {
  *        throw new Error('Install or update the Certen Key Vault extension');   // not a TypeError
  *      }
- *      await p.signPendingTransaction({ transactionHash: txHash, signer: keyPageUrl });
+ *      const sel = await p.selectKey({ keyType: 'ed25519', purpose: '…' });   // 1. picker
+ *      const sig = await p.signHash({ hash: preimage, address: keyPageUrl,     // 2. approval
+ *                                     keyType: 'ed25519', humanReadable: { … } });
  *
- * Checking the flag instead of the method fails as an undefined-is-not-a-function deep inside the
- * promise, which is unpleasant to diagnose from a support ticket.
+ * Do NOT feature detect on `isCerten` — a second Certen extension injects `window.certen` and sets
+ * that flag without implementing these methods, so the check passes and the call fails as
+ * undefined-is-not-a-function deep inside a promise.
+ *
+ * And do not reach for `signPendingTransaction`. It exists, but `signHash` is what certen-web-app
+ * ships and what has been verified end to end against a live extension.
  *
  * ── Requirements ─────────────────────────────────────────────────────────────────────────────────
  *
@@ -639,25 +645,47 @@ export async function signPending(
  * Runs in the BROWSER — it needs `window.certen`, so bundle this module (or just this function) into
  * your enrollment page. Everything else in this file is server-side.
  *
- * ── What the extension does and does not do ──────────────────────────────────────────────────────
+ * ── Use `signHash`, not `signPendingTransaction` ─────────────────────────────────────────────────
  *
- * `signPendingTransaction` is a SIGNING ORACLE, not a submitter. It takes a preimage, shows the user
- * an approval popup, returns `{ signature, publicKey }` — and stops. Assembling the envelope and
- * submitting it is yours. In the Certen web app that second half is done by api-bridge; here it is
- * done below, so your page needs no backend of its own for it.
+ * Both exist on `window.certen`. `signHash` is the one the Certen web app actually ships
+ * (`certen-web-app/src/services/keyvault.service.ts`) and the one verified end to end against a real
+ * installed extension: it returned a signature that verified over the preimage and drove the
+ * transaction to `delivered` on Kermit.
  *
- * It also expects YOU to supply `dataForSignature`, the complete preimage:
+ *     provider.signHash({ hash, address, keyType: 'ed25519', humanReadable })
  *
- *     dataForSignature = SHA256( SHA256(encode(signature metadata)) || txHash )
+ * where `hash` is the COMPLETE PREIMAGE, not the transaction hash:
  *
- * where the metadata is {type, publicKey, signer, signerVersion, timestamp, vote}. The extension has
- * a local fallback that computes this itself, but it takes neither the public key nor the vote, and
- * its own source warns it "may have encoding mismatch (may fail)". Do not rely on it — always pass
- * `dataForSignature`.
+ *     hash = SHA256( SHA256(encode(signature metadata)) || txHash )
  *
- * Rather than hand-roll that hash, this uses the SDK's `SimpleExternalKey`, which exists for exactly
- * this shape: it computes the preimage the same way the local signing path does and hands it to a
- * callback. Verified byte-identical to a locally-signed signature, vote included.
+ * with metadata {type, publicKey, signer, signerVersion, timestamp, vote}. Computed here via the
+ * SDK's `SimpleExternalKey`, which derives it exactly as the local signing path does — verified
+ * byte-identical, vote included.
+ *
+ * The extension is a SIGNING ORACLE, not a submitter: it returns `{ signature, publicKey }` and
+ * stops. Assembling the envelope and submitting is yours, and is done below, so your page needs no
+ * backend for it.
+ *
+ * ── "Vault is locked" usually means you skipped selectKey ────────────────────────────────────────
+ *
+ * The single most expensive thing to get wrong here. Call the signer without `selectKey` first and
+ * the extension answers:
+ *
+ *     Vault is locked. Please unlock first.
+ *
+ * — no matter how unlocked the vault is. The message names the wrong cause. Verified against a live
+ * installed extension: repeated `signHash` calls failed with exactly that error through half a dozen
+ * unlocks, and the identical call succeeded immediately once `selectKey` preceded it.
+ *
+ * If you see it, check that you called `selectKey` BEFORE assuming anything about lock state.
+ *
+ * NEVER retry automatically. Each rejected call opens a popup, so a timer-driven retry buries the
+ * user in windows within seconds. Offer a button; let the user choose to try again.
+ *
+ * The vault genuinely can be locked too, and `keyvault.service.ts` exports `isVaultLockedError` and
+ * an `action: 'unlock'` hint for that case — it is recoverable, not a failed enrollment. It matters
+ * for enrollment because biometric capture can sit between unlock and signature. But rule out the
+ * missing first step before you believe the error.
  *
  * @param {string} txHash
  * @param {{provider: object, signerUrl: string, publicKeyHex: string,
@@ -686,19 +714,42 @@ export async function signPendingWithProvider(
   const timestamp = Date.now() * 1000;
   const pub = Buffer.from(publicKeyHex.replace(/^0x/, ''), 'hex');
 
+  // STEP 1 of 2 — KEY SELECTION. Do not skip this.
+  //
+  // The Key Vault is a TWO-STEP flow: `selectKey` opens the key picker, then the signing call opens
+  // the approval screen. Calling the signer without it answers `Vault is locked. Please unlock
+  // first.` — however unlocked the vault actually is. The message names the wrong cause, and it
+  // costs hours if you believe it: you will chase unlock state while the real problem is a missing
+  // first step. Every caller in certen-web-app does this (AuthorityEditor.tsx:1535,
+  // CreateIdentityWizard.tsx:159, OnboardingFlow.tsx:244) before it signs anything.
+  const selected = await provider.selectKey({
+    keyType: 'ed25519',
+    purpose: humanReadable?.description ?? `Prove control of ${signerUrl}`,
+  });
+  if (!selected?.publicKey) throw new Error('no key selected (user cancelled?)');
+
+  // The preimage is computed FOR a specific public key. A signature from any other key verifies
+  // against nothing and the vote is dropped in silence, so refuse the mismatch here.
+  const chosen = String(selected.publicKey).replace(/^0x/, '').toLowerCase();
+  if (chosen !== publicKeyHex.replace(/^0x/, '').toLowerCase()) {
+    throw new Error(
+      `selected key ${chosen.slice(0, 16)}… is not the key this signature was prepared for `
+      + `(${publicKeyHex.slice(0, 16)}…). Ask the user to pick the key on ${signerUrl}.`,
+    );
+  }
+
+  // STEP 2 of 2 — the signature. `signHash` takes the COMPLETE PREIMAGE as `hash`, and its
+  // parameter names differ from every other method here: `address`, not `signer`.
   const key = new SimpleExternalKey(
     Address.fromKey(core.SignatureType.ED25519, pub),
     async (preimage) => {
-      // `preimage` IS `dataForSignature`. Hand it straight to the extension.
-      const r = await provider.signPendingTransaction({
-        transactionHash: txHash,
-        dataForSignature: Buffer.from(preimage).toString('hex'),
-        signer: signerUrl,
-        signerVersion: version,
-        timestamp,
+      const r = await provider.signHash({
+        hash: Buffer.from(preimage).toString('hex'),
+        address: signerUrl,
+        keyType: 'ed25519',
         humanReadable: humanReadable ?? {
-          action: 'Approve identity enrollment',
-          description: `Prove control of ${signerUrl} to complete enrollment`,
+          action: 'Sign Accumulate Transaction',
+          memo: `Prove control of ${signerUrl} to complete enrollment`,
         },
       });
       if (!r?.signature) throw new Error('extension returned no signature (user rejected?)');
