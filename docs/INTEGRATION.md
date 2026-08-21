@@ -26,6 +26,115 @@ payload — withholds the signature. This is not a policy you configure; it is h
 
 ---
 
+## Enrollment — proving control, before the first decision
+
+Skip this if your engine decides on transaction content alone. Read it if your decision depends on
+*who* the account holder is — a biometric match, a step-up challenge, a KYC record — because that
+binding has to be established before the first decision, and the seams below cannot do it.
+
+Seam 1 is **reactive**: it fires when a transaction is already pending, and the `account` it hands you
+is trustworthy precisely because the chain asserted it. Enrollment has no such trigger. There is no
+transaction yet, so nothing calls you, and the chain cannot help: it will confirm `acc://alice.acme`
+exists, but existence is public. Anyone can read an ADI off the explorer and claim it.
+
+Getting this wrong is the worst failure the system has: bind a biometric to an identity the enrollee
+does not control and that person's face approves the real owner's transactions, permanently.
+
+### The mechanism
+
+Write a data entry to **your own** data account, naming the user's key book as an additional
+authority in the transaction header:
+
+```jsonc
+{
+  "principal":   "acc://your-org.acme/enrollments",   // yours; you own it and you pay
+  "authorities": ["acc://alice.acme/book"],            // theirs; must also approve
+  "expire":      { "atTime": "…" },                    // unsigned in time => enrollment lapses
+  "memo":        "Enrollment request — Your Org (…)"   // what the user SEES in their inbox
+}
+```
+
+You sign as initiator. Accumulate then refuses to execute until the named key book approves — header
+authorities are **required**, not advisory. When it executes, that *is* the proof.
+
+**Why this beats a signed nonce.** A nonce proves possession of one key currently listed on some
+page. It does not prove that key satisfies the account's threshold: on a 2-of-3 book, one compromised
+key would enroll an attacker. Here the protocol resolves the ADI's real authority — one key, 2-of-3,
+a delegation chain, whatever it actually is. You never learn the structure and you never track key
+rotation, because the check happens against live state every time. And the result is an on-chain
+record an auditor can verify without your database.
+
+### Validate the key book first — the part that is easy to get wrong
+
+> **A key book can exist *under* an ADI without governing it.** `acc://alice.acme/book2` may be a
+> real key book, a genuine child of `acc://alice.acme`, and hold keys belonging to someone else
+> entirely. Deriving the ADI from the URL prefix and stopping there lets that person enroll as
+> Alice.
+>
+> Read the ADI's **authority set** and confirm the book is in it, and is not disabled. This is three
+> reads, no chain writes, nothing at risk — and it is the single check the security of enrollment
+> rests on.
+
+### The three outcomes
+
+| Chain status | Meaning |
+|---|---|
+| `delivered` | **enrolled** — the book met its own threshold and accepted |
+| `rejected` | **declined** — an explicit refusal, or an invalid authority was named |
+| `expired` | **lapsed** — never signed inside the window |
+
+The window is capped by the protocol at `Limits.PendingMajorBlocks` (default 14 major blocks, about
+two weeks) whether or not you set `expire`, so `expire` can only shorten it. Hours is the right scale
+for an enrollment session.
+
+### How the user signs
+
+Two routes, both verified end to end on Kermit. Neither requires Certen to hold a key.
+
+**In your page, via the Certen Key Vault extension** — a **two-step** flow, and both steps are
+required:
+
+```js
+const p = window.certen || window.accumulate;
+const sel = await p.selectKey({ keyType: 'ed25519', purpose: 'Enrollment — Your Org' });
+const sig = await p.signHash({ hash: preimage, address: keyPageUrl, keyType: 'ed25519',
+                               humanReadable: { action: 'Sign Accumulate Transaction', memo: '…' } });
+```
+
+> Call `signHash` without `selectKey` first and the extension answers **`Vault is locked. Please
+> unlock first.`** — however unlocked the vault is. The message names the wrong cause. If you see it,
+> check for the missing first step before you believe it.
+>
+> And never retry automatically: each rejected call opens a popup, so a timer-driven retry buries the
+> user in windows within seconds.
+
+**Or in the terminal** — for agents, CI, and air-gapped signers:
+
+```bash
+certen pending list                      # the request appears, with your memo
+certen pending sign <hash|TxID|inbox-id> --identity … --signer-url … --public-key …
+certen pending submit <req-id> --sign-with <key> --hash <data_for_signature>
+```
+
+### Where it goes in your flow
+
+```
+1. user supplies their ADI + key book        → preflight()
+2. create the enrollment transaction         → startEnrollment()
+3. user signs                                → extension (in your page) or CLI
+4. poll                                      → awaitEnrollment()
+5. on ENROLLED, capture biometrics           → onEnrolled()   ← the function you replace
+```
+
+**Start here:** [`examples/enrollment.mjs`](../examples/enrollment.mjs) — a complete implementation
+with one function to replace, the same shape as `policy-engine.mjs`. It carries the preflight check,
+both signing routes, and the failure modes that are not obvious from the API surface.
+
+Nothing in Seam 1 changes. Enrollment is additive: it establishes the binding that reauth later
+relies on when it maps the `account` in a decision request back to whoever you enrolled.
+
+---
+
 ## Seam 1 — your policy engine (the decision)
 
 **This is the integration.** Everything else is optional.
