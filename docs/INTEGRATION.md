@@ -285,6 +285,42 @@ single `cast(tx, vote)` method — and wire it in `src/index.ts`.
 > Accumulate folds the vote into the signature metadata hash, so approve and reject are different
 > preimages, not one preimage with a flag. A backend cannot sign first and choose the vote afterwards.
 
+### Voting on a transaction you just submitted
+
+This one does not affect the signer — it discovers work by polling its own key page, so by the time a
+transaction is visible to it, it has already propagated. It matters if **you** write code that submits a
+transaction and then votes on it from a different account, which is what an enrollment flow does.
+
+A transaction is submitted on the **principal's** partition. A vote is submitted on the **signer's**.
+Until the transaction has propagated between them, a vote against it has nothing to attach to — and it
+is discarded **silently**. The signature is cryptographically perfect. Nothing raises. The transaction
+stays pending and eventually lapses.
+
+The network does report it, in a place that is easy to miss. A signature-only envelope normalises into
+*two* messages — your signature, and a `RemoteTransaction` placeholder standing in for the transaction
+being voted on — and they carry independent status codes:
+
+```jsonc
+[{ "txID": "acc://<placeholder>@<your signer>", "code": "notFound" },   // the vote is LOST
+ { "txID": "acc://<txHash>@unknown",            "code": "ok"        }]  // looks fine
+```
+
+`v2.execute` in the JavaScript SDK will not surface this: it checks `res.result.error`, but `result`
+here is an *array* of per-message statuses with no top-level error, so a dropped vote returns success.
+
+Three rules follow, and [`examples/enrollment.mjs`](../examples/enrollment.mjs) implements all three:
+
+1. **Confirm the transaction resolves before signing it.** Query it first. If it does not resolve, do
+   not sign — a vote cast now is valid and attaches to nothing.
+2. **Inspect every per-message `code`, not just the call's success.** Treat anything other than `ok`,
+   `pending`, or `delivered` as a vote that did not land.
+3. **Retry by re-signing, never by resubmitting.** Timestamps must strictly increase per key, so a
+   replayed envelope is rejected as a replay. Build a fresh signature for each attempt.
+
+> Measured on Kermit: a vote cast ~6 seconds after submission was dropped; the same code against the
+> same transaction succeeded once it resolved. The window is short, but a machine will lose the race
+> that a human clicking through a UI never notices.
+
 ---
 
 ## Key custody
