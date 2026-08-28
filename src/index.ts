@@ -11,6 +11,7 @@ import { Resolver } from './resolver.js';
 import { buildRegistry, loadDecoderModules } from './decode/registry.js';
 import { makeValueCeilingGuard } from './guard.js';
 import { applyKeyPageOp } from './ops/keypage.js';
+import { readPage } from './ops/rotate.js';
 import { GatewayClient, GatewayVoteBackend } from './vote/adapters/certen-gateway.js';
 import { buildNotifier, MultiNotifier, NotifyConfig } from './notify.js';
 import { Orchestrator, ScopeRules } from './orchestrator.js';
@@ -257,6 +258,10 @@ async function main() {
       const target = page ?? scopes[0].page;
       return applyKeyPageOp({ accumulate, signer: keyring.forPage(target), logger, page: target }, op);
     },
+    // Reading a page is a READ, so it is bound with no credential of its own beyond the admin key -- unlike
+    // keyPage above, which changes who can act and therefore carries a second one. `keyring.forPage` still
+    // bounds WHICH pages: the route only ever asks about scopes this wallet holds a key for.
+    pageState: (page) => readPage(accumulate, page),
   });
   const { host, port } = parseBind(cfg.health.bind);
   server.listen(port, host, () => logger.info({ host, port }, 'http server listening (health/metrics/webhook/admin)'));

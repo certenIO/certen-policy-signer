@@ -52,9 +52,35 @@ export interface RotateOptions {
   pollIntervalMs?: number;   // default 3s
 }
 
+/**
+ * One seat on a key page. A seat is either a key hash or a delegation to another key BOOK, and it may
+ * carry both, so these are two independent fields rather than a discriminated union.
+ *
+ * The delegate is the seat an employee's own book occupies under Runbook F 0.4, which is why it is
+ * kept rather than dropped: a reader collecting only publicKeyHash reports a roster page as having
+ * fewer seats than it has, and a threshold of 2 over an apparent single entry reads as a
+ * misconfiguration rather than as a roster.
+ */
+export interface PageEntry {
+  keyHash: string | null;
+  delegate: string | null;
+}
+
 export interface PageState {
   version: number;
+  /**
+   * How many acceptances the page requires.
+   *
+   * NOT the raw acceptThreshold off the wire. That field is omitempty in the protocol struct, so a page
+   * requiring one signature does not carry it at all, and protocol/authority.go GetSignatureThreshold
+   * reads a zero as ONE. Passing the raw value through would put "threshold 0" in front of somebody --
+   * a page that needs nobody, which no page is.
+   */
+  threshold: number;
+  /** The key hashes alone, lower-cased. What the rotation and governance paths compare against. */
   keyHashes: string[];
+  /** Every seat, in page order, including the delegations that have no key hash of their own. */
+  entries: PageEntry[];
 }
 
 export interface RotateResult {
@@ -68,14 +94,25 @@ export interface RotateResult {
   error?: string;
 }
 
-/** Read the key page's version and the key hashes it actually lists. This is the source of truth. */
+/**
+ * Read what the key page actually says: its version, its threshold, and every seat on it. This is the
+ * source of truth -- for rotation, for governance, and (through GET /v1/admin/page) for the approval
+ * console, which renders this instead of the number in its own deployment config.
+ */
 export async function readPage(acc: RawAccumulateClient, page: string): Promise<PageState> {
   const rec: any = await acc.query(page);
   const account = rec?.account ?? rec?.data ?? rec;
-  const keyHashes: string[] = (account?.keys ?? [])
-    .map((k: any) => String(k?.publicKeyHash ?? '').toLowerCase())
-    .filter(Boolean);
-  return { version: Number(account?.version ?? 0), keyHashes };
+  const entries: PageEntry[] = (account?.keys ?? []).map((k: any) => ({
+    keyHash: k?.publicKeyHash ? String(k.publicKeyHash).toLowerCase() : null,
+    delegate: k?.delegate ? String(k.delegate) : null,
+  }));
+  return {
+    version: Number(account?.version ?? 0),
+    // See PageState.threshold: absent or zero MEANS one, and only the protocol says so.
+    threshold: Number(account?.acceptThreshold ?? 0) || 1,
+    keyHashes: entries.map((e) => e.keyHash).filter((h): h is string => Boolean(h)),
+    entries,
+  };
 }
 
 /**
@@ -123,7 +160,10 @@ export async function confirmPage(
   pollMs = 3_000,
 ): Promise<PageState> {
   const deadline = (Date.now?.() ?? 0) + timeoutMs;
-  let last: PageState = { version: 0, keyHashes: [] };
+  // The not-yet-read sentinel, and every field says so: version 0 and threshold 0 are values no live
+  // page has. It never escapes as a state -- the loop either replaces it with a real read or throws,
+  // and the throw quotes only the version and the keys.
+  let last: PageState = { version: 0, threshold: 0, keyHashes: [], entries: [] };
   for (;;) {
     last = await readPage(acc, page).catch(() => last);
     const has = (h: string) => last.keyHashes.includes(h.toLowerCase());

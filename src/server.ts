@@ -3,6 +3,7 @@ import http from 'node:http';
 import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import { bytesToHex } from './accumulate/signing.js';
 import { KeyPageOp, KeyPageResult } from './ops/keypage.js';
+import { PageState } from './ops/rotate.js';
 import { Orchestrator } from './orchestrator.js';
 import { Store } from './store/store.js';
 import { Keyring } from './signer/keyring.js';
@@ -46,6 +47,14 @@ export interface ServerDeps {
   /** Executes a TYPED key-page operation against one of our pages (default: the first scope). Absent =>
    * governance is disabled. `page`, when given, must be a page this wallet holds a key for. */
   keyPage?: (op: KeyPageOp, page?: string) => Promise<KeyPageResult>;
+  /**
+   * Read one of our key pages off the chain. Absent => GET /v1/admin/page is disabled.
+   *
+   * Injected as a function rather than reached through `accumulate` above, for the same reason
+   * `keyPage` is: this file has no business holding a chain client, and a test wants to answer the
+   * route without one. index.ts wires it to `readPage`.
+   */
+  pageState?: (page: string) => Promise<PageState>;
   /** The poller, when enabled — a wallet whose discovery loop is dead is NOT healthy. */
   poller?: HealthSource;
   /** Serve /metrics without authentication (only when the port is already private). */
@@ -214,12 +223,54 @@ export function createServer(d: ServerDeps): http.Server {
 
       // GET /v1/admin/pubkey — the wallet's signing key(s) + Accumulate key hash(es), per page (for setup / SR6).
       // Multi-scope returns them all; the flat public_key/key_hash (first scope) stays for single-scope callers.
+      // `signature_type` is here because a caller must not infer it. Since a scope's key may be a
+      // certificate, `public_key` is no longer necessarily 32 bytes (91 for P-256 PKIX DER) -- and a
+      // screen reading an algorithm off a field's LENGTH would assert something this signer never said.
+      // `key_hash` is sha256(public_key) for every type alike, and is the page entry.
       if (method === 'GET' && path === '/v1/admin/pubkey') {
         const signers = await Promise.all(d.keyring.scopes().map(async (s) => {
           const pub = await s.signer.publicKey();
-          return { page: s.page, public_key: bytesToHex(pub), key_hash: createHash('sha256').update(pub).digest('hex') };
+          return {
+            page: s.page,
+            signature_type: s.signer.signatureType,
+            public_key: bytesToHex(pub),
+            key_hash: createHash('sha256').update(pub).digest('hex'),
+          };
         }));
         return json(res, 200, { signers, public_key: signers[0]?.public_key, key_hash: signers[0]?.key_hash });
+      }
+
+      // GET /v1/admin/page - the authority the NETWORK will enforce, per scope, read live off the chain.
+      //
+      // /v1/admin/pubkey above answers "which key do we sign with". This answers "and what does the page
+      // that key sits on actually require" -- threshold, seats, delegates, version. The approval console
+      // renders it (Runbook F Phase F1): the console holds no chain code and must never acquire any, so
+      // everything it can say about on-chain authority has to arrive through a route like this one.
+      //
+      // A page that cannot be read yields a REASON AND NO NUMBERS. The tempting alternative -- zeroes,
+      // or a 500 for the whole route -- is worse in both directions: a threshold of 0 is a plausible
+      // number meaning "this page requires nobody", and one unreadable page is not an outage of the
+      // others. Per scope, so an operator sees which one is unreachable.
+      if (method === 'GET' && path === '/v1/admin/page') {
+        if (!d.pageState) return json(res, 403, { error: 'page state unavailable: no page reader configured' });
+        const pages = await Promise.all(d.keyring.scopes().map(async (s) => {
+          const head = { page: s.page, book: s.book, signature_type: s.signer.signatureType };
+          try {
+            const st = await d.pageState!(s.page);
+            return {
+              ...head,
+              state: {
+                version: st.version,
+                threshold: st.threshold,
+                entry_count: st.entries.length,
+                entries: st.entries.map((e) => ({ key_hash: e.keyHash, delegate: e.delegate })),
+              },
+            };
+          } catch (e) {
+            return { ...head, error: (e as Error).message };
+          }
+        }));
+        return json(res, 200, { pages });
       }
 
       // POST /v1/admin/key-page — governance on the org's OWN key page. TYPED, never blind.

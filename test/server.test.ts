@@ -44,7 +44,7 @@ function build(opts: { webhook?: boolean } = {}) {
     webhookHmacSecret: opts.webhook === false ? undefined : HOOK_KEY,
     keyPage: async (op) => {
       keyPageOps.push(op);
-      return { ok: true, op: op.op, submitted: ['deadbeef'], before: { version: 1, keyHashes: [] }, after: { version: 2, keyHashes: [] } };
+      return { ok: true, op: op.op, submitted: ['deadbeef'], before: { version: 1, threshold: 1, keyHashes: [], entries: [] }, after: { version: 2, threshold: 1, keyHashes: [], entries: [] } };
     },
   });
   return { server, acc, store, pause, signer, keyPageOps };

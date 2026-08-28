@@ -169,6 +169,36 @@ The signer **builds the transaction itself**, forces the principal to its own ke
 built, and confirms the change on chain before responding. It refuses to remove a page's last key or set a
 threshold that could never be met.
 
+### Reading the authority that actually governs
+
+`GET /v1/admin/page` answers, per scope, what the **network** will enforce: the page's threshold, its
+seats (including delegations to other key books), and its version. `GET /v1/admin/pubkey` answers the
+neighbouring question -- which key this wallet signs with, and, since it may not be Ed25519, what kind.
+
+```bash
+curl -H "x-api-key: $ADMIN_API_KEY" localhost:8080/v1/admin/page
+# {"pages":[{"page":"acc://bank.acme/book/1","book":"acc://bank.acme/book",
+#            "signature_type":"ed25519",
+#            "state":{"version":4,"threshold":2,"entry_count":3,
+#                     "entries":[{"key_hash":"aa..","delegate":null},
+#                                {"key_hash":null,"delegate":"acc://bank.acme/alice/book"}]}}]}
+```
+
+Both are reads, so they need only the admin key -- not the governance credential, which exists for the
+routes that CHANGE who may act.
+
+**A page that cannot be read reports a reason and no numbers**, per scope:
+
+```bash
+# {"pages":[{"page":"acc://bank.acme/roster/1","book":"acc://bank.acme/roster",
+#            "signature_type":"ecdsaSha256","error":"connection refused"}]}
+```
+
+That shape is deliberate. A threshold of `0` is a plausible-looking number that means "this page
+requires nobody", and a caller rendering it would state that in its own voice; and one unreachable page
+is not an outage of the others, so the route does not fail whole. The approval console renders exactly
+this, which is how it shows on-chain authority while holding no chain code of its own.
+
 There is deliberately **no endpoint that signs an arbitrary hash.** An earlier build had one; blind signing
 means the signer cannot know what it authorized, and "sign these 32 bytes" could be any transaction at all,
 including one moving your funds. The worst a stolen governance credential can now do is reorganize your own
