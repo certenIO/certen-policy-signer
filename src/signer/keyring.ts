@@ -9,9 +9,9 @@
  * unknown page arriving via the webhook trigger is not honoured). `singleKeyring` is the wildcard for the
  * single-key path and tests: one key, used for whatever page it is asked about.
  */
-import { EdSigner, LocalSigner } from './signer.js';
+import { KeySigner, LocalSigner, LocalEcdsaP256Signer } from './signer.js';
 import { VaultTransitSigner } from './vault-transit.js';
-import { resolveLocalSeed, SignerSpec } from '../config.js';
+import { resolveLocalEcdsaKey, resolveLocalSeed, SignerSpec } from '../config.js';
 import { Logger } from '../logger.js';
 
 /** The parent key book of a signer page URL: acc://o.acme/book/1 -> acc://o.acme/book */
@@ -23,8 +23,14 @@ export function bookOf(pageUrl: string): string {
  * then drop the scheme and any trailing slashes. */
 const norm = (u: string): string => u.toLowerCase().replace(/^acc:\/\//, '').replace(/\/+$/, '');
 
-/** Construct the concrete EdSigner for one key spec (local seed / seed_file / ephemeral, or Vault Transit). */
-export function buildSignerFromSpec(spec: SignerSpec, logger: Logger, label: string): EdSigner {
+/** Construct the concrete KeySigner for one key spec (local key material, or Vault Transit). */
+export function buildSignerFromSpec(spec: SignerSpec, logger: Logger, label: string): KeySigner {
+  if (spec.provider === 'local-ecdsa-p256') {
+    const der = resolveLocalEcdsaKey(spec.local);
+    if (!der) throw new Error(`${label}: signer.provider=local-ecdsa-p256 requires local.private_key_der_hex or local.private_key_der_file`);
+    logger.warn({ scope: label }, 'using LOCAL signer: this key is held in this process (see README "Security posture")');
+    return new LocalEcdsaP256Signer(der);
+  }
   if (spec.provider === 'vault-transit') {
     const v = spec.vault;
     if (!v?.addr || !v.key_name || !v.token) throw new Error(`${label}: vault-transit requires addr, key_name, token`);
@@ -42,16 +48,17 @@ export function buildSignerFromSpec(spec: SignerSpec, logger: Logger, label: str
   throw new Error(`${label}: signer.provider=local requires local.seed_hex or local.seed_file (set local.allow_ephemeral for dev)`);
 }
 
-/** One signing scope: a key page, its book (for signature-chain discovery), and the key that signs there. */
+/** One signing scope: a key page, its book (for signature-chain discovery), and the key that signs there.
+ * The key carries its own signature type, so two scopes in one process may sign with different algorithms. */
 export interface SigningScope {
   page: string;    // acc://org.acme/book/1
   book: string;    // acc://org.acme/book
-  signer: EdSigner;
+  signer: KeySigner;
 }
 
 export interface Keyring {
   /** The signer whose key sits on `pageUrl`. Throws if no scope covers it. */
-  forPage(pageUrl: string): EdSigner;
+  forPage(pageUrl: string): KeySigner;
   /** Every configured scope. */
   scopes(): SigningScope[];
   /** True only if every scope's key provider is reachable (or has no health probe). */
@@ -69,7 +76,7 @@ export class MapKeyring implements Keyring {
       this.byPage.set(k, s);
     }
   }
-  forPage(pageUrl: string): EdSigner {
+  forPage(pageUrl: string): KeySigner {
     const s = this.byPage.get(norm(pageUrl));
     if (!s) {
       const known = [...this.byPage.values()].map((x) => x.page).join(', ');
@@ -87,7 +94,7 @@ export class MapKeyring implements Keyring {
 }
 
 /** Wildcard keyring: one key, used for any page. The single-scope / test path. */
-export function singleKeyring(signer: EdSigner, page = 'acc://unknown.acme/book/1'): Keyring {
+export function singleKeyring(signer: KeySigner, page = 'acc://unknown.acme/book/1'): Keyring {
   const scope: SigningScope = { page, book: bookOf(page), signer };
   return {
     forPage: () => signer,

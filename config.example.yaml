@@ -62,6 +62,9 @@ signer:
   #                 performs the Ed25519 signature. This process never holds private key material.
   # local         — the key is held in this process's memory. Simpler; a deliberate, documented tradeoff
   #                 for pilots. See "Key posture" in docs/DEPLOY.md.
+  # local-ecdsa-p256 — the same in-process posture, with an ECDSA P-256 key rather than Ed25519: the key
+  #                 type a corporate PKI certificate actually is. Accumulate verifies it natively, and the
+  #                 key page entry is sha256 of the PKIX DER public key, exactly as for any other type.
   provider: "vault-transit"
   vault:
     addr: "https://vault.internal:8200"
@@ -73,6 +76,12 @@ signer:
   #   seed_file: "/run/secrets/signer_seed"  # ...a file holding it (Docker/Kubernetes secret mount)
   #   allow_ephemeral: false                 # dev only: generate a throwaway key. It matches no on-chain
   #                                          # page, so every vote it casts is rejected. Never in prod.
+
+  # For provider: "local-ecdsa-p256" — hex-encoded DER (SEC1 or PKCS#8), not PEM: a PEM inside a YAML
+  # string is a newline-mangling accident waiting to happen, and the failure would look like a bad key.
+  # local:
+  #   private_key_der_hex: "env:SIGNER_P256_DER_HEX"
+  #   private_key_der_file: "/run/secrets/signer_p256.der.hex"
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 #  YOUR POLICY ENGINE — the decision this signer obeys.

@@ -8,7 +8,7 @@
  *   GET  {addr}/v1/transit/keys/{key}   -> data.keys[<latest>].public_key (b64)
  */
 import axios, { AxiosInstance } from 'axios';
-import { EdSigner } from './signer.js';
+import { KeySigner } from './signer.js';
 
 export interface VaultTransitOptions {
   addr: string;
@@ -17,7 +17,9 @@ export interface VaultTransitOptions {
   mount?: string; // default 'transit'
 }
 
-export class VaultTransitSigner implements EdSigner {
+export class VaultTransitSigner implements KeySigner {
+  /** Ed25519 today. Vault Transit also does `ecdsa-p256` natively, returning ASN.1 DER — F2's job. */
+  readonly signatureType = 'ed25519' as const;
   private readonly http: AxiosInstance;
   private readonly mount: string;
   private cachedPub?: Uint8Array;

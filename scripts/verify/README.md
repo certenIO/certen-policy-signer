@@ -29,6 +29,7 @@ independent ports and can run at the same time.
 | [`concurrency.ts`](concurrency.ts) | Three pending transactions at once, each voted on **exactly once** across many poll cycles | — |
 | [`key-rotation.ts`](key-rotation.ts) | All three rotation modes, each confirmed on chain, plus continuity on the new key and that the old key can no longer act | — |
 | [`multi-page.ts`](multi-page.ts) | One process watching several key pages signs each transaction with the **right** key | — |
+| [`pki-ecdsa-vote.ts`](pki-ecdsa-vote.ts) | The vote is cast with an **ECDSA P-256** key — what a corporate certificate is — on a page holding no Ed25519 key at all, and the recorded signature type is read back off the chain | — |
 | [`vault-custody.ts`](vault-custody.ts) | The production posture: the key is generated in Vault, never leaves it, and Vault signs the votes | a reachable Vault |
 | [`deployed-container.ts`](deployed-container.ts) | **The acceptance test.** The shipped container image discovers, decides, and votes on its own | Docker |
 

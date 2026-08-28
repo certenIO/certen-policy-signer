@@ -3,14 +3,21 @@
  * api-bridge (getPendingTransactionSigningData / submitVoteOnPendingTransaction)
  * and the vendored SDK's ed25519 signRaw.
  *
- *   sigMdHash        = SHA256( encode(ED25519Signature{ meta... }) )
+ *   sigMdHash        = SHA256( encode(Signature{ meta... }) )
  *   dataForSignature = SHA256( sigMdHash || txHash )        // 32 bytes  <- signed
+ *
+ * The second line is the same for EVERY signature type — protocol/signature_utils.go `signingHash` takes
+ * one path for Ed25519, ECDSA-SHA256 and RSA-SHA256 alike. So supporting a bank's existing PKI key is not
+ * a second signing scheme; it is the same preimage with a different type enum in the metadata, and a
+ * different signature encoding coming back out of the key. test/signature-algorithms.test.ts pins that
+ * against vectors the Go protocol generated.
  *
  * Zero-valued vote (approve = Accept = 0) is omitted by Accumulate's binary
  * marshaling, so setting vote:0 and omitting it are byte-identical.
  */
-import { ED25519Signature, DelegatedSignature, sha256, encode, AccURL } from './sdk.js';
+import { DelegatedSignature, SIGNATURE_CLASS, sha256, encode, AccURL } from './sdk.js';
 import { Vote, VOTE_CODE } from '../types.js';
+import { AccumulateSignatureType } from '../signer/signer.js';
 
 export function hexToBytes(hex: string): Uint8Array {
   const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
@@ -40,7 +47,16 @@ export function computeTimestamp(lastUsedOnMicros: number, nowMicros: number): n
 }
 
 export interface PreimageParams {
-  publicKey: Uint8Array;   // 32 bytes
+  /** The key as its signature type carries it: raw for Ed25519, PKIX/SPKI DER for ECDSA, PKCS#1 for RSA. */
+  publicKey: Uint8Array;
+  /**
+   * Defaults to ed25519 when absent. The default exists because the governance paths in src/ops/ are
+   * Ed25519 by construction — they sign with the org's own key — and making them all say so would be
+   * noise. The VOTE path never relies on it: it passes the key's own declared type. When a non-Ed25519
+   * key governs (F2/F3), those call sites must pass `signer.signatureType` too, or the network will
+   * reject a signature whose metadata claims the wrong algorithm.
+   */
+  signatureType?: AccumulateSignatureType;
   signerUrl: string;
   signerVersion: number;
   timestamp: number;       // micros
@@ -53,7 +69,7 @@ export interface Preimage {
   dataForSignature: Uint8Array;  // 32 bytes — the thing to Ed25519-sign
   sigMdHash: Uint8Array;         // 32 bytes
   metadata: {
-    type: 'ed25519';
+    type: AccumulateSignatureType;
     publicKey: Uint8Array;
     signer: string;
     signerVersion: number;
@@ -66,8 +82,11 @@ export interface Preimage {
 /** Build the (possibly delegator-wrapped) signature-metadata object the network re-encodes. */
 function buildSigMetaObject(p: PreimageParams) {
   const voteCode = VOTE_CODE[p.vote];
+  const type = p.signatureType ?? 'ed25519';
+  const Signature = SIGNATURE_CLASS[type];
+  if (!Signature) throw new Error(`no signature class for type ${type}`);
   const fields: Record<string, unknown> = {
-    type: 'ed25519',
+    type,
     publicKey: p.publicKey,
     signer: AccURL.parse(p.signerUrl),
     signerVersion: p.signerVersion,
@@ -75,7 +94,7 @@ function buildSigMetaObject(p: PreimageParams) {
     vote: voteCode, // 0 (Accept) is omitted by marshaling; mirrors api-bridge
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let sig: any = new ED25519Signature(fields);
+  let sig: any = new Signature(fields);
   for (const del of p.delegators ?? []) sig = new DelegatedSignature({ signature: sig, delegator: AccURL.parse(del) });
   return sig;
 }
@@ -101,7 +120,7 @@ export function buildPreimage(txHash: Uint8Array, p: PreimageParams): Preimage {
     dataForSignature,
     sigMdHash,
     metadata: {
-      type: 'ed25519',
+      type: p.signatureType ?? 'ed25519',
       publicKey: p.publicKey,
       signer: p.signerUrl,
       signerVersion: p.signerVersion,
@@ -117,9 +136,9 @@ const VOTE_NAME: Record<number, string> = { 1: 'reject', 2: 'abstain', 3: 'sugge
 
 /** The signature object submitted in the envelope's `signatures[]`. */
 export interface SignatureObject {
-  type: 'ed25519';
-  signature: string;        // 128 hex
-  publicKey: string;        // 64 hex
+  type: AccumulateSignatureType;
+  signature: string;        // hex: 64 bytes for Ed25519, ASN.1 DER for ECDSA, PKCS#1 v1.5 for RSA
+  publicKey: string;        // hex: 32 bytes for Ed25519, PKIX DER for ECDSA, PKCS#1 DER for RSA
   signer: string;
   signerVersion: number;
   timestamp: number;
@@ -133,7 +152,7 @@ export function buildSignatureObject(
   txHashHex: string,
 ): SignatureObject {
   const obj: SignatureObject = {
-    type: 'ed25519',
+    type: pre.metadata.type,
     signature: bytesToHex(signatureBytes),
     publicKey: bytesToHex(pre.metadata.publicKey),
     signer: pre.metadata.signer,
@@ -146,16 +165,22 @@ export function buildSignatureObject(
 }
 
 /**
- * Delegate model: build the wire-form (asObject) DelegatedSignature wrapping the
- * signed ED25519Signature. Used when the org is attached as a delegate on the user's page.
+ * Delegate model: build the wire-form (asObject) DelegatedSignature wrapping the signed key signature.
+ * Used when the org is attached as a delegate on the user's page.
+ *
+ * The wrapper preserves the inner signer's page URL, algorithm and public key — which is what lets a
+ * record distinguish an employee signing with her certificate from the institution signing inside her
+ * book, so keep the inner type from the preimage rather than assuming one.
  */
 export function buildDelegatedSignatureObject(
   pre: Preimage,
   signatureBytes: Uint8Array,
   txHashHex: string,
 ): unknown {
-  const inner = new ED25519Signature({
-    type: 'ed25519',
+  const Signature = SIGNATURE_CLASS[pre.metadata.type];
+  if (!Signature) throw new Error(`no signature class for type ${pre.metadata.type}`);
+  const inner = new Signature({
+    type: pre.metadata.type,
     publicKey: pre.metadata.publicKey,
     signer: AccURL.parse(pre.metadata.signer),
     signerVersion: pre.metadata.signerVersion,

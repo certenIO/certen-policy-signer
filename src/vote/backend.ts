@@ -76,7 +76,9 @@ export class DirectVoteBackend implements VoteBackend {
       const publicKey = await signer.publicKey();
       const timestamp = computeTimestamp(lastUsedOn, this.now() * 1000);
       const delegators = this.opts.delegators;
-      const pre = buildPreimage(hexToBytes(tx.txHash), { publicKey, signerUrl: tx.signerUrl, signerVersion, timestamp, vote, delegators });
+      // The key declares its own algorithm; the metadata must say the same thing, because the type is
+      // inside the hash that gets signed. Never assume Ed25519 here — a PKI key on the page is normal.
+      const pre = buildPreimage(hexToBytes(tx.txHash), { publicKey, signatureType: signer.signatureType, signerUrl: tx.signerUrl, signerVersion, timestamp, vote, delegators });
       const sigBytes = await signer.sign(pre.dataForSignature);
       const sigObj = delegators?.length
         ? buildDelegatedSignatureObject(pre, sigBytes, tx.txHash)

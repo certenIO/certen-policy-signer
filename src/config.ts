@@ -20,6 +20,21 @@ export function resolveLocalSeed(local?: { seed_hex?: string; seed_file?: string
   return new Uint8Array(Buffer.from(hex, 'hex'));
 }
 
+/**
+ * Resolve an ECDSA P-256 private key from `private_key_der_hex` (already env-resolved) or a mounted
+ * `private_key_der_file`. Hex-encoded DER either way — SEC1 or PKCS#8, both of which real PKI tooling
+ * emits — because a PEM in a YAML string is a newline-mangling accident waiting to happen.
+ */
+export function resolveLocalEcdsaKey(local?: { private_key_der_hex?: string; private_key_der_file?: string }): Uint8Array | undefined {
+  const raw = local?.private_key_der_hex ?? (local?.private_key_der_file ? readFileSync(local.private_key_der_file, 'utf8') : undefined);
+  if (raw === undefined) return undefined;
+  const hex = raw.trim();
+  if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length % 2 !== 0) {
+    throw new Error('local ECDSA key must be hex-encoded DER — is the env var or key file populated?');
+  }
+  return new Uint8Array(Buffer.from(hex, 'hex'));
+}
+
 function resolveSecret(v: string | undefined): string | undefined {
   if (!v) return undefined;
   if (v.startsWith('env:')) return process.env[v.slice(4)];
@@ -28,12 +43,17 @@ function resolveSecret(v: string | undefined): string | undefined {
 
 // A key source — reused for the single top-level `signer` and for each multi-scope `scopes[].key`.
 const SignerSpecSchema = z.object({
-  provider: z.enum(['vault-transit', 'local']),
+  // `local-ecdsa-p256` is the same in-process posture as `local`, with a PKI key type rather than
+  // Ed25519. It is deliberately a distinct provider name: a seed and a DER private key are not
+  // interchangeable, and a wrong guess would produce signatures the network silently refuses.
+  provider: z.enum(['vault-transit', 'local', 'local-ecdsa-p256']),
   vault: z.object({ addr: z.string().url(), key_name: z.string(), token: z.string() }).partial().optional(),
   local: z.object({
     seed_hex: z.string(),          // 32-byte hex, or an `env:NAME` ref
     seed_file: z.string(),         // path to a file holding the 32-byte hex seed (docker/k8s secret mount)
     allow_ephemeral: z.boolean(),  // dev only: generate a throwaway key when no seed is configured
+    private_key_der_hex: z.string(),   // local-ecdsa-p256: hex DER (SEC1 or PKCS#8), or an `env:NAME` ref
+    private_key_der_file: z.string(),  // local-ecdsa-p256: path to a file holding that hex
   }).partial().optional(),
 });
 export type SignerSpec = z.infer<typeof SignerSpecSchema>;
@@ -290,6 +310,7 @@ function resolveKeySecrets(spec: SignerSpec | undefined): void {
   if (!spec) return;
   if (spec.vault?.token) spec.vault.token = resolveSecret(spec.vault.token)!;
   if (spec.local?.seed_hex) spec.local.seed_hex = resolveSecret(spec.local.seed_hex);
+  if (spec.local?.private_key_der_hex) spec.local.private_key_der_hex = resolveSecret(spec.local.private_key_der_hex);
 }
 
 export function loadConfig(path: string): Config {
