@@ -15,6 +15,8 @@
  */
 import { AccumulateClient } from '../accumulate/client.js';
 import { Keyring } from '../signer/keyring.js';
+import { AccumulateSignatureType } from '../signer/signer.js';
+import { createHash } from 'node:crypto';
 import { Logger } from '../logger.js';
 import { Vote } from '../types.js';
 import {
@@ -32,11 +34,38 @@ export interface VotableTx {
   account: string;
 }
 
+/**
+ * What actually satisfied a vote. Runbook F Phase F4.
+ *
+ * Three facts and no verdict. The question this exists to answer is whether a PERSON approved
+ * something or whether the organisation approved it in their name, and every honest answer rests on
+ * all three -- any one alone is a guess. The algorithm is the tempting one and it is a heuristic: an
+ * organisation may hold an ECDSA key, which F2 made configurable, so "ecdsaSha256 means somebody's
+ * certificate" will be wrong in a deployment nobody has built yet.
+ *
+ * A classification computed here would be this process's opinion, frozen at the moment of signing and
+ * impossible to check against the chain afterwards. The facts can be checked; the opinion could not.
+ */
+export interface VoteAttribution {
+  /** The key page the signature was made on. For a delegated vote, the INNER one -- whose key it was. */
+  page: string;
+  signatureType: AccumulateSignatureType;
+  /** sha256 of the public key: what a key page entry IS, and therefore comparable to one. */
+  publicKeyHash: string;
+  /** The seats this satisfied, outermost last. Empty for an ordinary vote on our own page. */
+  delegators: string[];
+}
+
 export interface VoteResult {
   ok: boolean;
   error?: string;
   signatureHash?: string;
   timestamp?: number;
+  /**
+   * Present only when the vote was ACCEPTED. A record naming the key that "signed" a transaction
+   * carrying no signature is worse than one that says nothing.
+   */
+  signedBy?: VoteAttribution;
 }
 
 export interface VoteBackend {
@@ -87,7 +116,20 @@ export class DirectVoteBackend implements VoteBackend {
       const res = await this.accumulate.submit(buildSubmitEnvelope(tx.rawTransaction, sigObj));
       if (res.ok || res.code === 'alreadySigned') {
         this.logger.info({ tx: tx.txHash, vote, signerVersion, timestamp, via: 'direct' }, 'vote submitted');
-        return { ok: true, signatureHash: bytesToHex(pre.sigMdHash), timestamp };
+        return {
+          ok: true,
+          signatureHash: bytesToHex(pre.sigMdHash),
+          timestamp,
+          // The page we signed ON, which for a delegated vote is the inner one -- whose key it was --
+          // with the seats it satisfied kept beside it rather than replacing it. Flattening to the
+          // outer page would record every seated approval as the role having approved itself.
+          signedBy: {
+            page: tx.signerUrl,
+            signatureType: signer.signatureType,
+            publicKeyHash: createHash('sha256').update(publicKey).digest('hex'),
+            delegators: [...(delegators ?? [])],
+          },
+        };
       }
       if (res.code === 'badSignerVersion' && attempt < maxRetries) {
         const info = await this.accumulate.getSignerInfo(tx.signerUrl);

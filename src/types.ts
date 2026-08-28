@@ -129,4 +129,23 @@ export interface Receipt {
   submittedAt?: number;
   accumulateResult?: string;
   policyEvidence?: Record<string, unknown>;
+  /**
+   * What actually satisfied the vote. Runbook F Phase F4.
+   *
+   * Which key page the signature was made on, with which algorithm, and the hash of the key -- the
+   * three facts any honest answer to "did a PERSON approve this, or did the organisation approve it in
+   * their name" rests on. For a delegated vote `page` is the INNER signer, whose key it was, and
+   * `delegators` names the seats it satisfied.
+   *
+   * Facts and no verdict, deliberately. A classification computed at signing time would be this
+   * process's opinion, frozen, and impossible to check against the chain afterwards; these can be
+   * compared to the key page entry they claim to be. Absent on a vote that was never accepted, and on
+   * every receipt written before this field existed.
+   */
+  signedBy?: {
+    page: string;
+    signatureType: string;
+    publicKeyHash: string;
+    delegators: string[];
+  };
 }

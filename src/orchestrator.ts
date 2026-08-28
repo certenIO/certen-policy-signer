@@ -256,18 +256,20 @@ export class Orchestrator {
     if (decision.decision === 'deny') {
       logger.info({ tx: ref.txHash, reason: decision.reason }, 'policy denied');
       await store.update(ref.txHash, { status: 'denied', decision: 'deny' });
+      // A reject vote that could not be submitted is a FAILURE, exactly as an approve vote is — the
+      // result was being discarded here. That mattered: `rejected` is terminal, so the tx was never
+      // retried, while the receipt below recorded `vote: reject` for a vote that never reached the
+      // chain. The transaction stayed pending on-chain until expiry with the audit trail claiming it
+      // had been actively killed. Leave it retryable and write no receipt, as the approve path does.
+      let rejectVote: VoteResult | undefined;
       if (rules.submitRejectVote) {
-        // A reject vote that could not be submitted is a FAILURE, exactly as an approve vote is — the
-        // result was being discarded here. That mattered: `rejected` is terminal, so the tx was never
-        // retried, while the receipt below recorded `vote: reject` for a vote that never reached the
-        // chain. The transaction stayed pending on-chain until expiry with the audit trail claiming it
-        // had been actively killed. Leave it retryable and write no receipt, as the approve path does.
         const res = await this.signAndSubmit(tx, 'reject');
         if (!res.ok) {
           logger.error({ tx: ref.txHash, err: res.error }, 'reject vote submission failed');
           this.notify('signature.failed', tx, { reason: decision.reason, error: res.error });
           return store.update(ref.txHash, { status: 'error', lastError: res.error });
         }
+        rejectVote = res;
       }
       const final = await store.update(ref.txHash, { status: 'rejected' });
       await store.saveReceipt({
@@ -275,6 +277,9 @@ export class Orchestrator {
         vote: rules.submitRejectVote ? 'reject' : undefined,
         reason: decision.reason,
         policyEvidence: decision.evidence,
+        // A reject is a signature too, and the record should say which key cast it. A deployment that
+        // withholds rejects rather than casting them has nothing to attribute, and gets nothing.
+        ...(rejectVote?.signedBy ? { signedBy: rejectVote.signedBy } : {}),
       });
       this.notify('decision.denied', tx, { reason: decision.reason });
       return final;
@@ -305,6 +310,8 @@ export class Orchestrator {
         signatureHash: res.signatureHash, submittedAt: this.now(), accumulateResult: 'ok',
         reason: decision.reason,
         policyEvidence: decision.evidence,
+        // What satisfied it, carried through rather than re-derived. F4.
+        ...(res.signedBy ? { signedBy: res.signedBy } : {}),
       });
       this.notify('decision.approved', tx, { reason: decision.reason });
       return store.update(ref.txHash, { status: 'signed', timestampMicros: res.timestamp });
