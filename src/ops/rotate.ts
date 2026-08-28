@@ -162,7 +162,7 @@ export async function signAndSubmit(d: RotateDeps, page: string, body: unknown, 
 export async function confirmPage(
   acc: RawAccumulateClient,
   page: string,
-  expect: { present?: string[]; absent?: string[]; minVersion?: number },
+  expect: { present?: string[]; absent?: string[]; delegatesAbsent?: string[]; minVersion?: number },
   logger: Logger,
   timeoutMs = 120_000,
   pollMs = 3_000,
@@ -175,8 +175,11 @@ export async function confirmPage(
   for (;;) {
     last = await readPage(acc, page).catch(() => last);
     const has = (h: string) => last.keyHashes.includes(h.toLowerCase());
+    // A delegate seat carries no key hash, so it is checked against the entries rather than the hashes.
+    // acc:// URLs are not case-sensitive, so the comparison must not be either.
+    const hasDelegate = (u: string) => last.entries.some((e) => (e.delegate ?? '').toLowerCase() === u.toLowerCase());
     const presentOk = (expect.present ?? []).every(has);
-    const absentOk = (expect.absent ?? []).every((h) => !has(h));
+    const absentOk = (expect.absent ?? []).every((h) => !has(h)) && (expect.delegatesAbsent ?? []).every((u) => !hasDelegate(u));
     const versionOk = expect.minVersion === undefined || last.version >= expect.minVersion;
     if (presentOk && absentOk && versionOk) {
       logger.info({ page, version: last.version, keys: last.keyHashes.length }, 'rotation confirmed on-chain');

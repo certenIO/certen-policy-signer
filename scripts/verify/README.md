@@ -32,6 +32,7 @@ independent ports and can run at the same time.
 | [`pki-ecdsa-vote.ts`](pki-ecdsa-vote.ts) | The vote is cast with an **ECDSA P-256** key — what a corporate certificate is — on a page holding no Ed25519 key at all, and the recorded signature type is read back off the chain | — |
 | [`vault-custody.ts`](vault-custody.ts) | The production posture: the key is generated in Vault, never leaves it, and Vault signs the votes | a reachable Vault |
 | [`vault-two-approvers.ts`](vault-two-approvers.ts) | **Two approvers, two Vault P-256 keys, one page with threshold 2.** Held pending on one signature and executed on two; both signatures read back off the chain and required to be two *distinct* keys | docker (it starts and removes its own dev Vault) |
+| [`roster-enrolment.ts`](roster-enrolment.ts) | **A seat the organisation cannot create alone.** The org proposes a delegate seat, the protocol holds it, and it exists only once the employee's own certificate co-signs. Then the seat is exercised, revoked, and shown not to authorise afterwards | — |
 | [`deployed-container.ts`](deployed-container.ts) | **The acceptance test.** The shipped container image discovers, decides, and votes on its own | Docker |
 
 New to this? Start with [`scripts/quickstart.ts`](../quickstart.ts) instead — it walks all four decision
