@@ -183,8 +183,17 @@ response MAC is verified before your parser sees the body, and an adapter that t
 Everything is fail-closed: the signer stops rather than signs when it cannot prove it should.
 
 - **Key custody.** `vault-transit` — the key is generated in HashiCorp Vault and never leaves it; Vault
-  signs. `local` — the key is held in-process from an `env:` ref or a mounted secret file; the pilot
+  signs. Ed25519 or `ecdsa-p256`, the key type a corporate PKI certificate actually is. `local` and
+  `local-ecdsa-p256` — the key is held in-process from an `env:` ref or a mounted secret file; the pilot
   posture, a deliberate documented tradeoff.
+- **A per-person key is attribution, not consent.** A key page holds several keys with a threshold, so a
+  role page can carry one seat per approver and the *protocol* counts the approvals rather than an
+  application — proven on the network by
+  [`scripts/verify/vault-two-approvers.ts`](scripts/verify/vault-two-approvers.ts). But a per-person key
+  living in the organisation's Vault means the organisation can sign as that person, without them. That
+  is a pilot posture and it is written on the file that implements it
+  (`src/signer/vault-transit.ts`); the production choice between it, the employee's own smartcard, and
+  a remote signing service is a decision, not a default.
 - **Startup self-check (SR6).** The configured key must be *verifiably* on the on-chain key page.
   Mismatch, unreachable page, or unreadable key hashes → refuse to start. The failure it prevents is
   silent: a signer on the wrong key looks healthy while every vote it casts is rejected.

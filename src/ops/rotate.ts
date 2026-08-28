@@ -134,6 +134,14 @@ export async function signAndSubmit(d: RotateDeps, page: string, body: unknown, 
     signerVersion: info.version,
     timestamp: computeTimestamp(info.lastUsedOn, now() * 1000),
     vote: 'approve' as const,   // Accept(0): marshals as absent, the initiator's normal form
+    // The key's OWN declared type, not the default. This is the only place any governance transaction
+    // is signed -- every op in keypage.ts and every mode in rotateKey funnels through here -- so it is
+    // also the only place that had to change to let a certificate govern a page. It used to inherit
+    // `ed25519` from buildPreimage, which was true of every caller until Runbook F Phase F2 put a
+    // Vault P-256 key on a page and asked it to raise its own threshold. That failed CLOSED, which is
+    // the right direction, and it failed OPAQUELY: metadata naming the wrong algorithm is refused with
+    // an error about the signature, so it reads as a key that is not on the page. docs/TODO.md T27.
+    signatureType: signer.signatureType,
   };
   const initiator = buildSigMetaHash(params);
   const tx = new core.Transaction({ header: { principal: page, initiator }, body });

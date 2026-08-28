@@ -46,6 +46,13 @@ async function main() {
         page: s.page,
         book: s.book ?? bookOf(s.page),
         signer: buildSignerFromSpec(s.key, logger, `scope[${i}] ${s.page}`),
+        ...(s.keys
+          ? {
+              keys: Object.fromEntries(
+                Object.entries(s.keys).map(([ref, spec]) => [ref, buildSignerFromSpec(spec, logger, `scope[${i}] ${s.page} key[${ref}]`)]),
+              ),
+            }
+          : {}),
       }))
     : [{
         page: cfg.wallet.signer_url!,

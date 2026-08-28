@@ -47,7 +47,16 @@ const SignerSpecSchema = z.object({
   // Ed25519. It is deliberately a distinct provider name: a seed and a DER private key are not
   // interchangeable, and a wrong guess would produce signatures the network silently refuses.
   provider: z.enum(['vault-transit', 'local', 'local-ecdsa-p256']),
-  vault: z.object({ addr: z.string().url(), key_name: z.string(), token: z.string() }).partial().optional(),
+  // `key_type` is what Vault holds under `key_name`. It defaults to ed25519 -- every config written
+  // before Runbook F Phase F2 meant that -- and VaultTransitSigner checks the default against Vault's
+  // own answer on the first read, so a wrong one refuses rather than signing with a mismatched
+  // algorithm the network then rejects for reasons that read like a missing key.
+  vault: z.object({
+    addr: z.string().url(),
+    key_name: z.string(),
+    token: z.string(),
+    key_type: z.enum(['ed25519', 'ecdsa-p256']),
+  }).partial().optional(),
   local: z.object({
     seed_hex: z.string(),          // 32-byte hex, or an `env:NAME` ref
     seed_file: z.string(),         // path to a file holding the 32-byte hex seed (docker/k8s secret mount)
@@ -113,6 +122,13 @@ const Schema = z.object({
       page: z.string().startsWith('acc://'),
       book: z.string().startsWith('acc://').optional(),
       key: SignerSpecSchema,
+      // Further keys on the SAME page, addressed by a ref this deployment chooses -- Runbook F Phase
+      // F2. A key page holds several keys with a threshold, so a roster page is one page with one seat
+      // per approver. `key` above stays the key this wallet signs with when nobody is named.
+      //
+      // The ref is an opaque label and nothing here can check it against an identity. What binds it to
+      // a person is the key page entry it resolves to, which is on chain rather than in this file.
+      keys: z.record(z.string().min(1), SignerSpecSchema).optional(),
       // Per-scope overrides, MERGED over the top-level blocks of the same name. A fleet of agents rarely
       // shares one rulebook: a trading bot and a treasury page belong on different engines, under
       // different ceilings, with different secrets. State only what differs — a scope that just needs a

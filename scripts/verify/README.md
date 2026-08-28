@@ -31,6 +31,7 @@ independent ports and can run at the same time.
 | [`multi-page.ts`](multi-page.ts) | One process watching several key pages signs each transaction with the **right** key | — |
 | [`pki-ecdsa-vote.ts`](pki-ecdsa-vote.ts) | The vote is cast with an **ECDSA P-256** key — what a corporate certificate is — on a page holding no Ed25519 key at all, and the recorded signature type is read back off the chain | — |
 | [`vault-custody.ts`](vault-custody.ts) | The production posture: the key is generated in Vault, never leaves it, and Vault signs the votes | a reachable Vault |
+| [`vault-two-approvers.ts`](vault-two-approvers.ts) | **Two approvers, two Vault P-256 keys, one page with threshold 2.** Held pending on one signature and executed on two; both signatures read back off the chain and required to be two *distinct* keys | docker (it starts and removes its own dev Vault) |
 | [`deployed-container.ts`](deployed-container.ts) | **The acceptance test.** The shipped container image discovers, decides, and votes on its own | Docker |
 
 New to this? Start with [`scripts/quickstart.ts`](../quickstart.ts) instead — it walks all four decision

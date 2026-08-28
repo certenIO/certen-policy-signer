@@ -40,6 +40,26 @@ wallet:
   #     key: { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "team-b", token: "env:VAULT_TOKEN" } }
   #     policy: { url: "https://rules.internal/team-b/decide", hmac_secret: "env:TEAM_B_HMAC" }
   #     behavior: { value_ceiling: "100000", submit_reject_vote: true }
+  #
+  # A ROLE PAGE WITH ONE SEAT PER APPROVER. A key page holds several keys with a threshold, so a page
+  # can carry a seat per person -- and then the PROTOCOL counts the approvals, not an application. `key`
+  # stays the key this wallet signs with when nobody is named; `keys` are the named ones, and a ref this
+  # wallet holds no key for is refused rather than falling back to `key`.
+  #
+  # The refs are opaque labels. Nothing here can check one against an identity: what binds a ref to a
+  # person is the key page entry it resolves to, which is on chain and was put there deliberately.
+  #
+  #   - page: "acc://bank.acme/roles/treasury/1"      # accept threshold 2, set on chain
+  #     key:  { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "treasury-org", token: "env:VAULT_TOKEN" } }
+  #     keys:
+  #       alice: { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "alice-seat", token: "env:VAULT_TOKEN", key_type: "ecdsa-p256" } }
+  #       bob:   { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "bob-seat",   token: "env:VAULT_TOKEN", key_type: "ecdsa-p256" } }
+  #
+  # WHAT A PER-PERSON KEY IN THE ORGANISATION'S VAULT DOES AND DOES NOT ESTABLISH. It makes attribution
+  # real on chain -- two seats, two signatures, two distinct keys in the record. It does NOT establish
+  # that the person agreed: this process can ask Vault for either signature at any time, without them.
+  # That is a pilot posture, and the production choice between it, a smartcard, and a remote signing
+  # service is Runbook F's §F6. See the header of src/signer/vault-transit.ts.
 
   # How this signer is attached to the transactions it signs.
   #   authority — the key book is named as an authority (the usual case)
@@ -70,6 +90,11 @@ signer:
     addr: "https://vault.internal:8200"
     key_name: "example-org-accumulate"
     token: "env:VAULT_TOKEN"
+    # What Vault holds under that name: "ed25519" (the default) or "ecdsa-p256". Vault Transit signs
+    # both natively. The default is CHECKED against Vault's own answer on the first read rather than
+    # trusted -- a wallet that signed with one algorithm while naming the other in its metadata would
+    # be refused by the network with an error about the signature rather than about this line.
+    # key_type: "ecdsa-p256"
 
   # local:
   #   seed_hex: "env:SIGNER_SEED_HEX"        # 32-byte hex seed, or...

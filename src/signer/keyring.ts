@@ -34,7 +34,9 @@ export function buildSignerFromSpec(spec: SignerSpec, logger: Logger, label: str
   if (spec.provider === 'vault-transit') {
     const v = spec.vault;
     if (!v?.addr || !v.key_name || !v.token) throw new Error(`${label}: vault-transit requires addr, key_name, token`);
-    return new VaultTransitSigner({ addr: v.addr, keyName: v.key_name, token: v.token });
+    // key_type defaults to ed25519 inside the signer, where it is checked against what Vault actually
+    // holds. Stating it here rather than defaulting silently is what makes a P-256 seat configurable.
+    return new VaultTransitSigner({ addr: v.addr, keyName: v.key_name, token: v.token, ...(v.key_type ? { keyType: v.key_type } : {}) });
   }
   const seed = resolveLocalSeed(spec.local);
   if (seed) {
@@ -54,11 +56,30 @@ export interface SigningScope {
   page: string;    // acc://org.acme/book/1
   book: string;    // acc://org.acme/book
   signer: KeySigner;
+  /**
+   * Further keys on the SAME page, addressed by a ref the deployment chooses -- Runbook F Phase F2.
+   *
+   * A key page holds several keys with a threshold, so a roster page is one page with one seat per
+   * approver. `signer` above stays what it always was: the key this wallet signs with on that page
+   * when nobody is named. These are the named ones.
+   *
+   * The ref is an opaque label from the config, deliberately: it is not an identity claim and nothing
+   * here can check one. What binds a ref to a person is the key page entry it resolves to, and that
+   * binding is on chain rather than in this file.
+   */
+  keys?: Record<string, KeySigner>;
 }
 
 export interface Keyring {
-  /** The signer whose key sits on `pageUrl`. Throws if no scope covers it. */
-  forPage(pageUrl: string): KeySigner;
+  /**
+   * The signer whose key sits on `pageUrl`. Throws if no scope covers it.
+   *
+   * With `keyRef`, the named key on that page. Strict in both directions: an unknown page and an
+   * unknown ref both throw, and a ref is NEVER allowed to fall back to the scope key. Falling back
+   * would sign a named approver's vote with the organisation's key -- a substitution the record would
+   * carry forever and nobody asked for.
+   */
+  forPage(pageUrl: string, keyRef?: string): KeySigner;
   /** Every configured scope. */
   scopes(): SigningScope[];
   /** True only if every scope's key provider is reachable (or has no health probe). */
@@ -76,18 +97,29 @@ export class MapKeyring implements Keyring {
       this.byPage.set(k, s);
     }
   }
-  forPage(pageUrl: string): KeySigner {
+  forPage(pageUrl: string, keyRef?: string): KeySigner {
     const s = this.byPage.get(norm(pageUrl));
     if (!s) {
       const known = [...this.byPage.values()].map((x) => x.page).join(', ');
       throw new Error(`no signing key configured for page ${pageUrl} (known pages: ${known})`);
     }
-    return s.signer;
+    if (keyRef === undefined) return s.signer;
+
+    const named = s.keys?.[keyRef];
+    if (!named) {
+      const known = Object.keys(s.keys ?? {}).join(', ') || 'none configured';
+      throw new Error(`no key "${keyRef}" configured on page ${s.page} (known keys: ${known})`);
+    }
+    return named;
   }
   scopes(): SigningScope[] { return [...this.byPage.values()]; }
   async healthy(): Promise<boolean> {
     for (const s of this.byPage.values()) {
-      if (s.signer.health && !(await s.signer.health())) return false;
+      // Every key on the page, not only the scope's own. A roster whose second seat cannot reach its
+      // custody backend fails at the moment somebody votes, and /healthz exists to say so before then.
+      for (const key of [s.signer, ...Object.values(s.keys ?? {})]) {
+        if (key.health && !(await key.health())) return false;
+      }
     }
     return true;
   }
