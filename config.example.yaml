@@ -55,6 +55,23 @@ wallet:
   #       alice: { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "alice-seat", token: "env:VAULT_TOKEN", key_type: "ecdsa-p256" } }
   #       bob:   { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "bob-seat",   token: "env:VAULT_TOKEN", key_type: "ecdsa-p256" } }
   #
+  # THE ORGANISATION HOLDING A KEY INSIDE SOMEBODY'S IDENTITY. Runbook F 0.4 accepts this: a page in an
+  # employee's own book, carrying the organisation's key, so an expired certificate can be rotated and
+  # a leaver retired without orphaning the identity. The price is that the same key can approve a
+  # payment in her name, so the deployment declares whose behalf it is held on and every signature made
+  # there says so -- which is what turns the exception into something the system reports rather than
+  # something the documentation discloses.
+  #
+  #   - page: "acc://bank.acme/alice/book/1"        # the ORG's key, inside Alice's identity
+  #     key: { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "employee-governance", token: "env:VAULT_TOKEN" } }
+  #     acts_for: "Alice Okonkwo"
+  #
+  # DECLARED, because it cannot be inferred. A key page entry is sha256(publicKey) for every key type
+  # alike, so nothing on a page distinguishes a person's certificate from a software key, and the
+  # algorithm is a heuristic -- the organisation's own key may be ECDSA, which this file already
+  # supports. Omit it wherever the organisation signs as itself; that is the ordinary case and stays
+  # silent, because an alarm that fires on every transaction is worth nothing within a week.
+
   # WHAT A PER-PERSON KEY IN THE ORGANISATION'S VAULT DOES AND DOES NOT ESTABLISH. It makes attribution
   # real on chain -- two seats, two signatures, two distinct keys in the record. It does NOT establish
   # that the person agreed: this process can ask Vault for either signature at any time, without them.

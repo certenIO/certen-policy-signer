@@ -54,6 +54,18 @@ export interface VoteAttribution {
   publicKeyHash: string;
   /** The seats this satisfied, outermost last. Empty for an ordinary vote on our own page. */
   delegators: string[];
+  /**
+   * Whose behalf this key is held on, when the deployment declared that it is somebody's.
+   *
+   * Present means THE ORGANISATION SIGNED IN A PERSON'S NAME: the key is ours, on a page inside their
+   * identity, and nothing about their consent or presence is established by it. Absent is the ordinary
+   * case -- the organisation signing as itself -- and stays silent, because an alarm that fires on
+   * every transaction is worth nothing within a week.
+   *
+   * Declared rather than inferred: nothing on a key page distinguishes a person's certificate from a
+   * software key, so this is the deployment's statement about its own key. See config.ts `acts_for`.
+   */
+  onBehalfOf?: string;
 }
 
 export interface VoteResult {
@@ -99,6 +111,7 @@ export class DirectVoteBackend implements VoteBackend {
     let signerVersion = tx.signerVersion;
     let lastUsedOn = tx.lastUsedOn;
     // Pick the key that sits on THIS tx's page. Throws (fail-closed) if we hold no key for it.
+    const scope = this.keyring.scopeFor(tx.signerUrl);
     const signer = this.keyring.forPage(tx.signerUrl);
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -128,6 +141,7 @@ export class DirectVoteBackend implements VoteBackend {
             signatureType: signer.signatureType,
             publicKeyHash: createHash('sha256').update(publicKey).digest('hex'),
             delegators: [...(delegators ?? [])],
+            ...(scope.actsFor ? { onBehalfOf: scope.actsFor } : {}),
           },
         };
       }

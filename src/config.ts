@@ -129,6 +129,25 @@ const Schema = z.object({
       // The ref is an opaque label and nothing here can check it against an identity. What binds it to
       // a person is the key page entry it resolves to, which is on chain rather than in this file.
       keys: z.record(z.string().min(1), SignerSpecSchema).optional(),
+      /**
+       * Whose behalf this scope's key is held on. Runbook F Phase F4.
+       *
+       * Set it when the page is inside a PERSON's identity and the key on it is the organisation's --
+       * the arrangement Runbook F 0.4 accepts so a certificate can be rotated when it expires and a
+       * leaver retired. The price of that arrangement is that the same key can approve a payment in
+       * her name, and this is what lets the record say so.
+       *
+       * DECLARED, because it cannot be inferred. A key page entry is sha256(publicKey) for every key
+       * type alike, so nothing on a page distinguishes a person's certificate from a software key
+       * (RESEARCH-CONSOLE-AND-SIGNER.md section 5) -- and the algorithm is a heuristic that F2 already
+       * made wrong by letting the organisation hold an ECDSA key. This is not a claim about the chain;
+       * it is the deployment's statement about its own key, which only the deployment can make.
+       *
+       * Absent means the organisation is signing as itself, which is the ordinary case and stays
+       * silent. An empty string is refused: "on behalf of somebody, and we did not say who" is not a
+       * state anybody meant to configure, and it would reach a screen as a blank name beside an alarm.
+       */
+      acts_for: z.string().min(1, 'acts_for must name the person, or be omitted entirely').optional(),
       // Per-scope overrides, MERGED over the top-level blocks of the same name. A fleet of agents rarely
       // shares one rulebook: a trading bot and a treasury page belong on different engines, under
       // different ceilings, with different secrets. State only what differs — a scope that just needs a

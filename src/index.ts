@@ -46,6 +46,7 @@ async function main() {
         page: s.page,
         book: s.book ?? bookOf(s.page),
         signer: buildSignerFromSpec(s.key, logger, `scope[${i}] ${s.page}`),
+        ...(s.acts_for ? { actsFor: s.acts_for } : {}),
         ...(s.keys
           ? {
               keys: Object.fromEntries(

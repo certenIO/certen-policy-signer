@@ -68,6 +68,13 @@ export interface SigningScope {
    * binding is on chain rather than in this file.
    */
   keys?: Record<string, KeySigner>;
+  /**
+   * Whose behalf this scope's key is held on, when it is somebody's. Runbook F Phase F4.
+   *
+   * Present only where the deployment declared it, and it travels onto every signature made here so
+   * the record can say that the organisation signed in a person's name rather than as itself.
+   */
+  actsFor?: string;
 }
 
 export interface Keyring {
@@ -80,6 +87,14 @@ export interface Keyring {
    * carry forever and nobody asked for.
    */
   forPage(pageUrl: string, keyRef?: string): KeySigner;
+  /**
+   * The whole scope covering `pageUrl`, not only its key. Throws for a page we hold nothing for,
+   * exactly as `forPage` does.
+   *
+   * The vote path needs this because a signature carries more than the key that made it: whose behalf
+   * the key is held on is a property of the SCOPE, and a signer object has no idea.
+   */
+  scopeFor(pageUrl: string): SigningScope;
   /** Every configured scope. */
   scopes(): SigningScope[];
   /** True only if every scope's key provider is reachable (or has no health probe). */
@@ -97,12 +112,16 @@ export class MapKeyring implements Keyring {
       this.byPage.set(k, s);
     }
   }
-  forPage(pageUrl: string, keyRef?: string): KeySigner {
+  scopeFor(pageUrl: string): SigningScope {
     const s = this.byPage.get(norm(pageUrl));
     if (!s) {
       const known = [...this.byPage.values()].map((x) => x.page).join(', ');
       throw new Error(`no signing key configured for page ${pageUrl} (known pages: ${known})`);
     }
+    return s;
+  }
+  forPage(pageUrl: string, keyRef?: string): KeySigner {
+    const s = this.scopeFor(pageUrl);
     if (keyRef === undefined) return s.signer;
 
     const named = s.keys?.[keyRef];
@@ -130,6 +149,7 @@ export function singleKeyring(signer: KeySigner, page = 'acc://unknown.acme/book
   const scope: SigningScope = { page, book: bookOf(page), signer };
   return {
     forPage: () => signer,
+    scopeFor: () => scope,
     scopes: () => [scope],
     healthy: async () => (signer.health ? signer.health() : true),
   };

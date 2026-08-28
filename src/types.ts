@@ -147,5 +147,17 @@ export interface Receipt {
     signatureType: string;
     publicKeyHash: string;
     delegators: string[];
+    /**
+     * Whose behalf the key was held on, when the deployment declared that it is somebody's.
+     *
+     * Present means THE ORGANISATION SIGNED IN A PERSON'S NAME. That is legitimate for rotating an
+     * expired certificate and for retiring a leaver, and it is never legitimate on an approval -- so
+     * it is the one thing on this record that is worth alarming on rather than merely displaying.
+     *
+     * Absent is the ordinary case and says nothing about a person either way. It does NOT mean a
+     * person signed: nothing on a key page distinguishes a certificate from a software key, so no
+     * record can establish that from the chain alone.
+     */
+    onBehalfOf?: string;
   };
 }
