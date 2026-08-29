@@ -48,6 +48,22 @@ export interface PolicyRequest {
   requestId: string;
   txHash: string;
   operationId?: string;
+  /**
+   * WHICH KEY PAGE IS ASKING. Runbook F Phase F5.
+   *
+   * The page, not the book: a book is the authority and a page is the seat, and a wallet holding a
+   * treasury seat and a risk seat holds two pages. Answering "the book" would merge exactly the two
+   * questions this field exists to separate.
+   *
+   * Without it, one policy endpoint serving a multi-page signer cannot tell a treasury seat's question
+   * from a risk seat's -- it sees two identical requests about one transaction and answers the same
+   * thing twice. A deployment can work around that today by giving each scope its own `policy.url`,
+   * which is a legitimate shape rather than a hack, and this is the tidy version.
+   *
+   * Optional on the wire so an engine that predates it is unaffected, and so a wallet that has not
+   * been upgraded does not become unanswerable.
+   */
+  signerUrl?: string;
   account: string;
   chain?: string;
   actionSummary: string;

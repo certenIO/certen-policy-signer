@@ -203,6 +203,9 @@ export class Orchestrator {
       requestId: randomUUID(),
       txHash: tx.txHash,
       operationId: tx.operationId,
+      // Which of our pages is asking. The wallet has always known -- it is how the poller found this
+      // transaction -- and until F5 simply never passed it on.
+      signerUrl: tx.signerUrl,
       account: tx.account,
       chain: tx.summary.chain,
       actionSummary: tx.summary.action,
