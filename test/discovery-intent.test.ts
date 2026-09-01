@@ -115,6 +115,44 @@ describe('multi-leg intent → all leg amounts surfaced (edge case 8)', () => {
   });
 });
 
+/** Blob 0 with a `subject` — WHO the transfer is about, as a producer that knows emits it. */
+function subjectBody(subject: unknown) {
+  const toHex = (o: unknown) => Buffer.from(JSON.stringify(o), 'utf8').toString('hex');
+  const blobs = [
+    { kind: 'CERTEN_INTENT', version: '2.0', intent_id: 'sub-1', description: 'Reauth transfer', subject },
+    { protocol: 'CERTEN', version: '2.0', legs: [{ legId: 'l0', chain: 'ethereum-sepolia', asset: { symbol: 'ETH' }, to: '0xBe0043', amountWei: '4000' }] },
+    { organizationAdi: 'acc://o.acme', authorization: { signature_threshold: 1 } },
+    { nonce: 'certen_1' },
+  ];
+  return { type: 'writeData', entry: { type: 'doubleHash', data: blobs.map(toHex) } };
+}
+
+describe('blob 0 subject — who the intent is about', () => {
+  it('decodes a subject-bearing blob 0 and surfaces the claim on the summary', () => {
+    const { summary } = decodeSummary(subjectBody({ adi: 'acc://alice.acme', keyBook: 'acc://alice.acme/book' }), 'acc://a.acme/data');
+    expect(summary.subject).toEqual({ adi: 'acc://alice.acme', keyBook: 'acc://alice.acme/book' });
+    // Everything the decoder already did, unchanged — the field rides alongside, it does not displace.
+    expect(summary.value).toBe('4000');
+    expect(summary.action).toContain('Reauth transfer');
+  });
+
+  it('leaves the key absent on an intent that named nobody', () => {
+    const { summary } = decodeSummary(certenWriteDataBody('4000'), 'acc://a.acme/data');
+    expect('subject' in summary).toBe(false);
+  });
+
+  it('drops a malformed claim rather than half-populating one', () => {
+    // A bare string names no field an engine can key on, and a companion without an ADI is worthless.
+    expect('subject' in decodeSummary(subjectBody('acc://alice.acme'), 'acc://a.acme/data').summary).toBe(false);
+    expect('subject' in decodeSummary(subjectBody({ keyBook: 'acc://alice.acme/book' }), 'acc://a.acme/data').summary).toBe(false);
+  });
+
+  it('keeps the whole blob available in raw, unchanged', () => {
+    const { summary } = decodeSummary(subjectBody({ adi: 'acc://alice.acme' }), 'acc://a.acme/data');
+    expect((summary.raw as any)?.certenIntent?.subject).toEqual({ adi: 'acc://alice.acme' });
+  });
+});
+
 describe('non-CERTEN / malformed writeData fallback (edge case 6)', () => {
   it('writeData with no memo/blobs → no value (engine will fail-closed)', () => {
     const { summary } = decodeSummary({ type: 'writeData', entry: { type: 'doubleHash', data: [] } }, 'acc://a.acme/data');
