@@ -13,6 +13,25 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Added
 
+- **`subject` on the policy decision request — WHO the transaction is about.** An optional object,
+  `{ adi, keyBook?, id?, assertedBy? }`, carried whenever the payload named someone; the reference
+  decoder reads it from blob 0 of a Certen intent, and the subject's ADI is written onto the receipt.
+  It is what lets an engine holding a per-user binding — a biometric re-auth, an MFA enrolment — route a
+  decision to the right enrolled person: `account` is the organisation's data account and `operationId`
+  is per operation, so nothing on the request previously named a human.
+
+  **Not breaking.** The field is optional at every layer. An engine that ignores it behaves exactly as
+  today, and an intent that names nobody produces a request with **no `subject` key** — absence and
+  "unknown" are the same wire state, and the signer never invents one.
+
+  Two things an engine must be told, both documented in
+  [`docs/INTEGRATION.md`](docs/INTEGRATION.md#who-the-transaction-is-about): the subject is an
+  **assertion by the intent producer, not a proof by the user it names**, so pin `account` — the one
+  field a submitter cannot forge — to a customer you have a relationship with; and if your engine
+  requires a subject and does not get one it must return an explicit `deny`, because throwing merely
+  withholds and looks identical to an outage. `docs/PATTERNS.md` pattern E and
+  `examples/policy-engine.mjs` (`POLICY_MODE=subject`) show both.
+
 - **Outbound notifications, with the channels built in.** `notify.sms` (Twilio or compatible),
   `notify.email` (SendGrid), `notify.slack`, and `notify.webhook` — any combination, each a single HTTPS
   POST, no new dependencies. Six events: `pending.discovered`, `decision.approved`, `decision.denied`,

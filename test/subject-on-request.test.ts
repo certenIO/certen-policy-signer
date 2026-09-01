@@ -134,6 +134,74 @@ describe('the decision request says who the transaction is about', () => {
   });
 });
 
+/**
+ * THE FAIL-CLOSED RULE, and the distinction a careless test misses.
+ *
+ * An engine that requires a subject and does not get one has two ways to refuse, and they produce
+ * completely different outcomes on chain:
+ *
+ *   deny   → a reject vote is cast, the transaction reaches a TERMINAL state, and the receipt records
+ *            why. Somebody can find out what happened.
+ *   throw  → the signer WITHHOLDS. Nothing is signed — which is safe — but the transaction stays alive
+ *            on chain until it expires, no receipt is written, and from the outside this is
+ *            indistinguishable from the engine being down.
+ *
+ * Both are fail-closed in the sense that neither produces a signature. Only one of them tells anyone
+ * anything. `docs/INTEGRATION.md` therefore says an engine that requires a subject must return `deny`,
+ * and this pins the difference rather than asserting "it did not approve", which both satisfy.
+ */
+describe('an engine that requires a subject and does not get one', () => {
+  it('reaches a TERMINAL state when it denies — the documented behaviour', async () => {
+    const acc = new MockAccumulateClient();
+    acc.addPending(TX, { body: intentBody(undefined), principal: 'acc://bank.acme/data' });
+    const store = new MemoryStore();
+    const orchestrator = new Orchestrator({
+      accumulate: acc,
+      keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(3)), PAGE),
+      policy: { decide: async () => ({ decision: 'deny' as const, reason: 'no subject' }) } as unknown as PolicyClient,
+      store,
+      resolver: new Resolver(acc),
+      logger: silent,
+    });
+
+    const result = await orchestrator.handle({ txHash: TX, signerUrl: PAGE });
+    expect(result.status).toBe('rejected');
+    expect(result.status).not.toBe('awaiting_policy');
+    const receipt = await store.getReceipt(TX);
+    expect(receipt?.decision).toBe('deny');
+    expect(receipt?.reason).toBe('no subject');
+  });
+
+  it('STALLS when it throws instead — which is why the docs forbid it', async () => {
+    const acc = new MockAccumulateClient();
+    acc.addPending(TX, { body: intentBody(undefined), principal: 'acc://bank.acme/data' });
+    const store = new MemoryStore();
+    const orchestrator = new Orchestrator({
+      accumulate: acc,
+      keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(3)), PAGE),
+      policy: { decide: async () => { throw new Error('no subject on the request'); } } as unknown as PolicyClient,
+      store,
+      resolver: new Resolver(acc),
+      logger: silent,
+    });
+
+    const result = await orchestrator.handle({ txHash: TX, signerUrl: PAGE });
+    // Not terminal. The transaction is still alive and will be asked about again, forever, until it
+    // expires on chain — and no receipt says why.
+    expect(result.status).toBe('awaiting_policy');
+    expect(await store.getReceipt(TX)).toBeUndefined();
+    // Still fail-closed: nothing was signed. That is the part that makes this SAFE but UNINFORMATIVE.
+    expect(acc.submissions).toHaveLength(0);
+  });
+
+  it('an intent that named nobody is still decidable by an engine that does not care', async () => {
+    // The backward-compatibility half: every existing deployment must keep working unchanged.
+    const { req, receipt } = await askAbout(undefined, { decision: 'approve', reason: 'subject-agnostic policy' });
+    expect('subject' in req).toBe(false);
+    expect(receipt?.decision).toBe('approve');
+  });
+});
+
 describe('the receipt records whose re-authentication it was', () => {
   it('writes the subject ADI onto the approve receipt', async () => {
     const { receipt } = await askAbout({ adi: ALICE, keyBook: `${ALICE}/book` });

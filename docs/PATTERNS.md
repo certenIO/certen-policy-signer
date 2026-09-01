@@ -182,6 +182,41 @@ a bug in discovery.
 
 ---
 
+## E — Per-user re-authentication
+
+Your engine holds a binding per END USER — a biometric template, an MFA enrolment, a customer record —
+and every transaction has to be answered for the right person. Nothing in the wallet config changes; what
+changes is that you read one more field.
+
+```js
+// in your POST /decision handler
+const adi = request.subject?.adi;              // the enrolled user's Accumulate ADI
+if (!adi) return { decision: 'deny', reason: 'no subject' };
+const user = await roster.get(adi);
+if (!user) return { decision: 'deny', reason: `no enrolment for ${adi}` };
+return await reauthenticate(user, request);    // your biometric / MFA / step-up check
+```
+
+`subject.adi` is the same identity your enrolment validated — see `examples/enrollment.mjs` for the other
+end of it, and `checkEnrolledSubject` in `examples/policy-engine.mjs` for a runnable version of the above.
+Key on `adi`, never on `subject.keyBook`: the book is a hint, and binding to it makes every key rotation a
+re-enrolment.
+
+**The thing that goes wrong, and it is not the obvious one.** The subject is *optional*. Intents written
+before the field existed, third-party producers and custom decoders all carry none, and the temptation is
+to `throw` when it is missing. Don't: a throw **withholds**, so the transaction stays alive on chain until
+it expires while nobody is told why, and from the outside it is indistinguishable from your service being
+down. If your engine requires a subject, answer `deny` and say so in `reason`.
+
+**The second thing that goes wrong.** Trusting the claim unconditionally. The subject is asserted by
+whoever wrote the intent, not proven by the user it names — see
+[INTEGRATION.md](INTEGRATION.md#who-the-transaction-is-about). Pin the principal: accept a subject only
+when `request.account` is an account belonging to a customer you have a relationship with. One line, and
+it is the difference between trusting anyone who can reach your endpoint and trusting claims written under
+an account you already agreed to trust.
+
+---
+
 ## Applies to all four
 
 - **Set `store.path`.** Without it, signing history and receipts die with the process, and a restart can

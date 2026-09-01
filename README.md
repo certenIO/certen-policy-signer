@@ -80,7 +80,8 @@ One HTTP POST per pending transaction:
 ```jsonc
 // signer → you
 { "txHash": "9c2b…", "actionSummary": "Purchase order PO-1043 — 25000 USDC to Northwind",
-  "values": ["25000", "500"], "target": "0xabc…", "chain": "ethereum", "expiresAt": "…" }
+  "values": ["25000", "500"], "target": "0xabc…", "chain": "ethereum", "expiresAt": "…",
+  "subject": { "adi": "acc://alice.acme" } }   // WHO it is about, when the payload named someone. May be absent.
 
 // you → signer
 { "decision": "approve" | "deny" | "pending", "reason": "matched rule 12", "evidence": { … } }
@@ -92,6 +93,12 @@ One HTTP POST per pending transaction:
 | `deny` | Signs a reject vote (or withholds). The transaction dies. |
 | `pending` | Signs nothing, asks again next poll. For human approvals and step-up challenges. |
 | anything else, or nothing | Signs nothing, retries. Fail-closed. |
+
+`subject` names the end user the transaction is about, so an engine holding a per-user binding — a
+biometric re-auth, an MFA enrolment — can route the decision to the right person. It is an **assertion by
+the intent producer, not a proof by the user it names**, and it may be absent; if your engine requires
+one, answer `deny` rather than throwing, because a throw withholds and looks like an outage. Both points
+are in [`docs/INTEGRATION.md`](docs/INTEGRATION.md#who-the-transaction-is-about).
 
 `reason` and `evidence` are persisted verbatim in a durable receipt beside the vote — the audit trail
 tying *"we decided this"* to *"this happened on chain."*

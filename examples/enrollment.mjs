@@ -8,6 +8,20 @@
  *
  * Copy this file, replace ONE function (`onEnrolled`), fill in CONFIG, and you are integrated.
  *
+ * ── The ADI you enroll here is the one that arrives at reauth ─────────────────────────────────────
+ *
+ * `preflight(adiUrl, keyBookUrl)` below validates a specific ADI. That same value is what reaches your
+ * `POST /decision` endpoint as `request.subject.adi`, and it is what you look the enrolled user up by —
+ * there is no mapping table and no shared database between the two. Store the ADI as your key.
+ *
+ * Do NOT key on the key book. It is carried to reauth as `subject.keyBook` when the producer knows it,
+ * as a hint, but a book can live under an ADI without governing it and an ADI can be governed by
+ * several — which is exactly what `preflight`'s third check exists to catch. Reading the authority set
+ * at verification time, as this module does, is what makes key rotation a non-event; keying a binding
+ * to a book makes every rotation a re-enrollment.
+ *
+ * See `checkEnrolledSubject` in `policy-engine.mjs` for the other end of this.
+ *
  * ── Why a page that just signs a nonce is not enough ──────────────────────────────────────────────
  *
  * The obvious design is: issue a random nonce, have the user sign it with an ADI key, verify the
