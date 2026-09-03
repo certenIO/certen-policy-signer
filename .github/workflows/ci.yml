@@ -43,10 +43,11 @@ jobs:
           node-version: "20"
           cache: npm
       - run: npm ci
-      - name: create the ed25519 transit key
+      - name: create the transit keys the suite signs with (ed25519 and ecdsa-p256)
         run: |
           curl -sf -H "X-Vault-Token: root" -X POST http://127.0.0.1:8200/v1/sys/mounts/transit -d '{"type":"transit"}'
           curl -sf -H "X-Vault-Token: root" -X POST http://127.0.0.1:8200/v1/transit/keys/wallet-test -d '{"type":"ed25519"}'
+          curl -sf -H "X-Vault-Token: root" -X POST http://127.0.0.1:8200/v1/transit/keys/wallet-test-p256 -d '{"type":"ecdsa-p256"}'
       - run: npx vitest run test/vault-transit.test.ts
         env:
           VAULT_ADDR: http://127.0.0.1:8200
