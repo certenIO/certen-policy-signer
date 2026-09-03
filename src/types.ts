@@ -10,6 +10,47 @@ export interface PendingRef {
   signerUrl: string;   // acc://<org>.acme/book/1
 }
 
+/**
+ * WHO A TRANSACTION IS ABOUT — the end user whose policy decision gates it.
+ *
+ * `subject` is not `initiator` and not `account`. The initiator is whoever asked for the transaction;
+ * `account` is the on-chain principal it acts on; the subject is the person it is *about*. They coincide
+ * when a user submits their own gated transaction and diverge whenever an organisation acts on a user's
+ * behalf — which is the case this field exists for.
+ *
+ * ── IT IS AN ASSERTION, NOT A PROOF ───────────────────────────────────────────────────────────────
+ *
+ * The subject is an assertion by whoever wrote the intent, not a proof by the user it names. Nothing on
+ * chain binds it: Accumulate verified only that the submitter could sign for the transaction's principal,
+ * and the subject is not the principal. An engine that acts on `subject.adi` is therefore trusting the
+ * intent producer to name the right person; a compromised producer can name any enrolled identity it
+ * likes and ask the engine to re-authenticate the wrong human. The subject is an input to a decision,
+ * never an authorization.
+ *
+ * The one field on a request that CANNOT be forged is `account`, the on-chain principal. So pin it:
+ * accept a subject claim only when `account` is an account belonging to a customer you already have a
+ * relationship with. That is one line of engine config and it is the difference between trusting anyone
+ * who can reach your endpoint and trusting claims written under an account you agreed to trust.
+ *
+ * Absent means absent. Old intents, third-party producers and non-intent payloads carry no subject, and
+ * the signer never invents one. An engine that REQUIRES a subject and does not get one must return
+ * `{"decision":"deny"}` — throwing merely withholds, and leaves the transaction alive until it expires.
+ */
+export interface IntentSubject {
+  /** The Accumulate ADI — `acc://alice.acme`. The identity, and what enrollment bound. Key on THIS. */
+  adi: string;
+  /**
+   * A hint, never the identity. A book can live under an ADI without governing it, and an ADI can be
+   * governed by several. Keying on the book makes every key rotation a re-enrollment; read the ADI's
+   * authority set at verification time instead.
+   */
+  keyBook?: string;
+  /** The producer's own opaque reference for this person, when it sent one. */
+  id?: string;
+  /** Who is making the claim — the identity that wrote the intent. */
+  assertedBy?: string;
+}
+
 /** Human-readable + structured description of what the tx does, for the policy engine. */
 export interface ActionSummary {
   action: string;                 // "Transfer 5,000 ACME" / "Contract call ping(bytes32)"
@@ -27,6 +68,8 @@ export interface ActionSummary {
    */
   unpricedLegs?: number;
   calldataDecoded?: string;
+  /** WHO the transaction is about, when the payload named someone. See `IntentSubject`. */
+  subject?: IntentSubject;
   raw?: Record<string, unknown>;  // fallback / extra fields
 }
 
@@ -48,6 +91,11 @@ export interface PolicyRequest {
   requestId: string;
   txHash: string;
   operationId?: string;
+  /**
+   * WHO this transaction is about, when the payload named someone. May be absent — see `IntentSubject`
+   * for what it is worth and for what to do when it is not there.
+   */
+  subject?: IntentSubject;
   /**
    * WHICH KEY PAGE IS ASKING. Runbook F Phase F5.
    *
@@ -138,6 +186,12 @@ export interface Receipt {
   txHash: string;
   operationId?: string;
   decision?: 'approve' | 'deny';
+  /**
+   * The subject's ADI at decision time. The receipts ARE the audit trail, and an auditor reading one a
+   * year later is asking whose re-authentication approved this signature. Absent when the intent named
+   * nobody.
+   */
+  subject?: string;
   vote?: Vote;
   /** The policy engine's stated reason. Persisted: the audit trail must say WHY, not just what. */
   reason?: string;

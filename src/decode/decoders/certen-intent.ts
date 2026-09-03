@@ -94,6 +94,21 @@ export const certenIntentDecoder: SummaryDecoder = {
 
     const legSuffix = legs!.length > 1 ? ` (+${legs!.length - 1} more leg${legs!.length > 2 ? 's' : ''})` : '';
 
+    // WHO the intent is about, when it named someone. Promoted out of the blob so an engine reads one
+    // documented field rather than digging through `raw`; the blob itself stays exactly as it was below.
+    // A claim is taken only when it is an object carrying a non-empty `adi` — a bare string, or an object
+    // with no identity in it, is a malformed claim and therefore no claim. The signer never invents one.
+    const claimed = intent?.intent?.subject;
+    const subject =
+      claimed && typeof claimed === 'object' && typeof claimed.adi === 'string' && claimed.adi
+        ? {
+            adi: claimed.adi,
+            ...(typeof claimed.keyBook === 'string' && claimed.keyBook ? { keyBook: claimed.keyBook } : {}),
+            ...(typeof claimed.id === 'string' && claimed.id ? { id: claimed.id } : {}),
+            ...(typeof claimed.assertedBy === 'string' && claimed.assertedBy ? { assertedBy: claimed.assertedBy } : {}),
+          }
+        : undefined;
+
     return {
       summary: {
         action: `${desc} — ${human} ${symbol} to ${leg0.to ?? '?'}${legSuffix}`.replace(/\s+/g, ' ').trim(),
@@ -102,6 +117,8 @@ export const certenIntentDecoder: SummaryDecoder = {
         value: leg0.amountWei != null ? String(leg0.amountWei) : undefined,
         values,
         ...(unpricedLegs > 0 ? { unpricedLegs } : {}),
+        // Spread, not `subject`: absent must be an ABSENT KEY on the wire, not `subject: undefined`.
+        ...(subject ? { subject } : {}),
         raw: { certenIntent: intent?.intent, legCount: legs!.length },
       },
       operationId: intent?.intent?.intent_id ?? ((body.operationId as string) || undefined),

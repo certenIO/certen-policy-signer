@@ -18,6 +18,13 @@
  *                                          //   for the transaction. See the note on `pending` below.
  *       "txHash":        "…",              // the pending Accumulate transaction — STABLE across polls
  *       "operationId":   "…",              // your own id, if your payload carried one (optional)
+ *       "subject": {                       // WHO this is about, when the payload named someone. MAY BE ABSENT.
+ *         "adi":        "acc://alice.acme",      //   the identity — key on THIS
+ *         "keyBook":    "acc://alice.acme/book", //   a hint, not the identity
+ *         "id":         "cust-99213",            //   the producer's own reference (optional)
+ *         "assertedBy": "acc://acme-bank.acme"   //   who is making the claim (optional)
+ *       },
+ *       "signerUrl":     "acc://…/book/1", // WHICH key page is asking (optional)
  *       "account":       "acc://…/data",   // the account the transaction acts on
  *       "chain":         "ethereum-sepolia",
  *       "actionSummary": "Transfer 4000 wei to 0xBe00…9251",
@@ -58,6 +65,23 @@
  * means opening a NEW challenge on every poll — texting your user a fresh prompt every 20 seconds. The
  * `pending` mode below demonstrates the correct keying.
  *
+ * ── WHO the transaction is about: `request.subject` ───────────────────────────────────────────────────
+ *
+ * `account` is the organisation's data account, one per deployment, and `operationId` is per operation.
+ * Neither names a person. `subject.adi` does — it is the end user's Accumulate ADI, and it is exactly
+ * what enrollment bound (the same value you passed to `preflight(adiUrl, keyBookUrl)`). Key on `adi`;
+ * `keyBook` is a hint, and keying on it makes every key rotation a re-enrollment.
+ *
+ * IT IS AN ASSERTION, NOT A PROOF. The subject is asserted by whoever wrote the intent, not proven by
+ * the user it names — nothing on chain binds it. The one field here that CANNOT be forged is `account`,
+ * the transaction's on-chain principal. So pin it: accept a subject claim only when `account` belongs to
+ * a customer you have a relationship with. One line of config, materially different security posture.
+ *
+ * AND IT MAY BE ABSENT. Old intents, third-party producers and custom decoders carry no subject, and the
+ * signer will not invent one. If your engine REQUIRES a subject, return an explicit deny — see
+ * `checkEnrolledSubject` below. Throwing withholds instead, which leaves the transaction alive until it
+ * expires and looks exactly like an outage.
+ *
  * ── Run it ────────────────────────────────────────────────────────────────────────────────────────────
  *
  *   node examples/policy-engine.mjs            # listens on :9099, POST /decision
@@ -71,6 +95,8 @@
  *     POLICY_MODE=pending node examples/policy-engine.mjs   # withhold a few polls, then approve
  *     POLICY_MODE=parity  node examples/policy-engine.mjs   # approve even amounts, deny odd — a visible
  *                                                           #   rule, so you can prove the gate is real
+ *     POLICY_MODE=subject node examples/policy-engine.mjs   # route on request.subject.adi against a
+ *                                                           #   two-name roster; deny when absent
  *
  *   Authenticate the channel both ways (set policy.auth: "hmac" and the same secret on the signer):
  *     POLICY_HMAC_SECRET=<shared-secret> node examples/policy-engine.mjs
@@ -91,6 +117,13 @@ const LEGACY_SIG_HEADER = 'x-certen-signature';
 const MODE = process.env.POLICY_MODE || 'approve';
 const CHALLENGE_POLLS = Number(process.env.POLICY_PENDING_POLLS ?? 3);
 const openChallenges = new Map(); // txHash -> polls seen. Keyed on txHash, NOT requestId. See above.
+
+// A stand-in for whatever holds your per-user bindings — a biometric template store, an MFA directory,
+// a customer table. Two entries is enough to show all three outcomes: enrolled, not enrolled, and no
+// subject on the request at all.
+const ENROLLED = new Map([
+  ['acc://alice.acme', { customerId: 'cust-99213', template: 'face-v3' }],
+]);
 
 /* ══════════════════════════════════════════════════════════════════════════════════════════════════════
  *  THE ONLY FUNCTION YOU REPLACE.
@@ -123,6 +156,12 @@ function checkPolicy(request) {
     };
   }
 
+  if (MODE === 'subject') {
+    // Per-user routing, which is the shape a biometric re-auth engine actually has: resolve the enrolled
+    // user from the request, then ask that user's own binding. The lookup is the whole integration.
+    return checkEnrolledSubject(request, ENROLLED);
+  }
+
   const ok = MODE !== 'deny';
   return {
     ok,
@@ -130,6 +169,43 @@ function checkPolicy(request) {
     evidence: { demo: true, mode: MODE, requestId: request?.requestId },
   };
   // ────────────────────────────────────────────────────────────────────────────────────────────────────
+}
+
+/**
+ * Resolve the enrolled user from the request, and answer for THAT user.
+ *
+ * Three outcomes, and the third is the one that is easy to get wrong:
+ *
+ *   enrolled subject  → decide on their binding (here: presence in the roster stands in for a match)
+ *   unknown subject   → deny. The producer named somebody you have never enrolled.
+ *   NO subject        → deny, EXPLICITLY. This is the fail-closed rule and it has a specific shape: a
+ *                       throw, a timeout or a 4xx all WITHHOLD — the signer signs nothing, the
+ *                       transaction stays alive on chain until it expires, and from outside your service
+ *                       that is indistinguishable from an outage. Nobody is told why. An engine that
+ *                       requires a subject must answer `deny` and say so in `reason`.
+ *
+ * A missing identifier is the most tempting thing in the world to throw on. Don't.
+ */
+export function checkEnrolledSubject(request, roster) {
+  const adi = request?.subject?.adi;
+  if (!adi) {
+    return {
+      ok: false,
+      reason: 'no subject on the request — this engine cannot decide without knowing who it is about',
+      evidence: { rule: 'subject-required' },
+    };
+  }
+  const enrolled = roster.get(adi);
+  if (!enrolled) {
+    return { ok: false, reason: `no enrolled biometric for ${adi}`, evidence: { rule: 'subject-roster', subject: adi } };
+  }
+  // Key on `adi`, never on `keyBook`: the book is a hint the producer may or may not have sent, and
+  // reading the ADI's authority set at verification time is what makes key rotation a non-event.
+  return {
+    ok: true,
+    reason: `re-authenticated ${adi}`,
+    evidence: { rule: 'subject-roster', subject: adi, customerId: enrolled.customerId, template: enrolled.template },
+  };
 }
 
 /**

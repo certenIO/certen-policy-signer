@@ -73,15 +73,21 @@ export async function txState(hash: string, principal: string): Promise<string> 
  * Four hex-encoded JSON blobs: [intent, crossChain, governance, replay]. The amounts that a policy engine
  * gates on live in `crossChain.legs[].amountWei`.
  *
+ * `subject` names WHO the intent is about — the end user whose off-chain policy decision gates it. It is
+ * optional and is omitted entirely when not given, which is the shape every pre-change intent has.
+ *
  * To verify against YOUR OWN payload format instead, pass `data:` to writeIntent() with your bytes and
  * point the signer's `resolver.decoder_modules` at your decoder — see examples/custom-decoder.mjs. That
  * substitution is the whole extension seam, exercised live.
  */
-export function intentBlobs(amountWei: string, legs?: any[]): string[] {
+export function intentBlobs(amountWei: string, legs?: any[], subject?: { adi: string; keyBook?: string; id?: string; assertedBy?: string }): string[] {
   const toHex = (o: unknown) => Buffer.from(JSON.stringify(o), 'utf8').toString('hex');
   const legArr = legs ?? [{ legId: 'l1', chain: 'ethereum-sepolia', asset: { symbol: 'ETH', decimals: 18 }, to: '0xBe0043', amountWei, amountEth: '0.0' }];
   return [
-    { kind: 'CERTEN_INTENT', version: '2.0', intent_id: `i-${amountWei}`, description: `Transfer ${amountWei} wei` },
+    // `subject` is spread, not assigned: an intent that names nobody must produce blob 0 with NO
+    // `subject` key, byte-identical to what this function has always emitted. Every existing caller
+    // passes two arguments and gets exactly today's bytes.
+    { kind: 'CERTEN_INTENT', version: '2.0', intent_id: `i-${amountWei}`, description: `Transfer ${amountWei} wei`, ...(subject?.adi ? { subject } : {}) },
     { protocol: 'CERTEN', version: '2.0', legs: legArr },
     { organizationAdi: 'acc://o.acme', authorization: { signature_threshold: 1 } },
     { nonce: `n-${amountWei}`, expires_at: 1999999999 },
@@ -115,12 +121,12 @@ export async function createPrincipal(f: any, adi: string, seedFill: number, pag
   return { ...org, dataAccount, dataPrincipal };
 }
 
-export async function writeIntent(A: Principal, opts: { authorities: string[]; amountWei?: string; legs?: any[]; memo?: string | null; data?: string[]; expireAt?: Date }): Promise<{ hash: string; txid: string; ok: boolean; error?: string }> {
+export async function writeIntent(A: Principal, opts: { authorities: string[]; amountWei?: string; legs?: any[]; subject?: { adi: string; keyBook?: string; id?: string; assertedBy?: string }; memo?: string | null; data?: string[]; expireAt?: Date }): Promise<{ hash: string; txid: string; ok: boolean; error?: string }> {
   const v = (await raw.getSignerInfo(A.page)).version;
   const header: any = { principal: A.dataAccount, authorities: opts.authorities };
   if (opts.memo !== null) header.memo = opts.memo ?? 'CERTEN_INTENT';
   if (opts.expireAt) header.expire = { atTime: opts.expireAt }; // encoding fixed in accumulate.js Time.encode (signed varint + floor)
-  const data = opts.data ?? intentBlobs(opts.amountWei ?? '0', opts.legs);
+  const data = opts.data ?? intentBlobs(opts.amountWei ?? '0', opts.legs, opts.subject);
   const tx = new core.Transaction({ header, body: { type: 'writeData', entry: { type: 'doubleHash', data } } });
   const sig = await S.Signer.forPage(A.page, A.key.key).withVersion(v).sign(tx, { timestamp: nextTs() });
   const r: any = await raw.submit(new msg.Envelope({ transaction: [tx], signatures: [sig] }).asObject());

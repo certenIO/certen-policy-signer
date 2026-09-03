@@ -6,6 +6,7 @@
  * silently behind a refactor of the seams they demonstrate.
  */
 import { describe, it, expect, afterAll } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
 import { spawn, ChildProcess } from 'node:child_process';
@@ -111,6 +112,31 @@ describe('examples/custom-decoder.mjs', () => {
   });
 });
 
+/**
+ * The documented request shape and the shipped one must be the same shape.
+ *
+ * `docs/INTEGRATION.md` is the only description of this contract a customer reads, and it has drifted
+ * before: the request block predated `signerUrl` and `calldataDecoded` and listed neither, so an
+ * integrator building against the doc did not know two fields existed. That is not caught by any test
+ * of behaviour — both sides work perfectly while disagreeing about what is on the wire.
+ *
+ * So the field list is compared, rather than re-read by eye. Types are still a human's job; the SET of
+ * fields is not.
+ */
+describe('docs/INTEGRATION.md describes the request the signer actually sends', () => {
+  it('documents every field of PolicyRequest, and invents none', () => {
+    const types = readFileSync(join(ROOT, 'src', 'types.ts'), 'utf8');
+    const block = types.split('export interface PolicyRequest {')[1].split('\n}')[0];
+    const declared = [...block.matchAll(/^ {2}(\w+)\??:/gm)].map((m) => m[1]).sort();
+
+    const doc = readFileSync(join(ROOT, 'docs', 'INTEGRATION.md'), 'utf8');
+    const requestBlock = doc.split('POST <policy.url>')[1].split('```')[0];
+    const documented = [...requestBlock.matchAll(/^ {2}"(\w+)"/gm)].map((m) => m[1]).sort();
+
+    expect(documented, 'the doc and PolicyRequest disagree about what is on the wire').toEqual(declared);
+  });
+});
+
 describe('examples/policy-engine.mjs', () => {
   const kids: ChildProcess[] = [];
   afterAll(() => kids.forEach((k) => { try { k.kill('SIGKILL'); } catch { /* already gone */ } }));
@@ -159,6 +185,46 @@ describe('examples/policy-engine.mjs', () => {
     expect((await client.decide(REQ(['10']))).decision).toBe('pending');
     expect((await client.decide(REQ(['10']))).decision).toBe('pending');
     expect((await client.decide(REQ(['10']))).decision).toBe('approve');
+  });
+
+  /**
+   * Per-user routing, and the fail-closed rule that comes with it.
+   *
+   * The third case is the one that matters. An engine that requires a subject and does not get one has
+   * two ways to say no, and they are NOT equivalent: `deny` casts a reject vote and the transaction
+   * reaches a terminal state, while a throw or a 4xx WITHHOLDS — the transaction stays alive on chain
+   * until it expires, and from outside the engine that is indistinguishable from an outage. The
+   * documented rule is `deny`, so the shipped example must actually do that, not merely describe it.
+   */
+  it('routes on the subject: enrolled approves, unknown denies, absent denies EXPLICITLY', async () => {
+    const url = await start({ POLICY_MODE: 'subject' });
+    const client = new HttpPolicyClient({ url });
+
+    const enrolled = await client.decide({ ...REQ(['4000']), subject: { adi: 'acc://alice.acme' } });
+    expect(enrolled.decision).toBe('approve');
+    expect(enrolled.reason).toContain('acc://alice.acme');
+
+    const unknown = await client.decide({ ...REQ(['4000']), subject: { adi: 'acc://mallory.acme' } });
+    expect(unknown.decision).toBe('deny');
+    expect(unknown.reason).toContain('no enrolled biometric');
+
+    // No subject key at all — the shape every pre-change intent produces.
+    const absent = await client.decide(REQ(['4000']));
+    expect(absent.decision).toBe('deny');
+    // Not a throw, not a 4xx, not `pending`: those all withhold and leave the transaction hanging.
+    expect(absent.decision).not.toBe('pending');
+    expect(absent.reason).toContain('no subject');
+  });
+
+  it('keys the roster on adi, not on the keyBook hint', async () => {
+    const url = await start({ POLICY_MODE: 'subject' });
+    const client = new HttpPolicyClient({ url });
+    // A book that does not match anything enrolled must not change the answer: the ADI is the identity.
+    const r = await client.decide({
+      ...REQ(['4000']),
+      subject: { adi: 'acc://alice.acme', keyBook: 'acc://alice.acme/some-other-book' },
+    });
+    expect(r.decision).toBe('approve');
   });
 
   it('an outage never becomes an approval — the signer fails closed', async () => {

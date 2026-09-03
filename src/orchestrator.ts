@@ -206,6 +206,10 @@ export class Orchestrator {
       // Which of our pages is asking. The wallet has always known -- it is how the poller found this
       // transaction -- and until F5 simply never passed it on.
       signerUrl: tx.signerUrl,
+      // WHO the transaction is about, when the payload named someone. Spread rather than assigned: an
+      // intent that named nobody must produce a request with NO `subject` key at all, because "absent"
+      // and "unknown" are the same state and the signer has no business inventing the difference.
+      ...(tx.summary.subject ? { subject: tx.summary.subject } : {}),
       account: tx.account,
       chain: tx.summary.chain,
       actionSummary: tx.summary.action,
@@ -279,6 +283,9 @@ export class Orchestrator {
         txHash: tx.txHash, operationId: tx.operationId, decision: 'deny',
         vote: rules.submitRejectVote ? 'reject' : undefined,
         reason: decision.reason,
+        // Whose re-authentication this was about. The receipts are the audit trail, and a year later
+        // that is the question being asked of them.
+        ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
         policyEvidence: decision.evidence,
         // A reject is a signature too, and the record should say which key cast it. A deployment that
         // withholds rejects rather than casting them has nothing to attribute, and gets nothing.
@@ -299,6 +306,7 @@ export class Orchestrator {
       await store.saveReceipt({
         txHash: tx.txHash, operationId: tx.operationId, decision: 'approve',
         reason: decision.reason,
+        ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
         policyEvidence: { ...(decision.evidence ?? {}), blockedBy: 'local_guard', values: tx.summary.values },
       });
       return store.update(ref.txHash, { status: 'rejected', lastError: 'local_guard_block' });
@@ -312,6 +320,7 @@ export class Orchestrator {
         txHash: tx.txHash, operationId: tx.operationId, decision: 'approve', vote: 'approve',
         signatureHash: res.signatureHash, submittedAt: this.now(), accumulateResult: 'ok',
         reason: decision.reason,
+        ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
         policyEvidence: decision.evidence,
         // What satisfied it, carried through rather than re-derived. F4.
         ...(res.signedBy ? { signedBy: res.signedBy } : {}),

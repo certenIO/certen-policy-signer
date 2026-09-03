@@ -25,6 +25,27 @@ const TX = 'cd'.repeat(32);
 const SIGNER = 'acc://demo-org.acme/book/1';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Wait until the receiver has been delivered `n` events, or give up.
+ *
+ * Deliveries are fire-and-forget by design — `emit()` returns before the HTTP POST completes, because a
+ * notification must never delay a signing decision. So a test has to wait for one. It used to wait a
+ * fixed 150ms, which is a guess about how fast a loopback POST settles under whatever else is running,
+ * and it stopped being true as the suite grew: the assertion ran before the delivery landed and the
+ * test failed intermittently while the code was correct. Polling asserts the same thing without
+ * encoding a guess, and it is FASTER in the ordinary case, since it returns as soon as the event is
+ * there rather than always sleeping.
+ *
+ * It deliberately does NOT throw on timeout — the assertion that follows is what should fail, and its
+ * message names the events that actually arrived.
+ */
+async function deliveries(got: unknown[], n: number, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (got.length < n && Date.now() < deadline) await sleep(5);
+  // One more turn, so an event arriving in the same tick as the nth is counted before an equality check.
+  await sleep(20);
+}
+
 /** A receiver that records what it was sent. `behave: 'fail'` makes every delivery 500. */
 async function receiver(opts: { secret?: string; behave?: 'ok' | 'fail' | 'hang' } = {}) {
   const got: Array<{ body: NotifyPayload; sig?: string; raw: string }> = [];
@@ -68,7 +89,7 @@ describe('notifications', () => {
     try {
       const { orchestrator } = pipeline(webhook(r.url));
       await orchestrator.handle({ txHash: TX, signerUrl: SIGNER });
-      await sleep(150);
+      await deliveries(r.got, 2);
 
       expect(r.got.map((g) => g.body.event)).toEqual(['pending.discovered', 'decision.approved']);
       const first = r.got[0].body;
@@ -85,7 +106,7 @@ describe('notifications', () => {
     try {
       const { orchestrator } = pipeline(webhook(r.url), 'deny');
       await orchestrator.handle({ txHash: TX, signerUrl: SIGNER });
-      await sleep(150);
+      await deliveries(r.got, 2);
       expect(r.got.map((g) => g.body.event)).toContain('decision.denied');
     } finally { r.close(); }
   });
@@ -99,7 +120,9 @@ describe('notifications', () => {
       await orchestrator.handle({ txHash: TX, signerUrl: SIGNER });
       await orchestrator.handle({ txHash: TX, signerUrl: SIGNER });
       await orchestrator.handle({ txHash: TX, signerUrl: SIGNER });
-      await sleep(150);
+      // Three polls, but only ONE discovery event — so wait for the events three polls DO produce
+      // (one discovery + one approval) before counting, or the count could pass by arriving late.
+      await deliveries(r.got, 2);
       expect(r.got.filter((g) => g.body.event === 'pending.discovered')).toHaveLength(1);
     } finally { r.close(); }
   });
@@ -110,7 +133,7 @@ describe('notifications', () => {
     try {
       const { orchestrator } = pipeline(webhook(r.url, secret));
       await orchestrator.handle({ txHash: TX, signerUrl: SIGNER });
-      await sleep(150);
+      await deliveries(r.got, 1);
 
       const { sig, raw } = r.got[0];
       const m = /t=(\d+),v1=([a-f0-9]+)/.exec(sig ?? '');
@@ -220,7 +243,7 @@ describe('notification event filtering', () => {
       const n = buildNotifier({ webhook: { url: r.url, events: ['signature.failed'] } }, silent);
       n.emit(payload('decision.approved'));
       n.emit(payload('signature.failed'));
-      await sleep(150);
+      await deliveries(r.got, 1);
       expect(r.got.map((g) => g.body.event)).toEqual(['signature.failed']);
     } finally { r.close(); }
   });

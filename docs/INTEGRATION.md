@@ -175,6 +175,13 @@ POST <policy.url>    content-type: application/json
   "requestId":     "a7f3…",           // unique PER REQUEST — regenerated on every poll
   "txHash":        "9c2b…",           // the pending transaction — STABLE across polls
   "operationId":   "PO-1043",         // your own id, if your payload carried one
+  "subject": {                        // WHO this is about, when the payload named someone. MAY BE ABSENT.
+    "adi":        "acc://alice.acme",      //   the identity — key on THIS
+    "keyBook":    "acc://alice.acme/book", //   a hint, not the identity
+    "id":         "cust-99213",            //   the producer's own reference, if it sent one
+    "assertedBy": "acc://acme-bank.acme"   //   who is making the claim
+  },
+  "signerUrl":     "acc://acme.acme/book/1",  // WHICH key page is asking
   "account":       "acc://acme.acme/orders",
   "chain":         "ethereum",
   "actionSummary": "Purchase order PO-1043 — 25000 USDC to Northwind",
@@ -182,6 +189,7 @@ POST <policy.url>    content-type: application/json
   "value":         "25000",           // first amount only — for display
   "values":        ["25000", "500"],  // EVERY amount — gate on these
   "unpricedLegs":  0,                 // absent or 0 => `values` is complete. > 0 => it is NOT
+  "calldataDecoded": "approve(address spender = 0x68…, uint256 amount = …)",  // if the decoder could read it
   "expiresAt":     "2026-07-26T12:00:00Z"
 }
 ```
@@ -195,6 +203,48 @@ their amounts, so `values` is a *partial* list. Every entry in it can sit under 
 missing from it does not — "all the amounts I can see are fine" is not the same statement as "all the
 amounts are fine". The signer's own value ceiling refuses to sign in this case; your engine should too,
 unless you have another way to bound what you cannot see. A well-formed payload never sets it.
+
+### Who the transaction is about
+
+`subject` names the end user the transaction concerns — the person whose policy or biometric decision
+gates it. It is what makes a per-user engine possible: `account` is the organization's data account, one
+per deployment, and `operationId` is per operation, so before this field nothing on the request named a
+person.
+
+**Key on `subject.adi`.** It is the Accumulate ADI, and it is exactly what enrollment bound — the same
+value you passed to `preflight(adiUrl, keyBookUrl)`. `keyBook` is carried when the producer knows it and
+is a **hint**: a book can live under an ADI without governing it, and an ADI can be governed by several,
+so keying on the book makes every key rotation a re-enrollment. Read the ADI's authority set at
+verification time instead.
+
+**It is an assertion, not a proof.** The subject is asserted by whoever wrote the intent, not proven by
+the user it names. Nothing on chain binds it: Accumulate verified only that the submitter could sign for
+the transaction's principal, and the subject is not the principal. Acting on `subject.adi` means trusting
+the intent producer — in practice Certen's gateway, and behind it whichever customer holds the API key
+that created the intent — to name the right person. A compromised producer can name any enrolled ADI it
+likes and ask you to re-authenticate the wrong human. **The subject is an input to a decision, never an
+authorization.**
+
+The one field on this request that **cannot** be forged is `account`, the transaction's on-chain
+principal: Accumulate's own consensus verified the submitter can sign for it.
+
+**So pin the principal.** Accept a subject claim only when `account` is a data account belonging to a
+customer you have a relationship with. That is one line of config, and it is the difference between
+trusting anyone who can reach your endpoint and trusting claims written under an account you already
+agreed to trust. It is the cheapest real hardening available and you should apply it on day one.
+
+**It may be absent, and you must decide what that means.** Intents written before the field existed,
+third-party producers, and payloads decoded by a custom decoder all carry no subject. The signer will
+not fill one in. If your engine requires a subject, **return an explicit `deny`** —
+`{"decision":"deny","reason":"no subject"}`.
+Do not throw and do not return a 4xx: a throw, a timeout or a non-2xx **withholds** — no signature is
+produced, but the transaction stays alive on chain until it expires, and from the outside that is
+indistinguishable from your service being down. A missing identifier is the most tempting thing in the
+world to throw on, and throwing is the one response that leaves nobody informed.
+
+**`subject` is not `initiator` and not `account`.** `subject` is who the transaction is *about*;
+`account` is the account it *acts on*; the initiator — whoever clicked submit — is not on this request at
+all. Two people at one institution submit against the same `account` all day.
 
 ### Response
 
@@ -227,6 +277,9 @@ Two consequences worth stating explicitly:
 - **If you want a failed check to *kill* a transaction, return `deny` explicitly.** Throwing or timing
   out withholds instead, and the transaction survives until it expires on chain. Failing loudly and
   failing closed are different behaviors; choose deliberately.
+- **A missing `subject` is a decision you have to make, not an error to raise.** An engine that requires
+  one and does not get it must answer `deny`. Throwing withholds, and a withheld transaction looks
+  exactly like an outage to everyone watching.
 
 ### Answering asynchronously with `pending`
 
@@ -355,6 +408,12 @@ intent decoder chain (first claim wins)   decoders: ["my-format","send-tokens","
 2. **Put every amount in `values`.** See Seam 1.
 3. **Prefer your own id as `operationId`.** It survives a re-submission in a way `txHash` does not, so
    it is what you can correlate against your own records.
+4. **Emit `subject` if — and only if — your payload names one.** A decoder may set
+   `summary.subject = { adi, keyBook?, id?, assertedBy? }` the same way the reference decoder does, and
+   it reaches your engine as `request.subject`. **Do not invent one.** Mapping an organization ADI or an
+   initiator into it because the field exists and is empty asserts a binding nobody made, and an engine
+   downstream will re-authenticate the wrong person on the strength of it. Omitting it when the payload
+   names nobody is the correct behaviour, and the signer will not fill it in.
 
 **Order matters — first claim wins.** A specific decoder must precede a general one. The built-in
 `write-data` decoder claims *every* data write, so anything understanding a particular data-write payload
