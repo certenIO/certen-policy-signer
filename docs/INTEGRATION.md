@@ -204,6 +204,15 @@ missing from it does not — "all the amounts I can see are fine" is not the sam
 amounts are fine". The signer's own value ceiling refuses to sign in this case; your engine should too,
 unless you have another way to bound what you cannot see. A well-formed payload never sets it.
 
+**Token amounts are in `values` too.** A leg's `amountWei` is the *native* value forwarded with a call.
+When the leg's calldata is an ERC-20 `transfer`, `transferFrom` or `approve`, the token amount (in the
+token's base units) is added to `values` and the call is spelled out in `calldataDecoded`. Before this,
+a contract call moving a million USDC reached the engine as a zero-value leg. A leg whose calldata is
+something else entirely — an escrow `confirm`, a governance call — keeps its native value in `values`
+and is counted in `raw.opaqueCallLegs`: the signer cannot price what that call does internally, and
+does not pretend to. Refuse those in your engine if your policy needs to; the signer does not, because
+proof-gated calls that move nothing are the common case it exists to approve.
+
 ### Who the transaction is about
 
 `subject` names the end user the transaction concerns — the person whose policy or biometric decision
