@@ -32,12 +32,16 @@ function keyring(): MapKeyring {
   return new MapKeyring([scope]);
 }
 
-/** An Accumulate client that accepts everything, so the test observes WHICH key signed. */
+/**
+ * An Accumulate client that accepts everything, so the test observes WHICH key signed rather than
+ * whether the network liked it. Typed as itself so the envelope can be read back off the spy; the
+ * cast happens only where it is handed to the backend.
+ */
 function acceptingClient() {
-  return {
-    submit: vi.fn(async () => ({ ok: true, code: 'ok' })),
-  } as never;
+  return { submit: vi.fn(async () => ({ ok: true, code: 'ok' })) };
 }
+type Accepting = ReturnType<typeof acceptingClient>;
+const asClient = (c: Accepting) => c as unknown as ConstructorParameters<typeof DirectVoteBackend>[0];
 
 const tx = {
   txHash: 'ab'.repeat(32),
@@ -49,9 +53,9 @@ const tx = {
 };
 
 /** The public key the vote was actually signed with, read back off the submitted envelope. */
-async function signedWith(client: { submit: ReturnType<typeof vi.fn> }): Promise<string> {
-  const envelope = client.submit.mock.calls[0]![0] as { signatures: { publicKey: string }[] };
-  return envelope.signatures[0]!.publicKey;
+async function signedWith(client: Accepting): Promise<string> {
+  const call = client.submit.mock.calls[0] as unknown as [{ signatures: { publicKey: string }[] }];
+  return call[0].signatures[0]!.publicKey;
 }
 
 const hex = async (s: LocalSigner) => Buffer.from(await s.publicKey()).toString('hex');
@@ -59,7 +63,7 @@ const hex = async (s: LocalSigner) => Buffer.from(await s.publicKey()).toString(
 describe('whose key casts the vote', () => {
   it('signs as the organisation when nobody is named — the behaviour every deployment had', async () => {
     const client = acceptingClient();
-    const backend = new DirectVoteBackend(client, keyring(), silent);
+    const backend = new DirectVoteBackend(asClient(client), keyring(), silent);
     const res = await backend.cast(tx, 'approve');
     expect(res.ok).toBe(true);
     expect(await signedWith(client)).toBe(await hex(ORG));
@@ -67,7 +71,7 @@ describe('whose key casts the vote', () => {
 
   it("signs with the APPROVER's key when the decision names them", async () => {
     const client = acceptingClient();
-    const backend = new DirectVoteBackend(client, keyring(), silent);
+    const backend = new DirectVoteBackend(asClient(client), keyring(), silent);
     const res = await backend.cast(tx, 'approve', { keyRef: 'alice@bank.example' });
     expect(res.ok).toBe(true);
     expect(await signedWith(client)).toBe(await hex(ALICE));
@@ -78,14 +82,14 @@ describe('whose key casts the vote', () => {
   it('distinguishes two approvers on the same page', async () => {
     const a = acceptingClient();
     const b = acceptingClient();
-    await new DirectVoteBackend(a, keyring(), silent).cast(tx, 'approve', { keyRef: 'alice@bank.example' });
-    await new DirectVoteBackend(b, keyring(), silent).cast(tx, 'approve', { keyRef: 'bob@bank.example' });
+    await new DirectVoteBackend(asClient(a), keyring(), silent).cast(tx, 'approve', { keyRef: 'alice@bank.example' });
+    await new DirectVoteBackend(asClient(b), keyring(), silent).cast(tx, 'approve', { keyRef: 'bob@bank.example' });
     expect(await signedWith(a)).not.toBe(await signedWith(b));
   });
 
   it('REFUSES an approver it holds no key for, and does not fall back to the organisation', async () => {
     const client = acceptingClient();
-    const backend = new DirectVoteBackend(client, keyring(), silent);
+    const backend = new DirectVoteBackend(asClient(client), keyring(), silent);
     await expect(backend.cast(tx, 'approve', { keyRef: 'mallory@bank.example' }))
       .rejects.toThrow(/no key "mallory@bank.example" configured/);
     // Nothing was submitted. A refusal that still signed would be worse than no feature at all.
