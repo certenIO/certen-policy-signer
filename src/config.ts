@@ -46,7 +46,10 @@ const SignerSpecSchema = z.object({
   // `local-ecdsa-p256` is the same in-process posture as `local`, with a PKI key type rather than
   // Ed25519. It is deliberately a distinct provider name: a seed and a DER private key are not
   // interchangeable, and a wrong guess would produce signatures the network silently refuses.
-  provider: z.enum(['vault-transit', 'local', 'local-ecdsa-p256']),
+  // `windows-cert-store` is the organisation's OWN PKI: a certificate already in the Windows
+  // certificate store (Microsoft ADCS-issued, or a PIV/CAC card through its minidriver). Nothing is
+  // enrolled or generated and NO key material appears in config — only which certificate to use.
+  provider: z.enum(['vault-transit', 'local', 'local-ecdsa-p256', 'windows-cert-store']),
   // `key_type` is what Vault holds under `key_name`. It defaults to ed25519 -- every config written
   // before Runbook F Phase F2 meant that -- and VaultTransitSigner checks the default against Vault's
   // own answer on the first read, so a wrong one refuses rather than signing with a mismatched
@@ -63,6 +66,15 @@ const SignerSpecSchema = z.object({
     allow_ephemeral: z.boolean(),  // dev only: generate a throwaway key when no seed is configured
     private_key_der_hex: z.string(),   // local-ecdsa-p256: hex DER (SEC1 or PKCS#8), or an `env:NAME` ref
     private_key_der_file: z.string(),  // local-ecdsa-p256: path to a file holding that hex
+  }).partial().optional(),
+  // windows-cert-store. Note what is NOT here: any key material. The private key stays in the
+  // key-storage provider — for a card it cannot be extracted at all — so this only says which
+  // certificate, and where the agent that can reach it lives.
+  windows: z.object({
+    thumbprint: z.string(),   // the certificate's thumbprint; spaces and case are ignored
+    agent_path: z.string(),   // path to certen-cert-agent (see agent/windows-cert-store)
+    machine: z.boolean(),     // read LocalMachine\My rather than CurrentUser\My
+    timeout_ms: z.number().int().positive(),  // a card with a PIN prompt waits on a person
   }).partial().optional(),
 });
 export type SignerSpec = z.infer<typeof SignerSpecSchema>;

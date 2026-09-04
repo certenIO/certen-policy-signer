@@ -81,3 +81,8 @@ kv2-state.json
 pki-ecdsa-state.json
 vault-two-approvers-state.json
 roster-enrolment-state.json
+
+# Build output of the Windows certificate-store agent (agent/windows-cert-store). The source is
+# committed; the binary is built per machine because it must match that machine's .NET runtime.
+agent/**/bin/
+agent/**/obj/
