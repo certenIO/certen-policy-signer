@@ -314,7 +314,10 @@ export class Orchestrator {
 
     // 3. Sign + submit (approve)
     await store.update(ref.txHash, { status: 'approved', decision: 'approve', assertionRef: decision.assertion ? sha256Hex(decision.assertion) : undefined });
-    const res = await this.signAndSubmit(tx, 'approve');
+    // Whose key signs. T29: when the policy engine names the approver, THEIR key signs — so the
+    // signature on chain is the person's rather than the organisation's cast in their name. Absent,
+    // the organisation signs as itself, exactly as before.
+    const res = await this.signAndSubmit(tx, 'approve', approverKeyRef(decision.evidence));
     if (res.ok) {
       await store.saveReceipt({
         txHash: tx.txHash, operationId: tx.operationId, decision: 'approve', vote: 'approve',
@@ -340,8 +343,30 @@ export class Orchestrator {
    * or GATEWAY (the Certen api-gateway hands us the bytes; we sign; we hand the signature back). The
    * decision above this line is identical either way: the policy engine gates both.
    */
-  private async signAndSubmit(tx: ResolvedTx, vote: 'approve' | 'reject'): Promise<VoteResult> {
+  private async signAndSubmit(tx: ResolvedTx, vote: 'approve' | 'reject', keyRef?: string): Promise<VoteResult> {
     await this.d.store.update(tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
-    return this.votes.cast(tx, vote);
+    return this.votes.cast(tx, vote, keyRef === undefined ? {} : { keyRef });
   }
+}
+
+/**
+ * The approver's key ref, as the policy engine named it. Runbook F, T29.
+ *
+ * `evidence` is a free-form record on the decision — part of the frozen contract, so naming the
+ * approver needs no contract change (invariant F-9). What arrives here came from the policy engine
+ * over the MAC channel, which authenticates it but says nothing about whether the value is one this
+ * process holds a key for: that is checked in the keyring, which refuses an unknown ref rather than
+ * substituting the organisation's key.
+ *
+ * Read strictly. A non-string, an empty string, or an over-long value is treated as ABSENT rather than
+ * passed on, so a malformed decision falls back to the organisation signing as itself — the behaviour
+ * every deployment had before this existed — instead of failing the vote. The one thing it must never
+ * do is turn a garbled ref into a DIFFERENT valid ref, and returning undefined cannot.
+ */
+export function approverKeyRef(evidence: Record<string, unknown> | undefined): string | undefined {
+  const raw = evidence?.['approverKeyRef'];
+  if (typeof raw !== 'string') return undefined;
+  const ref = raw.trim();
+  if (!ref || ref.length > 256) return undefined;
+  return ref;
 }

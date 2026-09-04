@@ -80,9 +80,25 @@ export interface VoteResult {
   signedBy?: VoteAttribution;
 }
 
+/**
+ * Which key casts the vote. Runbook F, T29.
+ *
+ * Without `keyRef` the scope's own key signs — the organisation, as itself, which is every deployment
+ * shipped before this. With it, the NAMED key on that page signs, so what lands on chain is the
+ * approver's own signature rather than the organisation's made in their name.
+ *
+ * The ref is opaque and arrives from the decision (`evidence.approverKeyRef`): the policy engine says
+ * who approved, and this process holds the mapping from that ref to a key. Neither half can name a key
+ * the other does not have — an unknown ref is refused, loudly, because the alternative is recording
+ * one person's approval under somebody else's key.
+ */
+export interface CastOptions {
+  keyRef?: string;
+}
+
 export interface VoteBackend {
   /** Sign and cast `vote` on `tx`. Must be safe to call again if it fails. */
-  cast(tx: VotableTx, vote: Vote): Promise<VoteResult>;
+  cast(tx: VotableTx, vote: Vote, opts?: CastOptions): Promise<VoteResult>;
 }
 
 export interface DirectVoteOptions {
@@ -106,13 +122,22 @@ export class DirectVoteBackend implements VoteBackend {
     this.now = opts.now ?? Date.now;
   }
 
-  async cast(tx: VotableTx, vote: Vote): Promise<VoteResult> {
+  async cast(tx: VotableTx, vote: Vote, castOpts: CastOptions = {}): Promise<VoteResult> {
     const maxRetries = this.opts.maxBadVersionRetries ?? 3;
     let signerVersion = tx.signerVersion;
     let lastUsedOn = tx.lastUsedOn;
     // Pick the key that sits on THIS tx's page. Throws (fail-closed) if we hold no key for it.
+    //
+    // With a keyRef this resolves the NAMED key and, if there is no such key, throws rather than
+    // falling back to the scope's own — see Keyring.forPage. That refusal is the point of T29: a
+    // deployment that cannot sign as the named approver must not quietly sign as the organisation,
+    // because the record would then say a person approved when their key never touched it.
     const scope = this.keyring.scopeFor(tx.signerUrl);
-    const signer = this.keyring.forPage(tx.signerUrl);
+    const signer = this.keyring.forPage(tx.signerUrl, castOpts.keyRef);
+    if (castOpts.keyRef) {
+      this.logger.info({ tx: tx.txHash, page: tx.signerUrl, keyRef: castOpts.keyRef },
+        'signing as the named approver rather than as the organisation');
+    }
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const publicKey = await signer.publicKey();
