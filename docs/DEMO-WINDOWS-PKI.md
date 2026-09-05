@@ -20,10 +20,19 @@ result back off the network rather than reporting what it believes it did.
 | The signer votes with a PKI key on a page holding only that key | ✅ `scripts/verify/pki-ecdsa-vote.ts` |
 | RSA-2048 (what ADCS actually issues) through the same path | ✅ `test/windows-cert-store.test.ts` |
 
-**Not proven, and do not claim it:** that the console's *approve* button is what triggers the
-employee's certificate to sign. Today the console decides and the signer signs; joining "who approved
-in the console" to "whose key signed" is [T29](../../certen-approval-console/docs/TODO.md) and Runbook
-F §F6. Demo the two halves honestly as what they are.
+**Proven as of 2026-09-05, and you may now claim it:** the console's *approve* button IS what causes
+that employee's certificate to sign. A person approved in the console and their certificate signed on
+Kermit —
+`acc://60c82b865842359f82ef7940206e72227e114efda6ef9c7b77530e2ac6d37a30@loopa1788597054633.acme/data`,
+`delivered (201)`, an `ecdsaSha256` signature from a page whose only key is her certificate. Reproduce
+it with `scripts/verify/pki-console-loop.ts`. This paragraph previously said the opposite; it was
+true until T29 closed the join between "who approved" and "whose key signed".
+
+**Still not proven, and do not claim it:** *two* approvers through that same loop. Both halves are
+measured — a threshold-2 page holding two certificates held a transaction pending on one signature and
+executed it on the second, and a decision naming two approvers casts two votes — but nobody has
+watched the two happen together. Say "one approver, end to end, and the second is arithmetic the
+protocol already does" rather than implying a two-person ceremony has been demonstrated.
 
 **Also:** the public explorer cannot render a PKI-signed transaction — its bundled SDK throws
 `15 is not a key signature type`. Verify through the API or the console's evidence document instead.
