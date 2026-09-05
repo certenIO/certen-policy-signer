@@ -15,7 +15,7 @@ import pino from 'pino';
 import { MapKeyring, bookOf, SigningScope } from '../src/signer/keyring.js';
 import { LocalSigner } from '../src/signer/signer.js';
 import { DirectVoteBackend } from '../src/vote/backend.js';
-import { approverKeyRef } from '../src/orchestrator.js';
+import { approverKeyRef, approverKeyRefs } from '../src/orchestrator.js';
 
 const silent = pino({ level: 'silent' });
 const PAGE = 'acc://bank.acme/roles/treasury/1';
@@ -94,6 +94,34 @@ describe('whose key casts the vote', () => {
       .rejects.toThrow(/no key "mallory@bank.example" configured/);
     // Nothing was submitted. A refusal that still signed would be worse than no feature at all.
     expect(client.submit).not.toHaveBeenCalled();
+  });
+});
+
+describe('reading EVERY approver off the decision (T29-d)', () => {
+  it('takes the list when the console sends one', () => {
+    expect(approverKeyRefs({ approverKeyRefs: ['alice@bank.example', 'bob@bank.example'] }))
+      .toEqual(['alice@bank.example', 'bob@bank.example']);
+  });
+
+  it('falls back to the single ref, so a console predating T29-d still signs', () => {
+    expect(approverKeyRefs({ approverKeyRef: 'alice@bank.example' })).toEqual(['alice@bank.example']);
+  });
+
+  it('collapses duplicates — two votes with one key is one signature and a wasted round trip', () => {
+    expect(approverKeyRefs({ approverKeyRefs: ['alice@bank.example', 'alice@bank.example'] }))
+      .toEqual(['alice@bank.example']);
+  });
+
+  it('skips malformed entries rather than failing the whole vote', () => {
+    expect(approverKeyRefs({ approverKeyRefs: ['alice@bank.example', 42, '', '  ', null, 'x'.repeat(257)] }))
+      .toEqual(['alice@bank.example']);
+  });
+
+  it('is empty when nobody is named, so the organisation signs once as itself', () => {
+    expect(approverKeyRefs(undefined)).toEqual([]);
+    expect(approverKeyRefs({})).toEqual([]);
+    expect(approverKeyRefs({ approverKeyRefs: [] })).toEqual([]);
+    expect(approverKeyRefs({ approverKeyRefs: 'not-a-list' })).toEqual([]);
   });
 });
 
