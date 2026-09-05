@@ -11,6 +11,7 @@
  */
 import { KeySigner, LocalSigner, LocalEcdsaP256Signer } from './signer.js';
 import { VaultTransitSigner } from './vault-transit.js';
+import { WindowsCertStoreSigner } from './windows-cert-store.js';
 import { resolveLocalEcdsaKey, resolveLocalSeed, SignerSpec } from '../config.js';
 import { Logger } from '../logger.js';
 
@@ -25,6 +26,21 @@ const norm = (u: string): string => u.toLowerCase().replace(/^acc:\/\//, '').rep
 
 /** Construct the concrete KeySigner for one key spec (local key material, or Vault Transit). */
 export function buildSignerFromSpec(spec: SignerSpec, logger: Logger, label: string): KeySigner {
+  if (spec.provider === 'windows-cert-store') {
+    const w = spec.windows;
+    if (!w?.thumbprint) throw new Error(`${label}: signer.provider=windows-cert-store requires windows.thumbprint`);
+    if (!w.agent_path) throw new Error(`${label}: signer.provider=windows-cert-store requires windows.agent_path (see agent/windows-cert-store)`);
+    // No warning here, unlike the local providers: this is the one posture where the key is NOT in
+    // this process and cannot be read out of it.
+    logger.info({ scope: label, thumbprint: w.thumbprint, store: w.machine ? 'LocalMachine' : 'CurrentUser' },
+      'using the Windows certificate store: the private key stays in its key-storage provider');
+    return new WindowsCertStoreSigner({
+      thumbprint: w.thumbprint,
+      agentPath: w.agent_path,
+      ...(w.machine !== undefined ? { machine: w.machine } : {}),
+      ...(w.timeout_ms !== undefined ? { timeoutMs: w.timeout_ms } : {}),
+    });
+  }
   if (spec.provider === 'local-ecdsa-p256') {
     const der = resolveLocalEcdsaKey(spec.local);
     if (!der) throw new Error(`${label}: signer.provider=local-ecdsa-p256 requires local.private_key_der_hex or local.private_key_der_file`);

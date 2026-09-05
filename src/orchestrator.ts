@@ -314,7 +314,10 @@ export class Orchestrator {
 
     // 3. Sign + submit (approve)
     await store.update(ref.txHash, { status: 'approved', decision: 'approve', assertionRef: decision.assertion ? sha256Hex(decision.assertion) : undefined });
-    const res = await this.signAndSubmit(tx, 'approve');
+    // Whose key signs. T29: when the policy engine names the approver, THEIR key signs — so the
+    // signature on chain is the person's rather than the organisation's cast in their name. Absent,
+    // the organisation signs as itself, exactly as before.
+    const res = await this.castForApprovers(tx, 'approve', approverKeyRefs(decision.evidence));
     if (res.ok) {
       await store.saveReceipt({
         txHash: tx.txHash, operationId: tx.operationId, decision: 'approve', vote: 'approve',
@@ -340,8 +343,118 @@ export class Orchestrator {
    * or GATEWAY (the Certen api-gateway hands us the bytes; we sign; we hand the signature back). The
    * decision above this line is identical either way: the policy engine gates both.
    */
-  private async signAndSubmit(tx: ResolvedTx, vote: 'approve' | 'reject'): Promise<VoteResult> {
+  private async signAndSubmit(tx: ResolvedTx, vote: 'approve' | 'reject', keyRef?: string): Promise<VoteResult> {
     await this.d.store.update(tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
-    return this.votes.cast(tx, vote);
+    return this.votes.cast(tx, vote, keyRef === undefined ? {} : { keyRef });
   }
+
+  /**
+   * Cast one vote per named approver. Runbook F, T29-d.
+   *
+   * A key page counts signatures itself, so two approvers means two signatures — one from each of
+   * their keys. Votes are cast in sequence rather than together, deliberately: each consumes the
+   * page's `lastUsedOn` and moves its version, and two concurrent votes would race into a
+   * bad-version retry that looks like a fault.
+   *
+   * ── PARTIAL SUCCESS IS THE NORMAL CASE, NOT A FAULT ────────────────────────────────────────────
+   *
+   * A half-enrolled organisation is the ordinary state of a rollout: one approver's key is held here
+   * and another's is not. The one that can sign SHOULD, and the transaction is then correctly short
+   * of its threshold and left pending — the protocol's own answer, and not something to report as a
+   * failure. So this succeeds if ANY vote landed, records the first that did, and says in the log
+   * which refs could not be signed for and why.
+   *
+   * Only when nothing at all could be signed is it a failure, and then the first error is the one
+   * worth reporting: it is the reason the transaction has no signature.
+   */
+  private async castForApprovers(
+    tx: ResolvedTx,
+    vote: 'approve' | 'reject',
+    refs: string[],
+  ): Promise<VoteResult> {
+    // Nobody named: one vote, the organisation's own key, exactly as before T29.
+    if (refs.length === 0) return this.signAndSubmit(tx, vote);
+
+    // From one ref upward the loop below handles it, so a named approver this wallet cannot sign for
+    // is RECORDED as a failed vote rather than thrown out of the pipeline. One ref and two refs
+    // failing the same way is the point: a misconfigured ref is an operational fact about one
+    // transaction, not an exception for the poll loop to cope with.
+
+    await this.d.store.update(tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
+    let first: VoteResult | undefined;
+    let firstError: string | undefined;
+
+    for (const ref of refs) {
+      let res: VoteResult;
+      try {
+        res = await this.votes.cast(tx, vote, { keyRef: ref });
+      } catch (e) {
+        // A ref this wallet holds no key for throws rather than substituting the organisation's key.
+        // That is the T29 refusal working; it is not a reason to abandon the approvers it CAN sign for.
+        res = { ok: false, error: (e as Error).message };
+      }
+      if (res.ok) {
+        this.d.logger.info({ tx: tx.txHash, keyRef: ref }, 'signed as the named approver');
+        first ??= res;
+      } else {
+        this.d.logger.warn({ tx: tx.txHash, keyRef: ref, err: res.error }, 'could not sign as the named approver');
+        firstError ??= res.error;
+      }
+    }
+
+    if (first) return first;
+    return { ok: false, ...(firstError ? { error: firstError } : {}) };
+  }
+}
+
+/**
+ * The approver's key ref, as the policy engine named it. Runbook F, T29.
+ *
+ * `evidence` is a free-form record on the decision — part of the frozen contract, so naming the
+ * approver needs no contract change (invariant F-9). What arrives here came from the policy engine
+ * over the MAC channel, which authenticates it but says nothing about whether the value is one this
+ * process holds a key for: that is checked in the keyring, which refuses an unknown ref rather than
+ * substituting the organisation's key.
+ *
+ * Read strictly. A non-string, an empty string, or an over-long value is treated as ABSENT rather than
+ * passed on, so a malformed decision falls back to the organisation signing as itself — the behaviour
+ * every deployment had before this existed — instead of failing the vote. The one thing it must never
+ * do is turn a garbled ref into a DIFFERENT valid ref, and returning undefined cannot.
+ */
+export function approverKeyRef(evidence: Record<string, unknown> | undefined): string | undefined {
+  const raw = evidence?.['approverKeyRef'];
+  if (typeof raw !== 'string') return undefined;
+  const ref = raw.trim();
+  if (!ref || ref.length > 256) return undefined;
+  return ref;
+}
+
+/**
+ * EVERY approver whose key should sign. Runbook F, T29-d.
+ *
+ * A key page counts signatures against its own threshold, so a 2-of-N page needs two signatures and
+ * each approver makes their own with the key they control — measured on Kermit, not assumed. One vote
+ * per transaction would leave such a page one signature short and the transaction pending until it
+ * expired, which is what this exists to prevent.
+ *
+ * Reads `approverKeyRefs` (a list), falling back to the single `approverKeyRef` so a console that has
+ * not been updated keeps working exactly as it did. Duplicates are collapsed: two votes with the same
+ * key are one signature to the page and a wasted round trip to find that out.
+ *
+ * An empty result means nobody was named, and the caller signs once as the organisation — the
+ * behaviour of every deployment before T29.
+ */
+export function approverKeyRefs(evidence: Record<string, unknown> | undefined): string[] {
+  const raw = evidence?.['approverKeyRefs'];
+  const list = Array.isArray(raw) ? raw : [];
+  const refs: string[] = [];
+  for (const item of list) {
+    if (typeof item !== 'string') continue;      // a malformed entry is skipped, not fatal
+    const ref = item.trim();
+    if (!ref || ref.length > 256) continue;
+    if (!refs.includes(ref)) refs.push(ref);
+  }
+  if (refs.length) return refs;
+  const single = approverKeyRef(evidence);
+  return single ? [single] : [];
 }

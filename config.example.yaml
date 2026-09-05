@@ -46,14 +46,45 @@ wallet:
   # stays the key this wallet signs with when nobody is named; `keys` are the named ones, and a ref this
   # wallet holds no key for is refused rather than falling back to `key`.
   #
-  # The refs are opaque labels. Nothing here can check one against an identity: what binds a ref to a
-  # person is the key page entry it resolves to, which is on chain and was put there deliberately.
+  # The refs are opaque to this file -- nothing here can check one against an identity, and what binds
+  # a ref to a person is the key page entry it resolves to, which is on chain and was put there
+  # deliberately. But they are NOT arbitrary:
+  #
+  #   ** A REF MUST BE THE APPROVER'S CONSOLE SIGN-IN, EXACTLY. **
+  #
+  # The approval console names the approver on its decision (`evidence.approverKeyRef`, Runbook F T29)
+  # using the account they signed in with, and this wallet looks that string up here. A ref of "alice"
+  # against a console that sends "alice@bank.example" matches nothing -- and a ref this wallet holds no
+  # key for is REFUSED, never quietly signed with `key` above, so the vote does not happen at all. That
+  # refusal is deliberate: substituting the organisation's key would put one person's approval on chain
+  # under a key they never touched, which is the whole thing T29 exists to prevent.
   #
   #   - page: "acc://bank.acme/roles/treasury/1"      # accept threshold 2, set on chain
   #     key:  { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "treasury-org", token: "env:VAULT_TOKEN" } }
   #     keys:
-  #       alice: { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "alice-seat", token: "env:VAULT_TOKEN", key_type: "ecdsa-p256" } }
-  #       bob:   { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "bob-seat",   token: "env:VAULT_TOKEN", key_type: "ecdsa-p256" } }
+  #       alice@bank.example: { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "alice-seat", token: "env:VAULT_TOKEN", key_type: "ecdsa-p256" } }
+  #       bob@bank.example:   { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "bob-seat",   token: "env:VAULT_TOKEN", key_type: "ecdsa-p256" } }
+  #
+  # THE SAME THING WITH THE BANK'S OWN PKI, which is the point of Runbook F: no key is generated for
+  # anybody and NO KEY MATERIAL APPEARS IN THIS FILE. Each approver's certificate stays in the Windows
+  # certificate store -- issued by the corporate CA, or on the PIV/CAC card they already carry -- and is
+  # named here only by thumbprint. Build the agent once:
+  #   dotnet build agent/windows-cert-store/certen-cert-agent.csproj -c Release
+  #
+  #   - page: "acc://bank.acme/roles/treasury/1"
+  #     key:  { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "treasury-org", token: "env:VAULT_TOKEN" } }
+  #     keys:
+  #       alice@bank.example:
+  #         provider: "windows-cert-store"
+  #         windows: { thumbprint: "9BAE0FE822B270A258395C26436CEFC8BB42E37B", agent_path: "agent/windows-cert-store/bin/Release/net9.0/certen-cert-agent.exe" }
+  #       bob@bank.example:
+  #         provider: "windows-cert-store"
+  #         windows: { thumbprint: "266777A1E4BA2F5F49C92F26C8E73B7D60903650", agent_path: "agent/windows-cert-store/bin/Release/net9.0/certen-cert-agent.exe" }
+  #
+  # The signature type is read off each certificate rather than configured, so the same block works
+  # whether an approver's credential is RSA (what a corporate CA usually issues) or ECDSA P-256 (what a
+  # YubiKey you provision yourself usually holds). A card that demands a PIN per signature gets to: the
+  # agent is invoked once per signature and is not kept alive between them.
   #
   # THE ORGANISATION HOLDING A KEY INSIDE SOMEBODY'S IDENTITY. Runbook F 0.4 accepts this: a page in an
   # employee's own book, carrying the organisation's key, so an expired certificate can be rotated and
