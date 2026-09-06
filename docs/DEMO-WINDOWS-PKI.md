@@ -28,11 +28,22 @@ Kermit —
 it with `scripts/verify/pki-console-loop.ts`. This paragraph previously said the opposite; it was
 true until T29 closed the join between "who approved" and "whose key signed".
 
-**Still not proven, and do not claim it:** *two* approvers through that same loop. Both halves are
-measured — a threshold-2 page holding two certificates held a transaction pending on one signature and
-executed it on the second, and a decision naming two approvers casts two votes — but nobody has
-watched the two happen together. Say "one approver, end to end, and the second is arithmetic the
-protocol already does" rather than implying a two-person ceremony has been demonstrated.
+**Also proven as of 2026-09-05, and you may claim this too:** *two* approvers through that same loop.
+Two employees approved in the console and two different certificates signed; the transaction executed
+only once both had.
+
+```
+acc://5770d71481570dd61f5d54afbe95266437b58be18be57e130c1b4b8eed532588@twoa1788601803711.acme/data
+  status      delivered
+  signatures  ecdsaSha256  2cfd3f34…679e  <- Alice
+              ecdsaSha256  e629f477…c9c1  <- Bob
+  team page   acc://twob1788601803711.acme/book/1   threshold 2, exactly those two key hashes
+```
+
+Reproduce with `scripts/verify/pki-console-loop-two.ts`. Worth saying out loud in the room, because it
+is the part a bank cares about most: **Alice's certificate is what seated Bob's and raised the
+threshold to 2.** No software key ever acted on that page, from founding onward. This paragraph
+previously said two approvers were unproven; that was true until the run above.
 
 **Also:** the public explorer cannot render a PKI-signed transaction — its bundled SDK throws
 `15 is not a key signature type`. Verify through the API or the console's evidence document instead.
@@ -50,9 +61,14 @@ Do not put a viewer in front of the explorer for this.
   $c = New-SelfSignedCertificate -Type Custom -Subject 'CN=Alice Okonkwo' `
         -CertStoreLocation Cert:\CurrentUser\My -KeyAlgorithm RSA -KeyLength 2048 `
         -KeyUsage DigitalSignature -Provider 'Microsoft Software Key Storage Provider' `
-        -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddDays(2)
+        -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddDays(30)
   $c.Thumbprint
   ```
+
+  > **Thirty days, not two.** This said `AddDays(2)`, and a stand-in certificate made while preparing
+  > is expired by the meeting it was made for — a failure that arrives in the room, in front of the
+  > client, looking like the product is broken. Thirty is still short enough to be obviously a prop.
+  > Check before you present: `(Get-Item Cert:\CurrentUser\My\<THUMBPRINT>).NotAfter`.
 
   `NonExportable` matters: it makes the demo honest. The key cannot be copied out, which is why an
   agent is required rather than a convenience.
