@@ -273,6 +273,58 @@ export function createServer(d: ServerDeps): http.Server {
         return json(res, 200, { pages });
       }
 
+      /**
+       * GET /v1/admin/tx-signatures?txid=acc://<hash>@<principal> — WHO SIGNED, as the chain has it.
+       *
+       * The approval console cannot ask this itself. Invariant F-1 keeps chain work in the signer, and
+       * its `check-no-chain-code` lint specifically refuses a computed `sha256` in the authority
+       * module — because hashing a key to compare it against a page entry is a two-line change nobody
+       * would think of as adopting chain code, and it is one.
+       *
+       * So the console could report *the organisation signed in her name* — our own signer made that
+       * signature and knew which key it used — and could not report *she signed*, because her
+       * certificate signs on chain and nobody read it back. One direction had an alarm and the other
+       * had silence, and silence gets read as absence. T32.
+       *
+       * FACTS ONLY: status, algorithm, key hash, delegators. WHOSE key it is stays a question this
+       * route does not answer — a key page entry is `sha256(publicKey)` for every key type alike, so
+       * nothing here distinguishes a person's certificate from a piece of software. The caller matches
+       * these against a roster its own people agreed, and the record must keep saying which half is a
+       * reading and which half is a declaration.
+       */
+      if (method === 'GET' && path === '/v1/admin/tx-signatures') {
+        const read = d.accumulate.getTxSignatures?.bind(d.accumulate);
+        if (!read) return json(res, 501, { error: 'this signer cannot read transaction signatures' });
+
+        const txid = (url.searchParams.get('txid') ?? '').trim();
+        const m = /^(?:acc:\/\/)?([0-9a-fA-F]{64})@(.+)$/.exec(txid);
+        if (!m) {
+          return json(res, 400, {
+            // The hash alone is not enough: the network is asked for a transaction ON an account, so
+            // the principal is part of the address rather than decoration.
+            error: 'txid must be acc://<64-hex-hash>@<principal>',
+            example: 'acc://5770d714…532588@twoa1788601803711.acme/data',
+          });
+        }
+
+        const out = await read(m[1]!, m[2]!);
+        // 503 when we could not ASK. A 200 with an empty list would say "nobody signed", which is a
+        // different fact and the one nobody may invent.
+        return json(res, out.unavailable ? 503 : 200, {
+          txid,
+          status: out.status,
+          delivered: out.delivered,
+          signature_count: out.signatures.length,
+          signatures: out.signatures.map((s) => ({
+            type: s.type,
+            public_key_hash: s.publicKeyHash,
+            delegators: s.delegators,
+            ...(s.signer ? { signer: s.signer } : {}),
+          })),
+          ...(out.unavailable ? { unavailable: out.unavailable } : {}),
+        });
+      }
+
       // POST /v1/admin/key-page — governance on the org's OWN key page. TYPED, never blind.
       //
       // This replaces a `sign-governance` endpoint that signed an arbitrary caller-supplied 32-byte hash.
