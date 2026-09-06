@@ -30,6 +30,7 @@
  *     correlate against its own records.
  */
 import { DecodeContext, DecodedAction, SummaryDecoder, TxBody } from '../types.js';
+import type { IntentGrant } from '../../types.js';
 
 /** The four decoded blobs of an intent payload. */
 export interface CertenIntent {
@@ -179,6 +180,47 @@ export const certenIntentDecoder: SummaryDecoder = {
     // documented field rather than digging through `raw`; the blob itself stays exactly as it was below.
     // A claim is taken only when it is an object carrying a non-empty `adi` — a bare string, or an object
     // with no identity in it, is a malformed claim and therefore no claim. The signer never invents one.
+    /**
+     * WHAT LEG 0 GRANTS, for the calls that grant something. T18/T21.
+     *
+     * `approve` only. `transfer` and `transferFrom` MOVE a balance and are already bounded by
+     * `values[]`; calling them grants would put one number under two names and invite a rule set to
+     * bound it twice while believing it had covered two different risks.
+     *
+     * Leg 0, like every other field in this summary. A multi-leg intent whose LATER leg carries the
+     * approve is not described here — a known edge rather than a silent one, because the
+     * `calldataDecoded` presence predicate still routes the whole transaction to a human, and that is
+     * the control which depends on none of this being read correctly.
+     *
+     * `asset` is PASSED THROUGH, never inferred. `decimals` goes only when the payload states it and
+     * states it sanely; a guessed precision is a wrong bound rather than a missing one, and an engine
+     * that cannot scale should refuse to match rather than assume. The case that matters most needs
+     * neither: 2^256 − 1 is unlimited at every precision. See IntentGrant.
+     */
+    const grantAsset = leg0.asset as { symbol?: unknown; decimals?: unknown } | undefined;
+    const symbolOf = typeof grantAsset?.symbol === 'string' && grantAsset.symbol ? grantAsset.symbol : undefined;
+    const decimalsOf =
+      typeof grantAsset?.decimals === 'number' && Number.isInteger(grantAsset.decimals) &&
+      grantAsset.decimals >= 0 && grantAsset.decimals <= 36
+        ? grantAsset.decimals
+        : undefined;
+
+    const grant: IntentGrant | undefined =
+      erc20_0?.fn === 'approve'
+        ? {
+            ...(erc20_0.args['spender'] ? { spender: erc20_0.args['spender'] } : {}),
+            allowance: erc20_0.amount,
+            ...(symbolOf !== undefined || decimalsOf !== undefined
+              ? {
+                  asset: {
+                    ...(symbolOf !== undefined ? { symbol: symbolOf } : {}),
+                    ...(decimalsOf !== undefined ? { decimals: decimalsOf } : {}),
+                  },
+                }
+              : {}),
+          }
+        : undefined;
+
     const claimed = intent?.intent?.subject;
     const subject =
       claimed && typeof claimed === 'object' && typeof claimed.adi === 'string' && claimed.adi
@@ -201,6 +243,7 @@ export const certenIntentDecoder: SummaryDecoder = {
         ...(erc20_0 ? { calldataDecoded: erc20_0.text } : {}),
         // Spread, not `subject`: absent must be an ABSENT KEY on the wire, not `subject: undefined`.
         ...(subject ? { subject } : {}),
+        ...(grant ? { grant } : {}),
         raw: {
           certenIntent: intent?.intent,
           legCount: legs!.length,

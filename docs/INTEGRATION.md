@@ -190,9 +190,30 @@ POST <policy.url>    content-type: application/json
   "values":        ["25000", "500"],  // EVERY amount — gate on these
   "unpricedLegs":  0,                 // absent or 0 => `values` is complete. > 0 => it is NOT
   "calldataDecoded": "approve(address spender = 0x68…, uint256 amount = …)",  // if the decoder could read it
+  "grant": {                          // what the call GRANTS. Absent for a transfer — see below
+    "spender":   "0x68…",
+    "allowance": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+    "asset":     { "symbol": "USDC", "decimals": 6 }   // decimals ONLY when the payload stated it
+  },
   "expiresAt":     "2026-07-26T12:00:00Z"
 }
 ```
+
+**Gate on `grant` as well as on `values`, and understand why both.** `values` bounds what MOVES. An
+ERC-20 `approve` moves **nothing** and hands somebody standing authority to move a balance later,
+without asking again — so a rule meaning *"small enough to approve automatically"* matches an
+**unlimited** spending approval, and reads as though it did something careful. The risk of that call is
+not in its amount.
+
+`grant.allowance` is in the token's base units, unscaled, as a decimal string. `grant.asset.decimals`
+is present only when the payload stated it: a guessed precision is a *wrong* bound rather than a
+missing one, so refuse to match a scaled limit rather than assume. The case that matters most needs
+neither field — an unlimited approval is `2^256 − 1` at every precision.
+
+**Absent `grant` does not mean "grants nothing."** It means no grant this decoder could read. A call it
+could not decode has no `grant` either, which is why a rule set should also route on `calldataDecoded`
+being present: *every contract call is seen by a person* is a control that depends on none of this
+being parsed correctly.
 
 **Gate on `values`, not `value`.** A transaction can move value in several legs. `value` is the first,
 carried for display; `values` is all of them. Check one and the rest are ungated — an amount over your

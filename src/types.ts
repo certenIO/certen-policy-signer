@@ -70,7 +70,53 @@ export interface ActionSummary {
   calldataDecoded?: string;
   /** WHO the transaction is about, when the payload named someone. See `IntentSubject`. */
   subject?: IntentSubject;
+  /** WHAT AUTHORITY the call grants, when it grants one. See `IntentGrant`. */
+  grant?: IntentGrant;
   raw?: Record<string, unknown>;  // fallback / extra fields
+}
+
+/**
+ * What a call GRANTS, as opposed to what it moves.
+ *
+ * ── WHY THIS EXISTS, WHICH IS THE WHOLE POINT ────────────────────────────────────────────────────
+ *
+ * Every other number on this contract answers "how much moves". An ERC-20 `approve` moves **nothing**
+ * and hands somebody standing authority to move a balance later, without asking again. So a gate
+ * reading `values[]` sees `0`, and a policy rule meaning "small enough to approve automatically"
+ * matches an UNLIMITED spending approval. That is not hypothetical: it was found in this product's own
+ * demo data by an unbriefed reviewer in under four minutes.
+ *
+ * The risk of such a call is not in its amount, and nothing on the wire carried the fact that could
+ * bound it.
+ *
+ * ── WHY FIELDS RATHER THAN THE DECODED TEXT ──────────────────────────────────────────────────────
+ *
+ * `calldataDecoded` already reads `approve(spender = 0x…, amount = …)`, and an engine could parse it.
+ * It must not. That string is prose assembled for a human, and letting a gate read it would let
+ * whoever submits a transaction choose the wording that governs them. A decision rests on fields a
+ * decoder took out of the bytes, never on a label the payload supplied.
+ */
+export interface IntentGrant {
+  /** Who may spend, as an address string. Absent when the call names nobody. */
+  spender?: string;
+  /**
+   * The allowance in the token's BASE UNITS, as a decimal string — the same form as `values[]`.
+   *
+   * Deliberately unscaled: scaling needs the token's decimals, and a decoder that guessed them would
+   * be inventing the number a control is measured against. An engine that cannot scale can still act
+   * on the case that matters most, because an unlimited approval is `2^256 − 1` whatever the decimals.
+   */
+  allowance?: string;
+  /**
+   * What is being granted, when the payload named it.
+   *
+   * Both fields are PASSED THROUGH from the payload, never inferred. `decimals` is present only when
+   * the intent stated it and stated it sanely, because a guessed precision is a wrong bound rather
+   * than a missing one — an engine that cannot scale should refuse to match rather than assume, which
+   * is what the approval console's `maxAllowance` does. The case that matters most needs neither
+   * field: an unlimited approval is 2^256 − 1 at every precision.
+   */
+  asset?: { symbol?: string; decimals?: number };
 }
 
 /** Fully resolved pending transaction, ready to sign. */
@@ -122,6 +168,19 @@ export interface PolicyRequest {
    *  have another way to bound them — the signer's own ceiling refuses to sign in this case. */
   unpricedLegs?: number;
   calldataDecoded?: string;
+  /**
+   * WHAT AUTHORITY this call grants, when it grants one. See `IntentGrant`.
+   *
+   * Gate on this as well as on `values[]`, and understand why both are needed: `values[]` bounds what
+   * MOVES, and an `approve` moves nothing while handing over the right to move a balance later. A rule
+   * set that only bounds amounts will auto-approve an unlimited spending authority and read as though
+   * it did something careful.
+   *
+   * Absent means the call grants nothing nameable — the ordinary case for a transfer. It does NOT mean
+   * "grants nothing": a call this decoder could not read has no grant field either, which is why
+   * `calldataDecoded` being present with no `grant` is worth a rule of its own.
+   */
+  grant?: IntentGrant;
   /** How long THIS DECISION REQUEST is valid (policy TTL, default 15 min) — NOT the tx's on-chain deadline. */
   expiresAt: string;              // ISO
 }
