@@ -52,6 +52,9 @@ HTTP (one listener, address from health.bind)
   GET  /v1/admin/pubkey      Public key + signature type per scope   (admin)
   GET  /v1/admin/page        Live key-page state per scope           (admin)
                              threshold, seats, delegates, version -- what the network enforces
+  GET  /v1/admin/tx-signatures  Who signed a transaction             (admin)
+                             ?txid=acc://<hash>@<principal> -- status, algorithm, key hash,
+                             delegators. Facts only: whose key it is rests on the roster
   POST /v1/admin/key-page    Key-page governance                     (admin)
 
   Admin routes require the x-api-key header and are disabled — not merely unauthenticated —

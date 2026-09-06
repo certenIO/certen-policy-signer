@@ -4,8 +4,61 @@
  * Signing still uses accumulate.js encoding (see signing.ts); only transport is raw here.
  */
 import axios, { AxiosInstance } from 'axios';
-import { AccumulateClient, PendingTxResult, SignerInfo, SubmitResult } from './client.js';
+import { createHash } from 'node:crypto';
+import { AccumulateClient, ChainSignature, PendingTxResult, SignerInfo, SubmitResult, TxSignatures } from './client.js';
 import { Logger } from '../logger.js';
+
+/**
+ * Every signature message in a v3 transaction record, however deeply the node nests them.
+ *
+ * The shape is `signatures.records[].signatures.records[].message.signature`, and each level is a
+ * paginated record set that may or may not be expanded — so this walks rather than indexes. A reader
+ * that assumed one fixed depth would return nothing the first time the node nested differently, and
+ * "no signatures" is precisely the answer that must never be produced by accident.
+ */
+function collectSignatureMessages(node: unknown, out: Record<string, unknown>[], depth = 0): void {
+  if (!node || typeof node !== 'object' || depth > 8) return;
+
+  // An array may BE the node, not only a value under a known key — `signatures` is sometimes the list
+  // itself rather than `{ records: [...] }`. Walking only the named keys missed that entirely and
+  // returned no signatures at all, which is the one wrong answer this function must never give.
+  if (Array.isArray(node)) {
+    for (const c of node) collectSignatureMessages(c, out, depth + 1);
+    return;
+  }
+
+  const n = node as Record<string, unknown>;
+
+  const message = n['message'] as Record<string, unknown> | undefined;
+  if (message && typeof message === 'object' && message['signature']) out.push(message);
+
+  for (const key of ['records', 'signatures', 'value', 'message']) {
+    const child = n[key];
+    if (Array.isArray(child)) for (const c of child) collectSignatureMessages(c, out, depth + 1);
+    else if (child && typeof child === 'object') collectSignatureMessages(child, out, depth + 1);
+  }
+}
+
+/**
+ * Unwrap a delegated signature to the key that actually signed, recording the authorities on the way.
+ *
+ * A delegated signature nests — `{ type: 'delegated', delegator, signature: { … } }`, possibly several
+ * deep. The public key is at the bottom; the delegators are the path taken to reach it. Both matter:
+ * the key hash is what a page entry holds, and the delegators are what ties a signature to a seat the
+ * roster recorded.
+ */
+function unwrapDelegation(sig: Record<string, unknown>): { inner: Record<string, unknown>; delegators: string[] } {
+  const delegators: string[] = [];
+  let inner = sig;
+  for (let i = 0; i < 8; i++) {
+    const delegator = inner['delegator'];
+    if (typeof delegator === 'string' && delegator) delegators.push(delegator);
+    const nested = inner['signature'];
+    if (nested && typeof nested === 'object') inner = nested as Record<string, unknown>;
+    else break;
+  }
+  return { inner, delegators };
+}
 
 export class RawAccumulateClient implements AccumulateClient {
   private http: AxiosInstance;
@@ -63,6 +116,62 @@ export class RawAccumulateClient implements AccumulateClient {
       this.logger.warn({ tx: hash, err: msg }, 'getPendingTx: could not query the node — will retry');
       return { found: false, unavailable: true };
     }
+  }
+
+  /**
+   * What the chain says about a transaction and the signatures on it. T32.
+   *
+   * The console cannot ask this itself — invariant F-1 keeps chain work in the signer — and until now
+   * nothing asked it at all. So the record could say *the organisation signed in her name*, because our
+   * own signer made that signature and knew which key it used, and could not say *she signed*, because
+   * her certificate signs on chain and nobody read it back. Somebody was eventually going to read the
+   * absence of an alarm as proof that she had.
+   *
+   * `publicKeyHash` is `sha256(publicKey)`, which is what a key page entry holds — so a caller can
+   * compare a signature against a page, or against a seat the roster recorded. It is computed here
+   * rather than passed raw because the console is forbidden from computing it, and a key hash it cannot
+   * derive is one it cannot be tempted to derive.
+   */
+  async getTxSignatures(txHash: string, principal: string): Promise<TxSignatures> {
+    const hash = txHash.replace(/^0x/, '');
+    const scope = `acc://${hash}@${principal.replace(/^acc:\/\//, '')}`;
+
+    let rec: any;
+    try {
+      rec = await this.query(scope);
+    } catch (e) {
+      const msg = (e as Error).message ?? String(e);
+      // "No such record" is an answer; anything else is a failure to ask. A caller must never read the
+      // second as "nobody signed" — the same distinction `getPendingTx` draws, for the same reason.
+      this.logger.debug({ tx: hash, err: msg }, 'getTxSignatures: could not read the transaction');
+      return { status: '', delivered: false, signatures: [], unavailable: msg };
+    }
+
+    const status = String(rec?.status ?? '');
+    const messages: Record<string, unknown>[] = [];
+    collectSignatureMessages(rec?.signatures ?? rec, messages);
+
+    const signatures: ChainSignature[] = [];
+    for (const message of messages) {
+      const raw = message['signature'];
+      if (!raw || typeof raw !== 'object') continue;
+      const { inner, delegators } = unwrapDelegation(raw as Record<string, unknown>);
+
+      const publicKey = inner['publicKey'];
+      // No public key means an authority or a system signature rather than somebody signing. Counting
+      // one would inflate "how many people signed this", which is the number a reader trusts most.
+      if (typeof publicKey !== 'string' || publicKey === '') continue;
+
+      const signerUrl = inner['signer'];
+      signatures.push({
+        type: String(inner['type'] ?? 'unknown'),
+        publicKeyHash: createHash('sha256').update(Buffer.from(publicKey, 'hex')).digest('hex'),
+        delegators,
+        ...(typeof signerUrl === 'string' && signerUrl ? { signer: signerUrl } : {}),
+      });
+    }
+
+    return { status, delivered: /delivered|executed/i.test(status), signatures };
   }
 
   async getSignerInfo(signerUrl: string): Promise<SignerInfo> {

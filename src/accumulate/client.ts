@@ -29,6 +29,63 @@ export interface SubmitResult {
   result?: unknown;
 }
 
+/**
+ * One signature the chain records against a transaction. Runbook F Phase F4, T32.
+ *
+ * FACTS, AND NO VERDICT — every field is something the network said. Nothing here is an opinion about
+ * whose signature it is; see `TxSignatures` for why that matters.
+ */
+export interface ChainSignature {
+  /** `ed25519`, `ecdsaSha256`, `rsaSha256` … as the protocol names it. */
+  type: string;
+  /**
+   * `sha256(publicKey)` — the same value a key page holds as its entry, so the two can be compared.
+   *
+   * Computed HERE, in the signer, because this is the component allowed to know how a key page entry
+   * is derived. The approval console must never compute one: `scripts/check-no-chain-code.mjs` refuses
+   * a `sha256` in its authority module precisely because hashing a key to compare it with a page is a
+   * two-line change nobody would think of as adopting chain code, and it is.
+   */
+  publicKeyHash: string;
+  /** The authorities a delegated signature passed through, outermost first. Empty when direct. */
+  delegators: string[];
+  /** The key page the signature was made on, when the record names one. */
+  signer?: string;
+}
+
+/**
+ * What the chain says about a transaction, and who signed it.
+ *
+ * ── WHAT THIS ESTABLISHES, AND WHAT IT CANNOT ────────────────────────────────────────────────────
+ *
+ * It can say: this transaction is delivered or still pending, N signatures satisfied it, and each was
+ * of this algorithm, made by the key with this hash, through these delegators.
+ *
+ * It CANNOT say whose key that was. A key page entry is `sha256(publicKey)` for every key type alike,
+ * so nothing on the chain distinguishes an employee's certificate from a piece of software. Binding a
+ * key hash to a person is a claim the ROSTER makes — two people proposed it and agreed it — and a
+ * reader has to be told which half is which. The signer reports the chain half and stops there.
+ *
+ * That asymmetry is the whole of T32: the console could already say *the organisation signed in her
+ * name*, because our own signer produced that signature and knew which of its keys it used. It could
+ * not say *she signed*, because her certificate signs on chain and nothing read it back. This is the
+ * reading. The attribution stays a declaration, and stays labelled as one.
+ */
+export interface TxSignatures {
+  /** As the network reports it: `delivered`, `pending`, … Empty when it did not say. */
+  status: string;
+  /** True only when the network positively said so. Absent evidence is not evidence of absence. */
+  delivered: boolean;
+  signatures: ChainSignature[];
+  /**
+   * Set when the transaction could not be read at all.
+   *
+   * Distinct from an empty `signatures`, for the same reason `PendingTxResult.unavailable` is distinct
+   * from `found: false`: a caller must never read "we could not ask" as "nobody signed".
+   */
+  unavailable?: string;
+}
+
 export interface AccumulateClient {
   getPendingTx(txHash: string, signerUrl: string): Promise<PendingTxResult>;
   getSignerInfo(signerUrl: string): Promise<SignerInfo>;
@@ -41,6 +98,13 @@ export interface AccumulateClient {
    */
   listPendingViaSignatureChain(bookUrl: string): Promise<string[]>;
   submit(envelope: unknown): Promise<SubmitResult>;
+  /**
+   * What the chain says about a transaction and the signatures on it. T32.
+   *
+   * Optional on the interface so a client that predates it — and the mock below, when a test does not
+   * care — is still a valid `AccumulateClient`. A caller must handle its absence.
+   */
+  getTxSignatures?(txHash: string, principal: string): Promise<TxSignatures>;
 }
 
 /* ------------------------------------------------------------------ */
