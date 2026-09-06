@@ -47,6 +47,94 @@ describe('decodeErc20Calldata', () => {
   });
 });
 
+/**
+ * What a call GRANTS, which is not what it moves. T18/T21.
+ *
+ * An `approve` forwards no value and hands somebody standing authority to move a balance later. Every
+ * number this decoder emitted answered "how much moves", so a gate reading `values` saw `0` and a rule
+ * meaning "small enough to approve automatically" matched an UNLIMITED spending approval. It was found
+ * in the approval console's own demo data by an unbriefed reviewer in under four minutes.
+ *
+ * The console has been able to EXPRESS that bound for some time (`maxAllowance`), and the wire carried
+ * nothing to evaluate it against — so the rule could be written and could never fire. This is the wire.
+ */
+describe('what a call grants', () => {
+  const UNLIMITED = 2n ** 256n - 1n;
+
+  it('emits the spender and the allowance for an approve', () => {
+    const out = certenIntentDecoder.decode(body([leg({
+      amountWei: '0',
+      asset: { symbol: 'USDC', decimals: 6, contract_address: TOKEN },
+      executionPayload: { target: TOKEN, value: '0', callData: approveCalldata(5_000_000n) },
+    })]), CTX)!;
+
+    expect(out.summary.grant).toEqual({
+      spender: TO.toLowerCase(),
+      allowance: '5000000',
+      asset: { symbol: 'USDC', decimals: 6 },
+    });
+  });
+
+  it('carries an UNLIMITED approval through as the full integer', () => {
+    // The headline case. A gate cannot recognise unlimited if the wire rounds, truncates or omits it,
+    // and 2^256 - 1 is unlimited at every precision — so this is the one bound that still works when
+    // the payload names no decimals at all.
+    const out = certenIntentDecoder.decode(body([leg({
+      amountWei: '0',
+      asset: { symbol: 'USDC' },
+      executionPayload: { target: TOKEN, value: '0', callData: approveCalldata(UNLIMITED) },
+    })]), CTX)!;
+
+    expect(out.summary.grant?.allowance).toBe(UNLIMITED.toString());
+    expect(out.summary.grant?.asset).toEqual({ symbol: 'USDC' });
+  });
+
+  it('does NOT describe a transfer as a grant', () => {
+    // `transfer` and `transferFrom` move a balance and are already bounded by `values`. Calling them
+    // grants would put one number under two names and invite a rule set to bound it twice while
+    // believing it had covered two different risks.
+    for (const callData of [transferCalldata(10n), transferFromCalldata(10n)]) {
+      const out = certenIntentDecoder.decode(body([leg({
+        amountWei: '0', executionPayload: { target: TOKEN, value: '0', callData },
+      })]), CTX)!;
+      expect(out.summary.grant).toBeUndefined();
+    }
+  });
+
+  it('omits decimals rather than guessing when the payload does not state them', () => {
+    // A guessed precision is a WRONG bound, not a missing one: it silently rescales the number a
+    // control is measured against. Absent must stay absent so an engine can refuse to match.
+    const out = certenIntentDecoder.decode(body([leg({
+      amountWei: '0',
+      asset: { symbol: 'WEIRD' },
+      executionPayload: { target: TOKEN, value: '0', callData: approveCalldata(1n) },
+    })]), CTX)!;
+    expect(out.summary.grant?.asset).toEqual({ symbol: 'WEIRD' });
+    expect(out.summary.grant?.asset).not.toHaveProperty('decimals');
+  });
+
+  it('ignores a decimals the payload states nonsensically', () => {
+    for (const decimals of [-1, 1.5, 999, 'six']) {
+      const out = certenIntentDecoder.decode(body([leg({
+        amountWei: '0',
+        asset: { symbol: 'ODD', decimals },
+        executionPayload: { target: TOKEN, value: '0', callData: approveCalldata(1n) },
+      })]), CTX)!;
+      expect(out.summary.grant?.asset, String(decimals)).toEqual({ symbol: 'ODD' });
+    }
+  });
+
+  it('says nothing about a call it could not decode', () => {
+    // Absent `grant` means "no grant this decoder could read", NOT "grants nothing" — which is exactly
+    // why a rule set should also route on `calldataDecoded` being present.
+    const out = certenIntentDecoder.decode(body([leg({
+      amountWei: '4000', executionPayload: { target: TOKEN, value: '4000', callData: '0xdeadbeef' + word(1n) },
+    })]), CTX)!;
+    expect(out.summary.grant).toBeUndefined();
+    expect(out.summary.calldataDecoded).toBeUndefined();
+  });
+});
+
 describe('certen-intent decoder with ERC-20 calldata', () => {
   it('a contract-call leg moving tokens puts the TOKEN amount in values, not the zero native value', () => {
     const out = certenIntentDecoder.decode(body([leg({

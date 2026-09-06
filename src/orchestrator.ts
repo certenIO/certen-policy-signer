@@ -220,6 +220,9 @@ export class Orchestrator {
       // indistinguishable from a complete one, and the engine's own ceiling has the same blind spot ours had.
       unpricedLegs: tx.summary.unpricedLegs,
       calldataDecoded: tx.summary.calldataDecoded,
+      // What the call GRANTS, beside what it moves. An engine gating only on `values` auto-approves an
+      // unlimited spending authority, because an approve moves nothing at all. T18/T21.
+      grant: tx.summary.grant,
       expiresAt: new Date(this.now() + this.opt.policyTtlSeconds * 1000).toISOString(),
     };
     await store.update(ref.txHash, { policyRequestId: policyReq.requestId });
