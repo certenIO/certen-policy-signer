@@ -199,8 +199,10 @@ return await reauthenticate(user, request);    // your biometric / MFA / step-up
 
 `subject.adi` is the same identity your enrolment validated — see `examples/enrollment.mjs` for the other
 end of it, and `checkEnrolledSubject` in `examples/policy-engine.mjs` for a runnable version of the above.
-Key on `adi`, never on `subject.keyBook`: the book is a hint, and binding to it makes every key rotation a
-re-enrolment.
+Key on `adi`, never on `subject.keyBook`: the book is a hint, and one authority among N rather than the
+identity. What makes a stored book stale is authority-set membership — `UpdateAccountAuth` can remove it
+or disable it in place, with none of its keys changing — not key rotation, which acts on entries in a
+*page* and leaves the book URL untouched.
 
 **The thing that goes wrong, and it is not the obvious one.** The subject is *optional*. Intents written
 before the field existed, third-party producers and custom decoders all carry none, and the temptation is

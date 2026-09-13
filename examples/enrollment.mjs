@@ -16,9 +16,13 @@
  *
  * Do NOT key on the key book. It is carried to reauth as `subject.keyBook` when the producer knows it,
  * as a hint, but a book can live under an ADI without governing it and an ADI can be governed by
- * several — which is exactly what `preflight`'s third check exists to catch. Reading the authority set
- * at verification time, as this module does, is what makes key rotation a non-event; keying a binding
- * to a book makes every rotation a re-enrollment.
+ * several — which is exactly what `preflight`'s third check exists to catch.
+ *
+ * A book goes stale through AUTHORITY-SET MEMBERSHIP, never through keys. `UpdateAccountAuth` can
+ * remove it from the ADI's authority set or disable it in place, with none of its keys changing; key
+ * rotation is the opposite case, because `UpdateKeyPage` and `UpdateKey` act on entries in a PAGE and
+ * leave the book URL alone. So key rotation is a non-event for a binding either way — reading the
+ * authority set at verification time, as this module does, is what catches the case that is not.
  *
  * See `checkEnrolledSubject` in `policy-engine.mjs` for the other end of this.
  *
@@ -212,8 +216,10 @@ function sameUrl(a, b) {
  * |  Inferring authority from the URL prefix is the bug. Read the authority set.                  |
  * +---------------------------------------------------------------------------------------------+
  *
- * Cheap: three reads, no chain writes, no credits at risk. Run it on every enrollment — reading the
- * authority set at verification time is also what makes key rotation a non-event.
+ * Cheap: three reads, no chain writes, no credits at risk. Run it on every enrollment — and reading the
+ * authority set at verification time is what catches the change that matters later, a book removed or
+ * disabled by `UpdateAccountAuth`. Key rotation is not that change: it acts on entries in a PAGE and
+ * leaves the book URL untouched.
  *
  * @returns {Promise<{ok: boolean, reason?: string, adi?: string, keyBook?: string}>}
  */

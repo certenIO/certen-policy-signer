@@ -244,8 +244,14 @@ person.
 **Key on `subject.adi`.** It is the Accumulate ADI, and it is exactly what enrollment bound — the same
 value you passed to `preflight(adiUrl, keyBookUrl)`. `keyBook` is carried when the producer knows it and
 is a **hint**: a book can live under an ADI without governing it, and an ADI can be governed by several,
-so keying on the book makes every key rotation a re-enrollment. Read the ADI's authority set at
-verification time instead.
+so a stored book URL is one authority among N rather than the identity.
+
+What makes it go stale is **authority-set membership**, not keys. A book stops speaking for an ADI
+through `UpdateAccountAuth` — removed from the set, or disabled in place — and none of its keys have to
+change for that to happen. Key rotation is the opposite case and is often mistaken for this one:
+`UpdateKeyPage` and `UpdateKey` change entries on a *page* and leave the book URL untouched, so a
+binding does not go stale because a key moved. Read the ADI's authority set at verification time and you
+are reading the thing that actually changes.
 
 **It is an assertion, not a proof.** The subject is asserted by whoever wrote the intent, not proven by
 the user it names. Nothing on chain binds it: Accumulate verified only that the submitter could sign for
