@@ -195,9 +195,46 @@ POST <policy.url>    content-type: application/json
     "allowance": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
     "asset":     { "symbol": "USDC", "decimals": 6 }   // decimals ONLY when the payload stated it
   },
-  "expiresAt":     "2026-07-26T12:00:00Z"
+  "header": {                         // the transaction's OWN header, read from Accumulate — see below
+    "principal":   "acc://acme.acme/orders",
+    "authorities": ["acc://inspector.acme/book"],  // additional authorities Accumulate enforces; absent if none
+    "expiresAt":   "2026-07-26T13:00:00Z",         // the ON-CHAIN deadline (header.expire.atTime); absent if none
+    "memo":        "PO-1043"                       // submitter free text, display only; absent if none
+  },
+  "expiresAt":     "2026-07-26T12:00:00Z"         // THIS REQUEST's validity (policy TTL) — not the on-chain deadline
 }
 ```
+
+### The transaction header: who Accumulate will wait for, and until when
+
+`header` is the pending transaction's own header, read by the signer from the transaction record the
+Accumulate node returns (`message.transaction.header`, in `src/accumulate/raw-client.ts` via
+`src/accumulate/header.ts`). It is read for **every** transaction — a CERTEN intent, a plain WriteData
+acceptance transaction, a token send — and never from the payload a producer wrote. The signer populates
+it on every request; it is optional in the type only so an engine that predates it is unaffected.
+
+- `principal` — the account the transaction acts on (`header.principal`). The same value as `account`.
+- `authorities` — `header.authorities`: the **additional authorities Accumulate will enforce** on this
+  transaction, on top of the principal account's own. Exactly what the network holds the transaction for.
+- `expiresAt` — `header.expire.atTime`, as ISO-8601 UTC: the **on-chain deadline**. After it no signature
+  can complete the transaction.
+- `memo` — `header.memo`, when set. Free text chosen by the submitter: display it, never decide on it.
+
+**The submitter composes `authorities`.** Accumulate enforces what is listed, not what *should* be
+listed: a submitter that leaves out the party a payment needs gets a transaction that completes without
+that party ever being asked. So if your rules say a class of payment requires a party — say, an inspection
+firm's book above some amount — **check that `header.authorities` lists it and deny when it does not**.
+[`checkRequiredParties(request, requiredBooks)`](../examples/policy-engine.mjs) does that comparison
+(case-insensitive, trailing-slash-insensitive, exact book match) and fails closed: a request with no
+`header` or no `authorities` has every required book missing.
+
+**Two different expiries.** `header.expiresAt` is the transaction's on-chain deadline. The top-level
+`expiresAt` is only how long this one decision request is valid (policy TTL) and has nothing to do with
+the chain. **The signer refuses to sign — accept or reject — once `header.expiresAt` has passed, and
+also when the header carries an expiry it cannot read.** It checks before asking you and again right
+before signing, so an approval that arrives after the deadline never becomes a late signature. A refused
+transaction is recorded with `lastError: header_deadline_passed` (status `expired`) or
+`header_expiry_unreadable` (status `rejected`), and a receipt whose `policyEvidence.blockedBy` says which.
 
 **Gate on `grant` as well as on `values`, and understand why both.** `values` bounds what MOVES. An
 ERC-20 `approve` moves **nothing** and hands somebody standing authority to move a balance later,

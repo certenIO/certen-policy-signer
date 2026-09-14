@@ -1,4 +1,5 @@
 /** Accumulate client interface + an in-memory mock for tests. */
+import { ExtractedHeader, extractTxHeader } from './header.js';
 
 export interface PendingTxResult {
   found: boolean;
@@ -12,6 +13,12 @@ export interface PendingTxResult {
   rawTransaction?: unknown;
   body?: { type: string; [k: string]: unknown };
   principal?: string;
+  /**
+   * The transaction header as recorded (`message.transaction.header`), read by `extractTxHeader`.
+   * Optional so a client that predates it stays valid; the resolver derives it from `rawTransaction`
+   * when a client does not supply it.
+   */
+  header?: ExtractedHeader;
   executed?: boolean;
   expired?: boolean;
 }
@@ -134,11 +141,13 @@ export class MockAccumulateClient implements AccumulateClient {
     if (this.unavailable) return { found: false, unavailable: true };
     const p = this.pending.get(txHash);
     if (!p) return { found: false };
+    const rawTransaction = p.rawTransaction ?? { header: { principal: p.principal }, body: p.body };
     return {
       found: true,
-      rawTransaction: p.rawTransaction ?? { header: { principal: p.principal }, body: p.body },
+      rawTransaction,
       body: p.body,
       principal: p.principal,
+      header: extractTxHeader(rawTransaction, p.principal),
       executed: p.executed,
       expired: p.expired,
     };

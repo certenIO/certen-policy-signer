@@ -5,9 +5,9 @@
  * one. These tests load the real files from disk — not a copy — so the published examples cannot rot
  * silently behind a refactor of the seams they demonstrate.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join, dirname } from 'node:path';
 import { spawn, ChildProcess } from 'node:child_process';
 import { createHmac } from 'node:crypto';
@@ -257,5 +257,84 @@ describe('examples/policy-engine.mjs', () => {
       body,
     });
     expect(res.status).toBe(401);
+  });
+});
+
+/**
+ * The required-party helper (runbook decision A2). The submitter composes `header.authorities`, so a seat
+ * whose rules require a party must check the list itself — and must deny when it cannot see it.
+ * Book URLs below are FICTIONAL.
+ */
+describe('examples/policy-engine.mjs checkRequiredParties', () => {
+  type Check = (request: unknown, requiredBooks: unknown) => { ok: boolean; missing: unknown[] };
+  let check: Check;
+  beforeAll(async () => {
+    // Importing must NOT start the example server: it listens only when run directly.
+    const mod = (await import(pathToFileURL(ENGINE).href)) as { checkRequiredParties: Check };
+    check = mod.checkRequiredParties;
+  });
+  const FIRM = 'acc://fictional-firm.acme/book';
+  const withAuthorities = (authorities?: string[]) => ({
+    requestId: 'r', txHash: 'ab'.repeat(32), account: 'acc://fictional-customer.acme/data', actionSummary: 'x',
+    expiresAt: new Date().toISOString(),
+    header: { principal: 'acc://fictional-customer.acme/data', ...(authorities ? { authorities } : {}) },
+  });
+
+  it('ok when every required book is listed', () => {
+    expect(check(withAuthorities([FIRM, 'acc://fictional-bank.acme/book']), [FIRM])).toEqual({ ok: true, missing: [] });
+  });
+
+  it('compares case-insensitively and ignores trailing slashes', () => {
+    expect(check(withAuthorities(['ACC://Fictional-Firm.ACME/book/']), [FIRM]).ok).toBe(true);
+    expect(check(withAuthorities([FIRM]), ['acc://FICTIONAL-firm.acme/book//']).ok).toBe(true);
+  });
+
+  it('reports each missing book', () => {
+    const other = 'acc://fictional-inspector.acme/book';
+    expect(check(withAuthorities([FIRM]), [FIRM, other])).toEqual({ ok: false, missing: [other] });
+  });
+
+  it('a page or a sibling book is not the required book', () => {
+    expect(check(withAuthorities([`${FIRM}/1`]), [FIRM]).ok).toBe(false);
+    expect(check(withAuthorities(['acc://fictional-firm.acme/book2']), [FIRM]).ok).toBe(false);
+  });
+
+  it('fails closed with no header or no authorities', () => {
+    expect(check(withAuthorities(), [FIRM])).toEqual({ ok: false, missing: [FIRM] });
+    const { header: _h, ...noHeader } = withAuthorities([FIRM]);
+    expect(check(noHeader, [FIRM])).toEqual({ ok: false, missing: [FIRM] });
+    expect(check(undefined, [FIRM]).ok).toBe(false);
+  });
+
+  it('a malformed required entry counts as missing, never as satisfied', () => {
+    expect(check(withAuthorities([FIRM]), [FIRM, '']).ok).toBe(false);
+    expect(check(withAuthorities([FIRM]), [FIRM, 42]).ok).toBe(false);
+  });
+
+  it('requiring nobody is ok', () => {
+    expect(check(withAuthorities(), [])).toEqual({ ok: true, missing: [] });
+  });
+
+  it('the parties demo mode denies over HTTP when the header omits the required book', async () => {
+    const port = 19700 + Number(process.pid % 200);
+    const child = spawn(process.execPath, [ENGINE], {
+      env: { ...process.env, POLICY_MODE: 'parties', POLICY_REQUIRED_BOOKS: FIRM, PORT: String(port) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('example engine did not start')), 10_000);
+        child.stdout!.on('data', (b: Buffer) => { if (b.toString().includes('listening on')) { clearTimeout(t); resolve(); } });
+        child.on('error', reject);
+      });
+      const client = new HttpPolicyClient({ url: `http://127.0.0.1:${port}/decision` });
+      const listed = await client.decide(withAuthorities([FIRM]) as PolicyRequest);
+      expect(listed.decision).toBe('approve');
+      const omitted = await client.decide(withAuthorities(['acc://fictional-bank.acme/book']) as PolicyRequest);
+      expect(omitted.decision).toBe('deny');
+      expect(omitted.evidence).toMatchObject({ rule: 'required-parties', missing: [FIRM] });
+    } finally {
+      child.kill('SIGKILL');
+    }
   });
 });

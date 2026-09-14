@@ -123,6 +123,42 @@ export interface IntentGrant {
   asset?: { symbol?: string; decimals?: number };
 }
 
+/**
+ * THE PENDING TRANSACTION'S OWN HEADER, as Accumulate recorded it. Runbook Phase 2 task 2.5 (F23).
+ *
+ * Read from the transaction record the node returns (`message.transaction.header`) for EVERY body type
+ * — a CERTEN intent, a plain WriteData acceptance transaction (decision 0028), a token send — by the
+ * resolver, not by any payload decoder. Nothing here comes from the payload a producer wrote.
+ *
+ * ── WHAT `authorities` IS, AND WHAT IT IS NOT ────────────────────────────────────────────────────
+ *
+ * `authorities` is exactly the list of additional authorities Accumulate will enforce on this
+ * transaction, on top of the principal account's own authorities. The SUBMITTER composes it. So it
+ * says who Accumulate will wait for, never who SHOULD have been listed: a submitter that leaves a
+ * required party out produces a transaction that Accumulate completes without that party. A seat whose
+ * rules require a party for a class of payment must therefore check this list and deny when the party
+ * is missing (runbook decision A2). See `checkRequiredParties` in examples/policy-engine.mjs.
+ *
+ * ── TWO DIFFERENT EXPIRIES ───────────────────────────────────────────────────────────────────────
+ *
+ * `header.expiresAt` is the transaction's ON-CHAIN deadline (`header.expire.atTime`). After it no
+ * signature can complete the transaction, and this signer refuses to sign it at all (decision 0031).
+ * `PolicyRequest.expiresAt` is unrelated: it is how long one decision REQUEST is valid (policy TTL).
+ */
+export interface TransactionHeaderInfo {
+  /** The account the transaction acts on (`header.principal`). Always present. */
+  principal: string;
+  /**
+   * Additional authorities named in the header (`header.authorities`), exactly as recorded. Absent when
+   * the header names none. The submitter composed this list — see above.
+   */
+  authorities?: string[];
+  /** The on-chain deadline (`header.expire.atTime`) as ISO-8601 UTC. Absent when the header sets none. */
+  expiresAt?: string;
+  /** The header memo, when set. Submitter-written free text: display only, never a basis for a decision. */
+  memo?: string;
+}
+
 /** Fully resolved pending transaction, ready to sign. */
 export interface ResolvedTx {
   txHash: string;
@@ -132,6 +168,14 @@ export interface ResolvedTx {
   bodyType: string;
   operationId?: string;
   summary: ActionSummary;
+  /** The transaction header as recorded on chain. See `TransactionHeaderInfo`. */
+  header: TransactionHeaderInfo;
+  /**
+   * Set when the header HAS an expiry that could not be read. Internal only (never sent to an engine):
+   * a deadline this process cannot read is a deadline it cannot prove has not passed, so the
+   * orchestrator refuses to sign rather than treat it as "no deadline".
+   */
+  headerExpiryUnreadable?: string;
   rawTransaction: unknown;        // opaque tx object to re-submit in the envelope
   lastUsedOn: number;             // micros, for timestamp derivation
 }
@@ -185,7 +229,19 @@ export interface PolicyRequest {
    * `calldataDecoded` being present with no `grant` is worth a rule of its own.
    */
   grant?: IntentGrant;
-  /** How long THIS DECISION REQUEST is valid (policy TTL, default 15 min) — NOT the tx's on-chain deadline. */
+  /**
+   * The pending transaction's own header, read from Accumulate: principal, the additional authorities
+   * Accumulate will enforce, the on-chain deadline, and the memo. See `TransactionHeaderInfo`.
+   *
+   * Optional on the wire so an engine or wallet that predates it is unaffected; this signer populates it
+   * on every request it sends. An engine enforcing a required-party rule (A2) must treat an ABSENT
+   * `header` as "cannot verify the parties" and deny, never as "no parties required".
+   */
+  header?: TransactionHeaderInfo;
+  /**
+   * How long THIS DECISION REQUEST is valid (policy TTL, default 15 min) — NOT the tx's on-chain
+   * deadline. The on-chain deadline is `header.expiresAt`.
+   */
   expiresAt: string;              // ISO
 }
 
