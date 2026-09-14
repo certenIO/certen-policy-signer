@@ -7,6 +7,7 @@ import axios, { AxiosInstance } from 'axios';
 import { createHash } from 'node:crypto';
 import { AccumulateClient, ChainSignature, PendingTxResult, SignerInfo, SubmitResult, TxSignatures } from './client.js';
 import { Logger } from '../logger.js';
+import { extractTxHeader } from './header.js';
 
 /**
  * Every signature message in a v3 transaction record, however deeply the node nests them.
@@ -100,6 +101,9 @@ export class RawAccumulateClient implements AccumulateClient {
         rawTransaction,
         body: { type: String(body.type ?? 'unknown'), ...body },
         principal: String(principal),
+        // The header as Accumulate recorded it — principal, additional authorities, on-chain deadline,
+        // memo — for every body type, not only CERTEN intents (decision 0028). Task 2.5.
+        header: extractTxHeader(rawTransaction, String(principal)),
         executed,
         expired,
       };

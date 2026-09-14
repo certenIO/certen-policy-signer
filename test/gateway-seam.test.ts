@@ -16,7 +16,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import nacl from 'tweetnacl';
 import { GatewayClient, GatewayVoteBackend } from '../src/vote/adapters/certen-gateway.js';
 import { LocalSigner } from '../src/signer/signer.js';
-import { singleKeyring } from '../src/signer/keyring.js';
+import { singleKeyring, MapKeyring, bookOf } from '../src/signer/keyring.js';
 import { logger } from '../src/logger.js';
 import { VotableTx } from '../src/vote/backend.js';
 
@@ -165,6 +165,51 @@ describe('gateway seam: casting a vote', () => {
     const r = await backend('ck_live_wrong').cast(tx, 'approve');
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/401/);
+  });
+});
+
+/**
+ * Runbook F24 regression: GATEWAY mode ignored the approver ref and always signed with the page's own
+ * key, so a vote the decision attributed to a named approver was cast by the organisation's key. It
+ * must resolve the named key exactly as DIRECT mode does, and refuse an unknown ref with no fallback.
+ */
+describe('gateway seam: whose key casts the vote (F24)', () => {
+  const PAGE = 'acc://org.acme/book/1';
+  const ORG = new LocalSigner(new Uint8Array(32).fill(11));
+  const ALICE = new LocalSigner(new Uint8Array(32).fill(12));
+  const rosterKeyring = () => new MapKeyring([{
+    page: PAGE, book: bookOf(PAGE), signer: ORG, keys: { 'alice@org.example': ALICE },
+  }]);
+  const hex = async (k: LocalSigner) => Buffer.from(await k.publicKey()).toString('hex');
+
+  it('with a keyRef, declares and signs with the NAMED key, not the organisation key', async () => {
+    const b = new GatewayVoteBackend(client(), rosterKeyring(), silent);
+    const r = await b.cast(tx, 'approve', { keyRef: 'alice@org.example' });
+    expect(r.ok).toBe(true);
+
+    const alice = await hex(ALICE);
+    expect(signCalls[0].public_key).toBe(alice);          // the preimage is computed for HER key
+    expect(submitCalls[0].public_key).toBe(alice);
+    expect(submitCalls[0].public_key).not.toBe(await hex(ORG));
+    const digest = preimageFor(TX, 'approve', alice);
+    expect(nacl.sign.detached.verify(Buffer.from(digest, 'hex'), Buffer.from(submitCalls[0].signature, 'hex'), await ALICE.publicKey())).toBe(true);
+    // The attribution names the key that signed and the page it signed on.
+    expect(r.signedBy?.publicKeyHash).toBe(createHash('sha256').update(await ALICE.publicKey()).digest('hex'));
+    expect(r.signedBy?.page).toBe(PAGE);
+  });
+
+  it('without a keyRef, the organisation key signs — unchanged behaviour', async () => {
+    const b = new GatewayVoteBackend(client(), rosterKeyring(), silent);
+    const r = await b.cast(tx, 'approve');
+    expect(r.ok).toBe(true);
+    expect(signCalls[0].public_key).toBe(await hex(ORG));
+  });
+
+  it('an UNKNOWN keyRef refuses: nothing is requested, nothing is signed, no fallback to the org key', async () => {
+    const b = new GatewayVoteBackend(client(), rosterKeyring(), silent);
+    await expect(b.cast(tx, 'approve', { keyRef: 'mallory@org.example' })).rejects.toThrow(/no key "mallory@org.example"/);
+    expect(signCalls).toHaveLength(0);
+    expect(submitCalls).toHaveLength(0);
   });
 });
 

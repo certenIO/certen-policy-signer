@@ -10,6 +10,7 @@ import { Logger } from './logger.js';
 import { VoteBackend, VoteResult, DirectVoteBackend } from './vote/backend.js';
 import { Notifier, NotifyEvent, NULL_NOTIFIER } from './notify.js';
 import { PendingRef, PolicyRequest, ResolvedTx, SigningRequest } from './types.js';
+import { headerDeadlinePassed } from './accumulate/header.js';
 
 export interface OrchestratorOptions {
   submitRejectVote?: boolean;   // default false: deny => withhold signature (tx expires)
@@ -198,6 +199,12 @@ export class Orchestrator {
       this.notify('pending.discovered', tx);
     }
 
+    // Decision 0031: never sign a transaction whose on-chain deadline has passed, nor one whose deadline
+    // cannot be read. Checked before the engine is asked (there is nothing left to decide) and again
+    // right before signing (the engine may have taken a while).
+    const dead = this.deadlineRefusal(tx);
+    if (dead) return this.refuseDeadline(tx, dead);
+
     // 2. Decide
     const policyReq: PolicyRequest = {
       requestId: randomUUID(),
@@ -223,6 +230,11 @@ export class Orchestrator {
       // What the call GRANTS, beside what it moves. An engine gating only on `values` auto-approves an
       // unlimited spending authority, because an approve moves nothing at all. T18/T21.
       grant: tx.summary.grant,
+      // The transaction's own header, read from Accumulate for every body type (task 2.5, F23): the
+      // principal, the additional authorities Accumulate will enforce (the submitter chose them — a
+      // required-party rule must check this list, A2), the ON-CHAIN deadline and the memo.
+      header: tx.header,
+      // Policy TTL for THIS request. Not the on-chain deadline, which is `header.expiresAt`.
       expiresAt: new Date(this.now() + this.opt.policyTtlSeconds * 1000).toISOString(),
     };
     await store.update(ref.txHash, { policyRequestId: policyReq.requestId });
@@ -273,6 +285,8 @@ export class Orchestrator {
       // had been actively killed. Leave it retryable and write no receipt, as the approve path does.
       let rejectVote: VoteResult | undefined;
       if (rules.submitRejectVote) {
+        const lateReject = this.deadlineRefusal(tx);
+        if (lateReject) return this.refuseDeadline(tx, lateReject, decision);
         const res = await this.signAndSubmit(tx, 'reject');
         if (!res.ok) {
           logger.error({ tx: ref.txHash, err: res.error }, 'reject vote submission failed');
@@ -315,7 +329,11 @@ export class Orchestrator {
       return store.update(ref.txHash, { status: 'rejected', lastError: 'local_guard_block' });
     }
 
-    // 3. Sign + submit (approve)
+    // 3. Sign + submit (approve). The deadline is re-read against the clock now: an approval that arrived
+    // after the transaction died must not become a late signature (0031).
+    const lateApprove = this.deadlineRefusal(tx);
+    if (lateApprove) return this.refuseDeadline(tx, lateApprove, decision);
+
     await store.update(ref.txHash, { status: 'approved', decision: 'approve', assertionRef: decision.assertion ? sha256Hex(decision.assertion) : undefined });
     // Whose key signs. T29: when the policy engine names the approver, THEIR key signs — so the
     // signature on chain is the person's rather than the organisation's cast in their name. Absent,
@@ -339,6 +357,56 @@ export class Orchestrator {
     logger.error({ tx: ref.txHash, err: res.error }, 'vote submission failed');
     this.notify('signature.failed', tx, { reason: decision.reason, error: res.error });
     return store.update(ref.txHash, { status: 'error', lastError: res.error });
+  }
+
+  /**
+   * Why this transaction must not be signed on account of its header deadline, or undefined if it may.
+   * Decision 0031, fail closed: a passed deadline and an unreadable one are both refusals.
+   */
+  private deadlineRefusal(tx: ResolvedTx): { lastError: string; reason: string } | undefined {
+    if (tx.headerExpiryUnreadable) {
+      return {
+        lastError: 'header_expiry_unreadable',
+        reason: `refusing to sign: the transaction header has an expiry that cannot be read (${tx.headerExpiryUnreadable})`,
+      };
+    }
+    if (headerDeadlinePassed(tx.header, this.now())) {
+      return {
+        lastError: 'header_deadline_passed',
+        reason: `refusing to sign: the transaction's on-chain deadline ${tx.header.expiresAt} has passed (now ${new Date(this.now()).toISOString()})`,
+      };
+    }
+    return undefined;
+  }
+
+  /**
+   * Record a deadline refusal. No signature of any kind is made. A passed deadline is terminal
+   * (`expired`): Accumulate rejects any signature after it (S7), so there is nothing to retry. An
+   * unreadable one is `rejected` with the reason, as a local-guard block is.
+   */
+  private async refuseDeadline(
+    tx: ResolvedTx,
+    refusal: { lastError: string; reason: string },
+    decision?: { decision: string; reason?: string; evidence?: Record<string, unknown> },
+  ): Promise<SigningRequest> {
+    this.d.logger.warn(
+      { tx: tx.txHash, headerExpiresAt: tx.header.expiresAt, decision: decision?.decision, err: refusal.lastError },
+      refusal.reason,
+    );
+    await this.d.store.saveReceipt({
+      txHash: tx.txHash, operationId: tx.operationId,
+      ...(decision && (decision.decision === 'approve' || decision.decision === 'deny') ? { decision: decision.decision } : {}),
+      reason: refusal.reason,
+      ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
+      policyEvidence: {
+        ...(decision?.evidence ?? {}),
+        ...(decision?.reason ? { engineReason: decision.reason } : {}),
+        blockedBy: refusal.lastError,
+        ...(tx.header.expiresAt ? { headerExpiresAt: tx.header.expiresAt } : {}),
+      },
+    });
+    const status = refusal.lastError === 'header_deadline_passed' ? 'expired' : 'rejected';
+    return this.d.store.update(tx.txHash, { status, lastError: refusal.lastError });
   }
 
   /**

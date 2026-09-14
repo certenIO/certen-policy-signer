@@ -28,11 +28,12 @@
  * gateway's `type: 'pending_tx'` path (which exists for exactly this) to sign by hash.
  */
 import axios, { AxiosInstance } from 'axios';
+import { createHash } from 'node:crypto';
 import { Keyring } from '../../signer/keyring.js';
 import { Logger } from '../../logger.js';
 import { Vote } from '../../types.js';
 import { bytesToHex, hexToBytes } from '../../accumulate/signing.js';
-import { VoteBackend, VotableTx, VoteResult } from '../backend.js';
+import { CastOptions, VoteBackend, VotableTx, VoteResult } from '../backend.js';
 
 export interface GatewayOptions {
   url: string;             // https://gateway.internal:8090
@@ -141,8 +142,20 @@ export class GatewayVoteBackend implements VoteBackend {
     private readonly maxRetries = 3,
   ) {}
 
-  async cast(tx: VotableTx, vote: Vote): Promise<VoteResult> {
-    const signer = this.keyring.forPage(tx.signerUrl); // the key on THIS tx's page (fail-closed if unknown)
+  async cast(tx: VotableTx, vote: Vote, castOpts: CastOptions = {}): Promise<VoteResult> {
+    // The key on THIS tx's page — and, when the decision named an approver, THAT approver's key (T29),
+    // exactly as DirectVoteBackend resolves it. Runbook F24: this used to ignore `keyRef` and always
+    // sign with the page's own key, so a named approver's vote was cast by the organisation's key and
+    // recorded as theirs.
+    //
+    // Fail closed, no fallback: `forPage` throws for a page we hold no key for and for a ref that page
+    // has no key under. Nothing is requested from the gateway in either case — the preimage is computed
+    // for the public key we declare, so the key must be settled before the first call.
+    const signer = this.keyring.forPage(tx.signerUrl, castOpts.keyRef);
+    if (castOpts.keyRef) {
+      this.logger.info({ tx: tx.txHash, page: tx.signerUrl, keyRef: castOpts.keyRef, via: 'gateway' },
+        'signing as the named approver rather than as the organisation');
+    }
     const publicKey = await signer.publicKey();
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
@@ -168,7 +181,19 @@ export class GatewayVoteBackend implements VoteBackend {
           { tx: tx.txHash, vote, via: 'gateway', signRequest: sd.signRequestId, signerVersion: sd.signerVersion, status: res.status },
           'vote submitted',
         );
-        return { ok: true, signatureHash: sd.dataForSignature, timestamp: sd.timestamp };
+        const scope = this.keyring.scopeFor(tx.signerUrl);
+        return {
+          ok: true, signatureHash: sd.dataForSignature, timestamp: sd.timestamp,
+          // What satisfied the vote (F4 / A5): the page the gateway computed the preimage for, and the
+          // key that actually signed — the named approver's when a keyRef was given.
+          signedBy: {
+            page: sd.signerUrl || tx.signerUrl,
+            signatureType: signer.signatureType,
+            publicKeyHash: createHash('sha256').update(publicKey).digest('hex'),
+            delegators: [],
+            ...(scope.actsFor ? { onBehalfOf: scope.actsFor } : {}),
+          },
+        };
       }
 
       // The sign request is now spent. If the key page moved under us, the ONLY recovery is fresh signing

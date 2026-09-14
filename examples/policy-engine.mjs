@@ -32,6 +32,13 @@
  *       "value":         "4000",           // representative amount (first leg) — for display
  *       "values":        ["4000"],         // EVERY amount in the transaction — GATE ON THESE
  *       "unpricedLegs":  0,                // > 0 means `values` is INCOMPLETE — deny (see checkAmountCeiling)
+ *       "header": {                        // the transaction's OWN header, read from Accumulate (every tx type)
+ *         "principal":   "acc://…/data",         //   the account it acts on
+ *         "authorities": ["acc://firm.acme/book"],//   ADDITIONAL authorities Accumulate will enforce. The
+ *                                                //   SUBMITTER chose this list — see checkRequiredParties
+ *         "expiresAt":   "2026-…Z",              //   the ON-CHAIN deadline (header.expire.atTime), if any
+ *         "memo":        "…"                     //   submitter free text — display only
+ *       },
  *       "expiresAt":     "2026-…Z"         // how long THIS REQUEST is valid, NOT the tx's on-chain deadline
  *     }
  *
@@ -84,6 +91,15 @@
  * `checkEnrolledSubject` below. Throwing withholds instead, which leaves the transaction alive until it
  * expires and looks exactly like an outage.
  *
+ * ── WHO MUST SIGN: `request.header.authorities` ─────────────────────────────────────────────────────────
+ *
+ * The header's `authorities` are exactly the extra parties Accumulate will wait for before the transaction
+ * completes. The SUBMITTER composes that list, so Accumulate enforces what is listed, not what should be
+ * listed: a submitter that leaves out the party a payment needs gets a transaction that completes without
+ * them. If your rules say a class of payment requires a party, CHECK the list and deny when the party is
+ * missing — `checkRequiredParties` below. The signer itself refuses to sign once `header.expiresAt` has
+ * passed, so a late approval from you cannot complete a dead transaction.
+ *
  * ── Run it ────────────────────────────────────────────────────────────────────────────────────────────
  *
  *   node examples/policy-engine.mjs            # listens on :9099, POST /decision
@@ -99,9 +115,16 @@
  *                                                           #   rule, so you can prove the gate is real
  *     POLICY_MODE=subject node examples/policy-engine.mjs   # route on request.subject.adi against a
  *                                                           #   two-name roster; deny when absent
+ *     POLICY_MODE=parties POLICY_REQUIRED_BOOKS=acc://fictional-firm.acme/book node examples/policy-engine.mjs
+ *                                                           # deny unless the header lists every
+ *                                                           #   required book (FICTIONAL example)
  *
  *   Authenticate the channel both ways (set policy.auth: "hmac" and the same secret on the signer):
  *     POLICY_HMAC_SECRET=<shared-secret> node examples/policy-engine.mjs
+ *
+ *   Import the helpers (checkRequiredParties, checkAmountCeiling, …) without starting the server:
+ *     set POLICY_ENGINE_NO_LISTEN=1 in the importing process BEFORE the import. Without it the module
+ *     always listens, however it was started.
  */
 
 import http from 'node:http';
@@ -158,6 +181,23 @@ function checkPolicy(request) {
     };
   }
 
+  if (MODE === 'parties') {
+    // A required-party rule (A2). In a real engine the required books come from YOUR policy for this
+    // class of payment — e.g. an inspection firm from the customer's approved list above some amount.
+    // Here they are a FICTIONAL list from the environment.
+    const required = (process.env.POLICY_REQUIRED_BOOKS || '').split(',').map((b) => b.trim()).filter(Boolean);
+    if (required.length === 0) {
+      // A required-party mode with nothing configured is a misconfiguration, not "nobody required".
+      return { ok: false, reason: 'POLICY_REQUIRED_BOOKS is not set', evidence: { rule: 'required-parties' } };
+    }
+    const { ok, missing } = checkRequiredParties(request, required);
+    return {
+      ok,
+      reason: ok ? 'the header lists every required party' : `the header does not list required part${missing.length === 1 ? 'y' : 'ies'} ${missing.join(', ')}`,
+      evidence: { rule: 'required-parties', required, missing, headerAuthorities: request?.header?.authorities ?? [] },
+    };
+  }
+
   if (MODE === 'subject') {
     // Per-user routing, which is the shape a biometric re-auth engine actually has: resolve the enrolled
     // user from the request, then ask that user's own binding. The lookup is the whole integration.
@@ -209,6 +249,39 @@ export function checkEnrolledSubject(request, roster) {
     reason: `re-authenticated ${adi}`,
     evidence: { rule: 'subject-roster', subject: adi, customerId: enrolled.customerId, template: enrolled.template },
   };
+}
+
+/**
+ * Does the transaction header list EVERY party this payment requires? Returns `{ ok, missing }`.
+ *
+ * Why an engine needs this: `request.header.authorities` is the list of additional authorities Accumulate
+ * will enforce, and the SUBMITTER wrote it. Accumulate holds the transaction for whoever is listed; it
+ * cannot know who should have been. So a rule "this class of payment needs party X" is only real if the
+ * seat that owns the rule checks the header lists X and denies otherwise.
+ *
+ *   requiredBooks  the key BOOK URLs your policy requires for this payment, e.g.
+ *                  ["acc://fictional-firm.acme/book"]. An empty list requires nobody → ok.
+ *
+ * Comparison is case-insensitive (Accumulate URLs are) and ignores trailing slashes and the `acc://`
+ * scheme. It is an exact book match otherwise: a page (`…/book/1`) or a different book under the same ADI
+ * is NOT the required authority.
+ *
+ * Fails closed: a request with no `header`, or no `authorities`, lists nobody, so every required book is
+ * missing. A malformed requiredBooks entry (not a non-empty string) is reported as missing too, so a
+ * policy typo denies rather than silently requiring less.
+ */
+export function checkRequiredParties(request, requiredBooks) {
+  const norm = (u) => String(u).trim().toLowerCase().replace(/^acc:\/\//, '').replace(/\/+$/, '');
+  const listed = new Set(
+    (Array.isArray(request?.header?.authorities) ? request.header.authorities : [])
+      .filter((a) => typeof a === 'string' && a.trim() !== '')
+      .map(norm),
+  );
+  const missing = [];
+  for (const book of Array.isArray(requiredBooks) ? requiredBooks : []) {
+    if (typeof book !== 'string' || book.trim() === '' || !listed.has(norm(book))) missing.push(book);
+  }
+  return { ok: missing.length === 0, missing };
 }
 
 /**
@@ -343,8 +416,14 @@ function verify(secret, header, rawBody) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-server.listen(PORT, () => {
-  console.log(`policy engine listening on :${PORT}  (POST /decision)`);
-  console.log(`  mode: ${MODE}   HMAC: ${HMAC_SECRET ? `on (${SIG_HEADER})` : 'off'}`);
-  console.log('  replace checkPolicy() with your engine; everything else stays.');
-});
+// Always listen, unless an importer explicitly asks not to. Deliberately NOT a "was I run directly?"
+// check: comparing argv against the module path breaks under symlinked installs and process managers,
+// and an engine that silently never listens makes the signer withhold every signature. Importing the
+// helpers (tests, your own engine) sets POLICY_ENGINE_NO_LISTEN=1 before the import.
+if (process.env.POLICY_ENGINE_NO_LISTEN !== '1') {
+  server.listen(PORT, () => {
+    console.log(`policy engine listening on :${PORT}  (POST /decision)`);
+    console.log(`  mode: ${MODE}   HMAC: ${HMAC_SECRET ? `on (${SIG_HEADER})` : 'off'}`);
+    console.log('  replace checkPolicy() with your engine; everything else stays.');
+  });
+}

@@ -81,7 +81,9 @@ One HTTP POST per pending transaction:
 // signer → you
 { "txHash": "9c2b…", "actionSummary": "Purchase order PO-1043 — 25000 USDC to Northwind",
   "values": ["25000", "500"], "target": "0xabc…", "chain": "ethereum", "expiresAt": "…",
-  "subject": { "adi": "acc://alice.acme" } }   // WHO it is about, when the payload named someone. May be absent.
+  "subject": { "adi": "acc://alice.acme" },   // WHO it is about, when the payload named someone. May be absent.
+  "header": { "principal": "acc://acme.acme/orders", "authorities": ["acc://inspector.acme/book"],
+              "expiresAt": "…" } }            // the tx header as Accumulate recorded it — see below
 
 // you → signer
 { "decision": "approve" | "deny" | "pending", "reason": "matched rule 12", "evidence": { … } }
@@ -93,6 +95,13 @@ One HTTP POST per pending transaction:
 | `deny` | Signs a reject vote (or withholds). The transaction dies. |
 | `pending` | Signs nothing, asks again next poll. For human approvals and step-up challenges. |
 | anything else, or nothing | Signs nothing, retries. Fail-closed. |
+
+`header` is the pending transaction's own header, read from Accumulate for every transaction type:
+`authorities` are exactly the additional authorities Accumulate will enforce, and the **submitter**
+chose them — so a rule requiring a party must check the list and deny when the party is missing
+(`checkRequiredParties` in [examples/policy-engine.mjs](examples/policy-engine.mjs)). `header.expiresAt`
+is the on-chain deadline, and the signer refuses to sign once it has passed; the top-level `expiresAt` is
+only the decision request's own TTL. Details in [docs/INTEGRATION.md](docs/INTEGRATION.md).
 
 `subject` names the end user the transaction is about, so an engine holding a per-user binding — a
 biometric re-auth, an MFA enrolment — can route the decision to the right person. It is an **assertion by
