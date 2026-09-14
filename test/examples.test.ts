@@ -268,10 +268,24 @@ describe('examples/policy-engine.mjs', () => {
 describe('examples/policy-engine.mjs checkRequiredParties', () => {
   type Check = (request: unknown, requiredBooks: unknown) => { ok: boolean; missing: unknown[] };
   let check: Check;
+  const IMPORT_PORT = 19900 + Number(process.pid % 90);
   beforeAll(async () => {
-    // Importing must NOT start the example server: it listens only when run directly.
-    const mod = (await import(pathToFileURL(ENGINE).href)) as { checkRequiredParties: Check };
-    check = mod.checkRequiredParties;
+    // Importing with the documented import-only flag must NOT start the example server.
+    const prev = { flag: process.env.POLICY_ENGINE_NO_LISTEN, port: process.env.PORT };
+    process.env.POLICY_ENGINE_NO_LISTEN = '1';
+    process.env.PORT = String(IMPORT_PORT);
+    try {
+      const mod = (await import(pathToFileURL(ENGINE).href)) as { checkRequiredParties: Check };
+      check = mod.checkRequiredParties;
+    } finally {
+      if (prev.flag === undefined) delete process.env.POLICY_ENGINE_NO_LISTEN; else process.env.POLICY_ENGINE_NO_LISTEN = prev.flag;
+      if (prev.port === undefined) delete process.env.PORT; else process.env.PORT = prev.port;
+    }
+  });
+
+  it('importing with POLICY_ENGINE_NO_LISTEN=1 does not listen', async () => {
+    await new Promise((r) => setTimeout(r, 200));
+    await expect(fetch(`http://127.0.0.1:${IMPORT_PORT}/decision`, { method: 'POST', body: '{}' })).rejects.toThrow();
   });
   const FIRM = 'acc://fictional-firm.acme/book';
   const withAuthorities = (authorities?: string[]) => ({
@@ -313,6 +327,30 @@ describe('examples/policy-engine.mjs checkRequiredParties', () => {
 
   it('requiring nobody is ok', () => {
     expect(check(withAuthorities(), [])).toEqual({ ok: true, missing: [] });
+  });
+
+  it('running it listens — including when started through a symlink or other path than its own', async () => {
+    const { mkdtempSync, symlinkSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const dir = mkdtempSync(join(tmpdir(), 'pe-link-'));
+    let entry = ENGINE;
+    try { symlinkSync(ENGINE, join(dir, 'engine.mjs')); entry = join(dir, 'engine.mjs'); } catch { /* no symlink privilege: run the real path */ }
+    const port = 19600 + Number(process.pid % 90);
+    const env: NodeJS.ProcessEnv = { ...process.env, POLICY_MODE: 'approve', PORT: String(port) };
+    delete env.POLICY_ENGINE_NO_LISTEN;
+    const child = spawn(process.execPath, [entry], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('example engine did not start')), 10_000);
+        child.stdout!.on('data', (b: Buffer) => { if (b.toString().includes('listening on')) { clearTimeout(t); resolve(); } });
+        child.on('error', reject);
+      });
+      const d = await new HttpPolicyClient({ url: `http://127.0.0.1:${port}/decision` }).decide(withAuthorities([FIRM]) as PolicyRequest);
+      expect(d.decision).toBe('approve');
+    } finally {
+      child.kill('SIGKILL');
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
   });
 
   it('the parties demo mode denies over HTTP when the header omits the required book', async () => {

@@ -115,17 +115,20 @@
  *                                                           #   rule, so you can prove the gate is real
  *     POLICY_MODE=subject node examples/policy-engine.mjs   # route on request.subject.adi against a
  *                                                           #   two-name roster; deny when absent
- *     POLICY_MODE=parties POLICY_REQUIRED_BOOKS=acc://fictional-firm.acme/book  *                         node examples/policy-engine.mjs   # deny unless the header lists every
+ *     POLICY_MODE=parties POLICY_REQUIRED_BOOKS=acc://fictional-firm.acme/book node examples/policy-engine.mjs
+ *                                                           # deny unless the header lists every
  *                                                           #   required book (FICTIONAL example)
  *
  *   Authenticate the channel both ways (set policy.auth: "hmac" and the same secret on the signer):
  *     POLICY_HMAC_SECRET=<shared-secret> node examples/policy-engine.mjs
+ *
+ *   Import the helpers (checkRequiredParties, checkAmountCeiling, …) without starting the server:
+ *     set POLICY_ENGINE_NO_LISTEN=1 in the importing process BEFORE the import. Without it the module
+ *     always listens, however it was started.
  */
 
 import http from 'node:http';
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const PORT = Number(process.env.PORT ?? 9099);
 const HMAC_SECRET = process.env.POLICY_HMAC_SECRET || '';
@@ -413,15 +416,11 @@ function verify(secret, header, rawBody) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-// Listen only when run directly, so the helpers above can be imported (and tested) without a server.
-const isMain = (() => {
-  if (!process.argv[1]) return false;
-  const a = resolve(process.argv[1]);
-  const b = fileURLToPath(import.meta.url);
-  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
-})();
-
-if (isMain) {
+// Always listen, unless an importer explicitly asks not to. Deliberately NOT a "was I run directly?"
+// check: comparing argv against the module path breaks under symlinked installs and process managers,
+// and an engine that silently never listens makes the signer withhold every signature. Importing the
+// helpers (tests, your own engine) sets POLICY_ENGINE_NO_LISTEN=1 before the import.
+if (process.env.POLICY_ENGINE_NO_LISTEN !== '1') {
   server.listen(PORT, () => {
     console.log(`policy engine listening on :${PORT}  (POST /decision)`);
     console.log(`  mode: ${MODE}   HMAC: ${HMAC_SECRET ? `on (${SIG_HEADER})` : 'off'}`);
