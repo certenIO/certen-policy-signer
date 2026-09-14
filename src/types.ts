@@ -41,8 +41,12 @@ export interface IntentSubject {
   adi: string;
   /**
    * A hint, never the identity. A book can live under an ADI without governing it, and an ADI can be
-   * governed by several. Keying on the book makes every key rotation a re-enrollment; read the ADI's
-   * authority set at verification time instead.
+   * governed by several, so a stored book URL is one authority among N.
+   *
+   * What makes it stale is authority-set membership, not keys: `UpdateAccountAuth` can remove a book
+   * from the set or disable it in place without any of its keys changing. Key rotation does the
+   * reverse — `UpdateKeyPage`/`UpdateKey` change entries on a PAGE and leave the book URL untouched.
+   * Read the ADI's authority set at verification time; that is the part that moves.
    */
   keyBook?: string;
   /** The producer's own opaque reference for this person, when it sent one. */

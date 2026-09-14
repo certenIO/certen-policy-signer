@@ -70,7 +70,9 @@
  * `account` is the organisation's data account, one per deployment, and `operationId` is per operation.
  * Neither names a person. `subject.adi` does — it is the end user's Accumulate ADI, and it is exactly
  * what enrollment bound (the same value you passed to `preflight(adiUrl, keyBookUrl)`). Key on `adi`;
- * `keyBook` is a hint, and keying on it makes every key rotation a re-enrollment.
+ * `keyBook` is a hint, and one authority among N rather than the identity. A stored book goes stale
+ * through authority-set membership — `UpdateAccountAuth` removes or disables it, no key changes needed
+ * — not through key rotation, which acts on entries in a PAGE and leaves the book URL untouched.
  *
  * IT IS AN ASSERTION, NOT A PROOF. The subject is asserted by whoever wrote the intent, not proven by
  * the user it names — nothing on chain binds it. The one field here that CANNOT be forged is `account`,
@@ -199,8 +201,9 @@ export function checkEnrolledSubject(request, roster) {
   if (!enrolled) {
     return { ok: false, reason: `no enrolled biometric for ${adi}`, evidence: { rule: 'subject-roster', subject: adi } };
   }
-  // Key on `adi`, never on `keyBook`: the book is a hint the producer may or may not have sent, and
-  // reading the ADI's authority set at verification time is what makes key rotation a non-event.
+  // Key on `adi`, never on `keyBook`: the book is a hint the producer may or may not have sent, and it
+  // is one authority among N. Reading the ADI's authority set at verification time is what catches the
+  // change that matters — a book removed or disabled by `UpdateAccountAuth`, which key rotation is not.
   return {
     ok: true,
     reason: `re-authenticated ${adi}`,
