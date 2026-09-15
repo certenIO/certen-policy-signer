@@ -166,6 +166,7 @@ beforeAll(async () => {
     query: async (scope) => {
       upstreamCalls.push(`acc ${scope}`);
       if (scope.startsWith(`acc://${HASH}@`)) return TX_RECORD;
+      if (scope.startsWith(`acc://${ACC_HASH}@`)) return ACCEPTANCE_RECORD;
       throw new Error('not found');
     },
     gateway: { url: `http://127.0.0.1:${gwPort}`, apiKey: GW_KEY },
@@ -217,6 +218,25 @@ describe('relay clients: auth and scopes', () => {
   it('the admin key does not open /relay, and a relay client key does not open admin routes', async () => {
     expect((await call(port, 'GET', `/relay/pending/${HASH}`, { 'x-api-key': 'admin-test-key-0000000' })).status).toBe(401);
     expect((await call(port, 'GET', '/v1/config/version', { 'x-api-key': COMPLIANCE_KEY })).status).toBe(401);
+  });
+});
+
+const ACC_HASH = 'cd'.repeat(32);
+const ACC_PRINCIPAL = 'acc://fictional-corporate.acme/acceptances';
+const ACC_CONTENT = '{"amount":4250000,"category":"equipment","firm":"acc://fictional-firm.acme/book","instructionHash":"' + 'ef'.repeat(32) + '"}';
+const ACCEPTANCE_RECORD = {
+  recordType: 'message', id: `acc://${ACC_HASH}@fictional-corporate.acme/acceptances`, status: 'delivered', statusNo: 201,
+  message: { type: 'transaction', transaction: { header: { principal: ACC_PRINCIPAL, authorities: ['acc://fictional-firm.acme/book'] }, body: { type: 'writeData', entry: { type: 'doubleHash', data: [Buffer.from(ACC_CONTENT, 'utf8').toString('hex')] } } } },
+  signatures: { records: [] },
+};
+
+describe('relay clients: acceptance from the chain record', () => {
+  it('signatures route decodes the acceptance fact from the transaction body (FICTIONAL)', async () => {
+    const r = await call(port, 'GET', `/relay/tx/${ACC_HASH}/signatures?principal=${encodeURIComponent(ACC_PRINCIPAL)}`, C);
+    expect(r.status).toBe(200);
+    expect(r.json.acceptance).toEqual({ amount: 4250000, category: 'equipment', firm: 'acc://fictional-firm.acme/book', instructionHash: 'ef'.repeat(32) });
+    const plain = await call(port, 'GET', `/relay/tx/${HASH}/signatures?principal=${encodeURIComponent(TX_PRINCIPAL)}`, C);
+    expect(plain.json.acceptance).toBeUndefined();
   });
 });
 

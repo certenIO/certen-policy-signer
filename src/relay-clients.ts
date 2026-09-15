@@ -14,6 +14,7 @@
 import http from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { normalizeTxRecord } from './accumulate/raw-client.js';
+import { extractAcceptance } from './decode/facts.js';
 import { ACC_URL, DOT_SEGMENT, HEX64, UUID, accError, makeUpstream, readCapped, send } from './relay.js';
 import type { KeyPageOp, KeyPageResult } from './ops/keypage.js';
 import type { PolicyRequest } from './types.js';
@@ -135,11 +136,15 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
       catch (e) { return accError(res, e); }
       const n = normalizeTxRecord(rec);
       const body = n.body as { type?: unknown } | null;
+      // The acceptance fact is decoded from the chain record itself, so a decision service can verify an acceptance
+      // this signer never had to sign (e.g. bank compliance checking a customer's firm acceptance, decision 0028).
+      const acceptance = extractAcceptance(n.body as Parameters<typeof extractAcceptance>[0], n.principal || principal);
       return send(res, 200, {
         txid: n.txid || id,
         status: n.status,
         header: n.header,
         bodyType: typeof body?.type === 'string' ? body.type : '',
+        ...(acceptance ? { acceptance } : {}),
         signatures: n.signatures.map((s) => ({
           signer: s.signer, book: s.book, vote: s.vote, ...(s.keyHash ? { keyHash: s.keyHash } : {}), delegators: s.delegators,
         })),
