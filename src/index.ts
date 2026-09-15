@@ -1,7 +1,7 @@
 /** Entry point: wire modules from config, run the startup self-check, start servers + poller. */
 import { createHash } from 'node:crypto';
 import { parseArgs, helpText, VERSION, BIN } from './cli.js';
-import { loadConfig, parseBind, effectiveScopeRules, Config } from './config.js';
+import { loadConfig, parseBind, effectiveScopeRules, isIntakeOnly, Config } from './config.js';
 import { logger as baseLogger } from './logger.js';
 import { MapKeyring, buildSignerFromSpec, bookOf, SigningScope } from './signer/keyring.js';
 import { RawAccumulateClient } from './accumulate/raw-client.js';
@@ -22,6 +22,8 @@ import { createRelayHandler, createRelayServer, RelayHandler } from './relay.js'
 import { createRelayClientsHandler, RelayClientsHandler } from './relay-clients.js';
 import { createCertenIntentDecoder } from './decode/decoders/certen-intent.js';
 import { buildSelectorTable } from './decode/abi.js';
+import { buildOfficerIntake, startIntakeOnly } from './intake-only.js';
+import { awaitingGovernanceRequest } from './display.js';
 
 /** Host of an endpoint URL, for the startup log when `wallet.network` carries no label. */
 function hostOf(endpoint: string): string {
@@ -57,6 +59,12 @@ async function main() {
     const rb = parseBind(cfg.relay.bind!);
     createRelayServer(handler, logger).listen(rb.port, rb.host);
     logger.info({ bind: cfg.relay.bind, gateway: Boolean(cfg.relay.gateway), evm_chains: cfg.relay.evm.map((c) => c.chain_id) }, 'RELAY-ONLY mode: read-only relay listening; no signing scopes, keyring or poller');
+    return;
+  }
+
+  // --- intake-only process (Phase 7): officer intake + relay; no keys, no keyring, no poller, no policy engine ---
+  if (isIntakeOnly(cfg)) {
+    await startIntakeOnly(cfg, logger);
     return;
   }
 
@@ -220,7 +228,7 @@ async function main() {
 
   const orchestrator = new Orchestrator({
     accumulate, keyring, policy, store, resolver, logger, votes,
-    notifier, orgId: cfg.wallet.org_id, scopeRules, configVersion: cfg.configVersion,
+    notifier, orgId: cfg.wallet.org_id, scopeRules, configVersion: cfg.configVersion, displayLabels: cfg.decoders.labels,
     options: {
       submitRejectVote: cfg.behavior.submit_reject_vote,
       maxBadVersionRetries: cfg.behavior.max_bad_version_retries,
@@ -300,6 +308,10 @@ async function main() {
     }
   }
 
+  // --- officer intake (Phase 7): personal signatures verified and submitted here; no human key in process ---
+  const officerIntake = cfg.officer_intake.enabled ? buildOfficerIntake(cfg, accumulate, store, decoders, logger) : undefined;
+  if (officerIntake) logger.info({ humanPages: cfg.officer_intake.human_pages }, 'officer intake enabled on /relay/officer*');
+
   // --- decision-service relay (6.4): one credential + scope list per Console decision service ---
   const governKeyPage = (op: Parameters<typeof applyKeyPageOp>[1], page: string) =>
     applyKeyPageOp({ accumulate, signer: keyring.forPage(page), logger, page }, op);
@@ -318,6 +330,9 @@ async function main() {
       governanceKey: cfg.admin.governance_admin_key,
       pages: () => keyring.scopes().map((s) => s.page),
       applyKeyPageOp: governKeyPage,
+      // Phase 7: a governance tx still awaiting a signature is stored so a human on that page can sign it via officer intake.
+      recordAwaiting: async ({ txHash, page, op }) => store.savePolicyRequest(awaitingGovernanceRequest(txHash, page, op, { labels: cfg.decoders.labels })),
+      ...(officerIntake ? { propose: officerIntake.propose } : {}),
       timeoutMs: cfg.relay.timeout_ms,
       logger,
     });
@@ -326,7 +341,7 @@ async function main() {
 
   // --- server (health/metrics/webhook/admin) ---
   const server = createServer({
-    relay, relayClients, configVersion: cfg.configVersion,
+    relay, relayClients, officerIntake: officerIntake?.handle, configVersion: cfg.configVersion,
     orchestrator, store, keyring, accumulate, pause, logger, poller: pollerHealth,
     webhookHmacSecret: cfg.trigger.webhook.enabled ? cfg.trigger.webhook.hmac_secret : undefined,
     webhookSignatureHeader: cfg.trigger.webhook.signature_header,

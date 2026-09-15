@@ -1,0 +1,95 @@
+{
+  "scheme": "tcl-summary/v1",
+  "note": "FICTIONAL values",
+  "vectors": [
+    {
+      "name": "empty",
+      "display": [],
+      "summaryHash": "a5fd88064ad3776dc7beab251827fc21110ecad6cbe6e36adfb1df0cde14f111"
+    },
+    {
+      "name": "payment",
+      "display": [
+        [
+          "Principal",
+          "acc://harbor-mfg-tcl1.acme/data"
+        ],
+        [
+          "Body type",
+          "writeData"
+        ],
+        [
+          "Payer",
+          "Harbor Manufacturing (FICTIONAL)"
+        ],
+        [
+          "Payee",
+          "0xe66e6f40f1d7a1c06abace493f38c03800ac565a"
+        ],
+        [
+          "Amount",
+          "3,000.00 FDBUSD"
+        ],
+        [
+          "Invoice",
+          "INV-7 (FICTIONAL)"
+        ],
+        [
+          "Instruction hash",
+          "0x89873a08"
+        ],
+        [
+          "Chain",
+          "base-sepolia"
+        ]
+      ],
+      "summaryHash": "77533e7e88a7540aa2e806c3760ee28445c92aa320cd5517f4e90774a21f875e"
+    },
+    {
+      "name": "unicode-and-separators",
+      "display": [
+        [
+          "Firm",
+          "Nörthfield — Inspection"
+        ],
+        [
+          "Note",
+          "a=b:c\nline2"
+        ],
+        [
+          "",
+          ""
+        ]
+      ],
+      "summaryHash": "4695c79784864c36ea12002801478411e26ec0dc38e6b43b410d11dfe0733fc6"
+    },
+    {
+      "name": "order-matters",
+      "display": [
+        [
+          "B",
+          "2"
+        ],
+        [
+          "A",
+          "1"
+        ]
+      ],
+      "summaryHash": "bdfb490532e16c1ae8a6441bf3a6f0bcc7cd78c9da33ffeb690f1765ba4ddd16"
+    },
+    {
+      "name": "order-matters-swapped",
+      "display": [
+        [
+          "A",
+          "1"
+        ],
+        [
+          "B",
+          "2"
+        ]
+      ],
+      "summaryHash": "d835a6798a86cfcc4cda9ba854cc808063d7e5b1f6d8a34ffa120c977dcef72c"
+    }
+  ]
+}

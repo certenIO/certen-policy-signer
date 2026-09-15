@@ -11,6 +11,7 @@ import { VoteBackend, VoteResult, DirectVoteBackend } from './vote/backend.js';
 import { Notifier, NotifyEvent, NULL_NOTIFIER } from './notify.js';
 import { PendingRef, PolicyRequest, Receipt, ResolvedTx, SigningRequest } from './types.js';
 import { headerDeadlinePassed } from './accumulate/header.js';
+import { withDisplay } from './display.js';
 
 export interface OrchestratorOptions {
   submitRejectVote?: boolean;   // default false: deny => withhold signature (tx expires)
@@ -60,6 +61,8 @@ export interface OrchestratorDeps {
    * every PolicyRequest and Receipt so a decision names the signer configuration it was taken under (A6).
    */
   configVersion?: string;
+  /** `decoders.labels`, shown beside addresses in the Phase 7 display (`PolicyRequest.display`). */
+  displayLabels?: Record<string, string>;
   options?: OrchestratorOptions;
   now?: () => number; // injectable clock (ms) for tests
 }
@@ -216,7 +219,7 @@ export class Orchestrator {
     if (dead) return this.refuseDeadline(tx, dead);
 
     // 2. Decide
-    const policyReq: PolicyRequest = {
+    const policyReq: PolicyRequest = withDisplay({
       requestId: randomUUID(),
       txHash: tx.txHash,
       operationId: tx.operationId,
@@ -256,7 +259,7 @@ export class Orchestrator {
       ...(tx.acceptance ? { acceptance: tx.acceptance } : {}),
       // Policy TTL for THIS request. Not the on-chain deadline, which is `header.expiresAt`.
       expiresAt: new Date(this.now() + this.opt.policyTtlSeconds * 1000).toISOString(),
-    };
+    }, { labels: this.d.displayLabels });
     await store.update(ref.txHash, { policyRequestId: policyReq.requestId });
     // Kept so a decision service can read back exactly what it was asked (`/relay/pending/:hash`, 6.4).
     await store.savePolicyRequest(policyReq);
