@@ -189,7 +189,23 @@ POST <policy.url>    content-type: application/json
   "value":         "25000",           // first amount only — for display
   "values":        ["25000", "500"],  // EVERY amount — gate on these
   "unpricedLegs":  0,                 // absent or 0 => `values` is complete. > 0 => it is NOT
-  "calldataDecoded": "approve(address spender = 0x68…, uint256 amount = …)",  // if the decoder could read it
+  "calldataDecoded": [               // one entry per contract-call leg (a stated string for a plain data write)
+    { "legIndex": 0, "chainId": 84532, "target": "0x2d9e…", "abi": "FDBUSD",   // abi "" when the target is not pinned
+      "function": "transferWithReference", "signature": "transferWithReference(address,uint256,bytes32)",
+      "args": { "to": "0xe66e…", "amount": "4250000", "paymentRef": "0x9f1c…" } }   // "function" "" if undecodable
+  ],
+  "assets":        [{ "legIndex": 0, "chain": "base-sepolia", "chainId": 84532, "token": "0x2d9e…", "symbol": "FDBUSD", "decimals": 2 }],
+  "selfCall":      false,             // true when a leg's target equals its `from` (the V7 calling itself)
+  "targetKnown":   true,              // true only when EVERY contract-call leg's (chainId, target) is pinned
+  "bodyType":      "writeData",       // Accumulate body type
+  "configVersion": "sha256:5b1e…",    // this signer's effective config, secrets removed (also on every Receipt)
+  "governance": {                     // updateKeyPage / updateAccountAuth bodies only
+    "kind": "updateKeyPage", "principal": "acc://acme.acme/book/1",
+    "operations": [{ "type": "add", "keyHash": "ab12…" }, { "type": "setThreshold", "threshold": 2 }]
+  },
+  "acceptance": {                     // a canonical acceptance WriteData on acc://…/acceptances only
+    "instructionHash": "9f1c…", "category": "equipment", "amount": 4250000, "firm": "acc://firm.acme/book"
+  },
   "grant": {                          // what the call GRANTS. Absent for a transfer — see below
     "spender":   "0x68…",
     "allowance": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
@@ -204,6 +220,23 @@ POST <policy.url>    content-type: application/json
   "expiresAt":     "2026-07-26T12:00:00Z"         // THIS REQUEST's validity (policy TTL) — not the on-chain deadline
 }
 ```
+
+### Pinned contracts, self-calls, governance and acceptances (Phase 6)
+
+`decoders.evm_abi[]` pins a contract by `(chain_id, address)` to a JSON ABI (`abi_file`, relative to the
+config file, or inline `abi`), optionally with the `asset` it is. For every contract-call leg of a CERTEN
+intent the signer writes one `calldataDecoded` entry: a pinned target is decoded with its ABI (strictly —
+non-canonical encodings read as undecoded); any other target is read generically (ERC-20 selectors) with
+`abi: ""`, and makes `targetKnown` false. A pinned `transferWithReference(to, amount, paymentRef)` on an
+asset produces the business summary `Pay $42,500.00 FDBUSD to Delta Equipment — ref 0x9f1c2b3a…`
+(`decoders.labels` maps addresses to names). A decoded amount on a pinned call joins `values`.
+
+`selfCall` is true when any leg's target equals its `from`. `governance` carries the typed operations of
+`updateKeyPage` / `updateAccountAuth` (an operation this signer does not recognise is passed as
+`{ type, unrecognized: true }`). `acceptance` is present only when the body is a WriteData on an
+`acc://…/acceptances` account with exactly one data element that is byte-for-byte the canonical JSON
+`{"amount":N,"category":S,"firm":S,"instructionHash":64hex}`. `bodyType` and `configVersion` are on every
+request; `configVersion` is also on every receipt and at `GET /v1/config/version` (admin).
 
 ### The transaction header: who Accumulate will wait for, and until when
 

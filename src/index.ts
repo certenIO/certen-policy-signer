@@ -19,6 +19,9 @@ import { Poller } from './poller.js';
 import { createServer, PauseController, HealthSource } from './server.js';
 import { bytesToHex } from './accumulate/signing.js';
 import { createRelayHandler, createRelayServer, RelayHandler } from './relay.js';
+import { createRelayClientsHandler, RelayClientsHandler } from './relay-clients.js';
+import { createCertenIntentDecoder } from './decode/decoders/certen-intent.js';
+import { buildSelectorTable } from './decode/abi.js';
 
 /** Host of an endpoint URL, for the startup log when `wallet.network` carries no label. */
 function hostOf(endpoint: string): string {
@@ -132,7 +135,14 @@ async function main() {
   // starts — a decoder module that fails to load must stop the boot, not surface later as transactions
   // being described generically to the policy engine.
   const externalDecoders = await loadDecoderModules(cfg.resolver.decoder_modules);
-  const decoders = buildRegistry(cfg.resolver.decoders, externalDecoders, logger);
+  // Phase 6.1: ABI pins from `decoders.evm_abi` (files already inlined by loadConfig). A broken ABI stops the boot.
+  const pins = cfg.decoders.evm_abi.map((e) => ({
+    chainId: e.chain_id, address: e.address.toLowerCase(), name: e.name, table: buildSelectorTable(e.abi), ...(e.asset ? { asset: e.asset } : {}),
+  }));
+  const decoders = buildRegistry(cfg.resolver.decoders, externalDecoders, logger, {
+    certenIntent: createCertenIntentDecoder({ pins, labels: cfg.decoders.labels }),
+  });
+  logger.info({ configVersion: cfg.configVersion, pinnedTargets: pins.map((p) => `${p.chainId}:${p.address}`) }, 'signer config version');
   logger.info({ decoders: decoders.names() }, 'intent decoder chain (first claim wins)');
 
   const resolver = new Resolver(accumulate, decoders);
@@ -210,7 +220,7 @@ async function main() {
 
   const orchestrator = new Orchestrator({
     accumulate, keyring, policy, store, resolver, logger, votes,
-    notifier, orgId: cfg.wallet.org_id, scopeRules,
+    notifier, orgId: cfg.wallet.org_id, scopeRules, configVersion: cfg.configVersion,
     options: {
       submitRejectVote: cfg.behavior.submit_reject_vote,
       maxBadVersionRetries: cfg.behavior.max_bad_version_retries,
@@ -290,9 +300,33 @@ async function main() {
     }
   }
 
+  // --- decision-service relay (6.4): one credential + scope list per Console decision service ---
+  const governKeyPage = (op: Parameters<typeof applyKeyPageOp>[1], page: string) =>
+    applyKeyPageOp({ accumulate, signer: keyring.forPage(page), logger, page }, op);
+  let relayClients: RelayClientsHandler | undefined;
+  if (cfg.admin.relay_clients?.length) {
+    const gw = cfg.relay.gateway
+      ? { url: cfg.relay.gateway.url, apiKey: cfg.relay.gateway.api_key }
+      : cfg.gateway.url && cfg.gateway.api_key ? { url: cfg.gateway.url, apiKey: cfg.gateway.api_key } : undefined;
+    relayClients = createRelayClientsHandler({
+      clients: cfg.admin.relay_clients,
+      reservedKeys: [cfg.admin.api_key, cfg.admin.governance_admin_key, cfg.relay.token],
+      query: (scope, q) => accumulate.query(scope, q),
+      gateway: gw,
+      evm: cfg.relay.evm.map((c) => ({ chainId: c.chain_id, rpcUrl: c.rpc_url })),
+      getPolicyRequest: (h) => store.getPolicyRequest(h),
+      governanceKey: cfg.admin.governance_admin_key,
+      pages: () => keyring.scopes().map((s) => s.page),
+      applyKeyPageOp: governKeyPage,
+      timeoutMs: cfg.relay.timeout_ms,
+      logger,
+    });
+    logger.info({ clients: cfg.admin.relay_clients.map((c) => ({ name: c.name, scopes: c.scopes })), gateway: Boolean(gw) }, 'decision-service relay enabled on /relay/*');
+  }
+
   // --- server (health/metrics/webhook/admin) ---
   const server = createServer({
-    relay,
+    relay, relayClients, configVersion: cfg.configVersion,
     orchestrator, store, keyring, accumulate, pause, logger, poller: pollerHealth,
     webhookHmacSecret: cfg.trigger.webhook.enabled ? cfg.trigger.webhook.hmac_secret : undefined,
     webhookSignatureHeader: cfg.trigger.webhook.signature_header,

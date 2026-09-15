@@ -71,12 +71,67 @@ export interface ActionSummary {
    * limit" apart from "every amount I could read is under the limit". Absent or 0 means all legs priced.
    */
   unpricedLegs?: number;
-  calldataDecoded?: string;
+  /**
+   * The decoded calldata. A CERTEN intent carries one `LegCall` per contract-call leg (Phase 6.1); a plain
+   * data write may still state a free-text description, which is passed through as a string.
+   */
+  calldataDecoded?: string | LegCall[];
+  /** Assets moved or referenced by legs whose target is pinned with an `asset` (Phase 6.1). */
+  assets?: LegAsset[];
+  /** True when any leg's call target equals the leg's `from` (a V7 account calling itself). */
+  selfCall?: boolean;
+  /** True only when every contract-call leg's (chainId, target) is pinned in `decoders.evm_abi`. */
+  targetKnown?: boolean;
   /** WHO the transaction is about, when the payload named someone. See `IntentSubject`. */
   subject?: IntentSubject;
   /** WHAT AUTHORITY the call grants, when it grants one. See `IntentGrant`. */
   grant?: IntentGrant;
   raw?: Record<string, unknown>;  // fallback / extra fields
+}
+
+/**
+ * One contract-call leg's calldata, decoded. Phase 6 seat contract §1.
+ *
+ * `abi` names the pinned ABI (e.g. `FDBUSD`); it is empty when the target is not pinned and the selector
+ * was read generically (ERC-20) or not at all. `function` is empty when the calldata could not be decoded.
+ * Integers are decimal strings; bytes32 and addresses are lowercase 0x hex.
+ */
+export interface LegCall {
+  legIndex: number;
+  chainId?: number;
+  target: string;
+  abi: string;
+  function: string;
+  signature: string;
+  args: Record<string, string>;
+}
+
+/** An asset a decoded leg moves or references, from the pinned ABI entry's `asset`. */
+export interface LegAsset {
+  legIndex: number;
+  chain: string;
+  chainId?: number;
+  token: string;
+  symbol: string;
+  decimals: number;
+}
+
+/** Typed operations of a governance body (`updateKeyPage` / `updateAccountAuth`). Phase 6.2. */
+export interface GovernanceFact {
+  kind: 'updateKeyPage' | 'updateAccountAuth';
+  principal: string;
+  operations: Array<{ type: string; [k: string]: unknown }>;
+}
+
+/**
+ * A firm's acceptance (decision 0028 / 0038 §4): a WriteData on `acc://…/acceptances` whose single data
+ * element is exactly the canonical JSON `{"amount":N,"category":S,"firm":S,"instructionHash":64hex}`.
+ */
+export interface AcceptanceFact {
+  instructionHash: string;
+  category: string;
+  amount: number;
+  firm: string;
 }
 
 /**
@@ -168,6 +223,10 @@ export interface ResolvedTx {
   bodyType: string;
   operationId?: string;
   summary: ActionSummary;
+  /** Typed governance operations, when the body is `updateKeyPage` / `updateAccountAuth`. */
+  governance?: GovernanceFact;
+  /** The acceptance content, when the body is a canonical acceptance WriteData. */
+  acceptance?: AcceptanceFact;
   /** The transaction header as recorded on chain. See `TransactionHeaderInfo`. */
   header: TransactionHeaderInfo;
   /**
@@ -215,7 +274,22 @@ export interface PolicyRequest {
   /** Value-moving legs whose amount could not be read; if > 0, `values` is INCOMPLETE. Deny unless you
    *  have another way to bound them — the signer's own ceiling refuses to sign in this case. */
   unpricedLegs?: number;
-  calldataDecoded?: string;
+  /** Per contract-call leg for a CERTEN intent (`LegCall[]`); a stated string for a plain data write. */
+  calldataDecoded?: string | LegCall[];
+  /** Accumulate body type of the transaction (`writeData`, `updateKeyPage`, `updateAccountAuth`, …). */
+  bodyType?: string;
+  /** `sha256:` + hex of the canonical JSON of this signer's effective config, secrets removed. */
+  configVersion?: string;
+  /** Assets moved or referenced by decoded legs. See `LegAsset`. */
+  assets?: LegAsset[];
+  /** True when any leg's target equals its `from` (the V7 calling itself). */
+  selfCall?: boolean;
+  /** True only when every contract-call leg's (chainId, target) is pinned. */
+  targetKnown?: boolean;
+  /** Typed operations for governance bodies. See `GovernanceFact`. */
+  governance?: GovernanceFact;
+  /** Present for a canonical acceptance WriteData. See `AcceptanceFact`. */
+  acceptance?: AcceptanceFact;
   /**
    * WHAT AUTHORITY this call grants, when it grants one. See `IntentGrant`.
    *
@@ -318,6 +392,8 @@ export interface Receipt {
   submittedAt?: number;
   accumulateResult?: string;
   policyEvidence?: Record<string, unknown>;
+  /** The signer-config version the decision was taken under (`sha256:…`). Decision A6. */
+  configVersion?: string;
   /**
    * What actually satisfied the vote. Runbook F Phase F4.
    *

@@ -30,7 +30,41 @@
  *     correlate against its own records.
  */
 import { DecodeContext, DecodedAction, SummaryDecoder, TxBody } from '../types.js';
-import type { IntentGrant } from '../../types.js';
+import type { IntentGrant, LegAsset, LegCall } from '../../types.js';
+import { AbiFunction, decodeCalldata } from '../abi.js';
+
+/**
+ * A contract pinned by (chainId, address) to an ABI. Phase 6.1 (`decoders.evm_abi[]`). Only a pinned
+ * target counts as KNOWN; anything else is still read generically but reported `targetKnown: false`.
+ */
+export interface AbiPin {
+  chainId: number;
+  /** Lowercase 0x address. */
+  address: string;
+  name: string;
+  table: Map<string, AbiFunction>;
+  asset?: { symbol: string; decimals: number };
+}
+
+export interface CertenIntentOptions {
+  pins?: AbiPin[];
+  /** Lowercase address -> display name, for the business `actionSummary`. */
+  labels?: Record<string, string>;
+}
+
+/** Well-known chain names a leg may carry instead of a numeric chainId. */
+const CHAIN_IDS: Record<string, number> = {
+  'ethereum-sepolia': 11155111, sepolia: 11155111, 'base-sepolia': 84532, 'arbitrum-sepolia': 421614, 'optimism-sepolia': 11155420,
+};
+
+/** Format a base-unit integer string with `decimals` and thousands separators: 4250000, 2 -> "42,500.00". */
+export function formatUnits(amount: string, decimals: number): string {
+  if (!/^\d+$/.test(amount)) return amount;
+  const padded = amount.padStart(decimals + 1, '0');
+  const int = padded.slice(0, padded.length - decimals).replace(/^0+(?=\d)/, '');
+  const frac = decimals > 0 ? '.' + padded.slice(padded.length - decimals) : '';
+  return int.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + frac;
+}
 
 /** The four decoded blobs of an intent payload. */
 export interface CertenIntent {
@@ -124,7 +158,40 @@ function hasCalldata(leg: Record<string, any>): boolean {
   return typeof cd === 'string' && cd.replace(/^0x/, '').length > 0;
 }
 
-export const certenIntentDecoder: SummaryDecoder = {
+const lower = (v: unknown): string | undefined => (typeof v === 'string' && v ? v.toLowerCase() : undefined);
+
+/**
+ * An EVM address as the validator will read it (go-ethereum `common.HexToAddress`): optional 0x, hex digits,
+ * left-padded to 20 bytes, and the rightmost 20 bytes kept when longer. Undefined when it is not hex at all.
+ * Used for self-call detection so a non-canonical spelling of the same account cannot hide a self-call.
+ */
+export function canonicalAddress(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const h = v.trim().replace(/^0[xX]/, '');
+  if (h === '' || !/^[0-9a-fA-F]+$/.test(h)) return undefined;
+  return '0x' + h.toLowerCase().padStart(40, '0').slice(-40);
+}
+function legChainId(leg: Record<string, any>): number | undefined {
+  const raw = leg?.executionPayload?.chainId ?? leg?.chainId ?? leg?.chain_id;
+  const n = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : raw;
+  if (typeof n === 'number' && Number.isSafeInteger(n) && n > 0) return n;
+  return typeof leg?.chain === 'string' ? CHAIN_IDS[leg.chain.toLowerCase()] : undefined;
+}
+const ERC20_SIGNATURES: Record<string, string> = {
+  transfer: 'transfer(address,uint256)', transferFrom: 'transferFrom(address,address,uint256)', approve: 'approve(address,uint256)',
+};
+/** Arg names a pinned call's token amount is read from. */
+const AMOUNT_ARGS = ['amount', 'value', 'wad'];
+
+/**
+ * Build the CERTEN intent decoder, optionally with ABI pins (Phase 6.1). Registered as `certen-intent`
+ * and, when `decoders.evm_abi` is configured, also resolvable under the name `evm-abi`.
+ */
+export function createCertenIntentDecoder(opts: CertenIntentOptions = {}): SummaryDecoder {
+  const pins = new Map((opts.pins ?? []).map((p) => [`${p.chainId}:${p.address.toLowerCase()}`, p]));
+  const labels = Object.fromEntries(Object.entries(opts.labels ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
+  const label = (a: string) => labels[a.toLowerCase()] ?? a;
+  return {
   name: 'certen-intent',
 
   decode(body: TxBody, _ctx: DecodeContext): DecodedAction | undefined {
@@ -149,14 +216,67 @@ export const certenIntentDecoder: SummaryDecoder = {
     let pricedLegs = 0;
     let opaqueCallLegs = 0;
     const erc20ByLeg: (DecodedErc20Call | undefined)[] = [];
-    for (const l of legs!) {
+    // Phase 6.1: per contract-call leg, the decoded call; which targets are pinned; assets; self-calls.
+    const calls: LegCall[] = [];
+    const assets: LegAsset[] = [];
+    let targetKnown = true;
+    // true: some leg calls its own sender; false: every leg's sender and target were readable and differ;
+    // undefined: some leg's sender or target could not be read, so a self-call rule stays indeterminate.
+    let selfCall: boolean | undefined = false;
+    let pinnedPhrase0: string | undefined;
+    legs!.forEach((l, legIndex) => {
+      const target = lower(l?.executionPayload?.target) ?? lower(l?.to);
+      const from = lower(l?.from) ?? lower(l?.executionPayload?.from);
+      const cTarget = canonicalAddress(l?.executionPayload?.target ?? l?.to);
+      const cFrom = canonicalAddress(l?.from ?? l?.executionPayload?.from);
+      if (cTarget && cFrom) { if (cTarget === cFrom) selfCall = true; }
+      else if (selfCall !== true) selfCall = undefined;
+      if (!hasCalldata(l)) return;
+      const chainId = legChainId(l);
+      const pin = chainId !== undefined && target ? pins.get(`${chainId}:${target}`) : undefined;
+      if (!pin) targetKnown = false;
+      const cd = String(l.executionPayload.callData).toLowerCase();
+      const selector = '0x' + cd.replace(/^0x/, '').slice(0, 8);
+      const base = { legIndex, ...(chainId !== undefined ? { chainId } : {}), target: target ?? '' };
+      if (pin) {
+        const dec = decodeCalldata(pin.table, cd);
+        calls.push({ ...base, abi: pin.name, function: dec?.fn.name ?? '', signature: dec?.fn.signature ?? selector, args: dec?.args ?? {} });
+        if (pin.asset) {
+          assets.push({
+            legIndex, chain: typeof l.chain === 'string' && l.chain ? l.chain : String(chainId),
+            ...(chainId !== undefined ? { chainId } : {}), token: pin.address.toLowerCase(), symbol: pin.asset.symbol, decimals: pin.asset.decimals,
+          });
+        }
+        if (legIndex === 0 && dec) {
+          const to = dec.args['to'];
+          const amount = AMOUNT_ARGS.map((k) => dec.args[k]).find((v) => v !== undefined);
+          const ref = dec.args['paymentRef'] ?? dec.args['ref'];
+          if (pin.asset && to && amount !== undefined) {
+            const cur = /USD/i.test(pin.asset.symbol) ? '$' : '';
+            pinnedPhrase0 = `Pay ${cur}${formatUnits(amount, pin.asset.decimals)} ${pin.asset.symbol} to ${label(to)}`
+              + (ref && /^0x[0-9a-f]{64}$/.test(ref) ? ` — ref 0x${ref.slice(2, 10)}…` : '');
+          } else {
+            const shown = Object.entries(dec.args).map(([k, v]) => `${k}=${/^0x[0-9a-f]{40}$/.test(v) ? label(v) : v}`).join(', ');
+            pinnedPhrase0 = `${pin.name}.${dec.fn.name}(${shown})`;
+          }
+        }
+      } else {
+        const erc20 = decodeErc20Calldata(cd);
+        calls.push({ ...base, abi: '', function: erc20?.fn ?? '', signature: erc20 ? ERC20_SIGNATURES[erc20.fn] : selector, args: erc20?.args ?? {} });
+      }
+    });
+    for (const [legIndex, l] of legs!.entries()) {
       const native = l?.amountWei != null ? String(l.amountWei) : undefined;
       const erc20 = decodeErc20Calldata(l?.executionPayload?.callData);
       erc20ByLeg.push(erc20);
-      if (!erc20 && hasCalldata(l)) opaqueCallLegs++;
+      // A pinned call that decoded is not opaque; a token amount it names is priced like an ERC-20 amount.
+      const pinned = calls.find((c) => c.legIndex === legIndex && c.abi && c.function);
+      const pinnedAmount = !erc20 && pinned ? AMOUNT_ARGS.map((k) => pinned.args[k]).find((v) => v !== undefined && /^\d+$/.test(v)) : undefined;
+      if (!erc20 && !pinned && hasCalldata(l)) opaqueCallLegs++;
+      const token = erc20?.amount ?? pinnedAmount;
       const legValues: string[] = [];
-      if (erc20) legValues.push(erc20.amount);
-      if (native != null && !(erc20 && (native === '0' || native === erc20.amount))) legValues.push(native);
+      if (token !== undefined) legValues.push(token);
+      if (native != null && !(token !== undefined && (native === '0' || native === token))) legValues.push(native);
       if (legValues.length === 0) continue;
       pricedLegs++;
       values.push(...legValues);
@@ -234,13 +354,18 @@ export const certenIntentDecoder: SummaryDecoder = {
 
     return {
       summary: {
-        action: `${desc} — ${human} ${symbol} to ${leg0.to ?? '?'}${legSuffix}${tokenSuffix}${opaqueSuffix}`.replace(/\s+/g, ' ').trim(),
+        action: pinnedPhrase0
+          ? `${pinnedPhrase0}${legSuffix}${opaqueSuffix}`
+          : `${desc} — ${human} ${symbol} to ${leg0.to ?? '?'}${legSuffix}${tokenSuffix}${opaqueSuffix}`.replace(/\s+/g, ' ').trim(),
         chain: leg0.chain,
         target: leg0.to,
         value: leg0.amountWei != null ? String(leg0.amountWei) : undefined,
         values,
         ...(unpricedLegs > 0 ? { unpricedLegs } : {}),
-        ...(erc20_0 ? { calldataDecoded: erc20_0.text } : {}),
+        ...(calls.length ? { calldataDecoded: calls } : {}),
+        ...(assets.length ? { assets } : {}),
+        selfCall,
+        targetKnown,
         // Spread, not `subject`: absent must be an ABSENT KEY on the wire, not `subject: undefined`.
         ...(subject ? { subject } : {}),
         ...(grant ? { grant } : {}),
@@ -254,4 +379,8 @@ export const certenIntentDecoder: SummaryDecoder = {
       operationId: intent?.intent?.intent_id ?? ((body.operationId as string) || undefined),
     };
   },
-};
+  };
+}
+
+/** The CERTEN intent decoder with no ABI pins: every contract-call target reads as unknown. */
+export const certenIntentDecoder: SummaryDecoder = createCertenIntentDecoder();

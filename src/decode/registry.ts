@@ -10,12 +10,14 @@ import { DecodeContext, DecodedAction, SummaryDecoder, TxBody } from './types.js
 import { sendTokensDecoder } from './decoders/send-tokens.js';
 import { writeDataDecoder, fallbackDecoder } from './decoders/write-data.js';
 import { certenIntentDecoder } from './decoders/certen-intent.js';
+import { governanceDecoder } from './facts.js';
 
 /** Decoders shipped in the box, by name. */
 export const BUILTIN_DECODERS: Record<string, SummaryDecoder> = {
   [sendTokensDecoder.name]: sendTokensDecoder,
   [certenIntentDecoder.name]: certenIntentDecoder,
   [writeDataDecoder.name]: writeDataDecoder,
+  [governanceDecoder.name]: governanceDecoder,
 };
 
 /**
@@ -24,7 +26,7 @@ export const BUILTIN_DECODERS: Record<string, SummaryDecoder> = {
  * `certen-intent` sits ahead of `write-data` because it is the specific case; it declines anything that
  * is not genuinely an intent payload, so its presence costs nothing if you use a different format.
  */
-export const DEFAULT_DECODER_ORDER = [sendTokensDecoder.name, certenIntentDecoder.name, writeDataDecoder.name];
+export const DEFAULT_DECODER_ORDER = [sendTokensDecoder.name, certenIntentDecoder.name, writeDataDecoder.name, governanceDecoder.name];
 
 /** Minimal logging surface, so the registry does not depend on the concrete logger. */
 export interface DecoderLog {
@@ -83,8 +85,18 @@ export function buildRegistry(
   names: string[] | undefined,
   extra: SummaryDecoder[] = [],
   log?: DecoderLog,
+  opts: { certenIntent?: SummaryDecoder } = {},
 ): DecoderRegistry {
   const available: Record<string, SummaryDecoder> = { ...BUILTIN_DECODERS };
+  // Phase 6.1: with `decoders.evm_abi` configured, the intent decoder carries the ABI pins. It is the same
+  // decoder under both names, so an explicit order may say either — but not both.
+  if (opts.certenIntent) {
+    available['certen-intent'] = opts.certenIntent;
+    available['evm-abi'] = opts.certenIntent;
+    if (names?.includes('certen-intent') && names.includes('evm-abi')) {
+      throw new Error('resolver.decoders: "evm-abi" and "certen-intent" are the same decoder once decoders.evm_abi is set; list one');
+    }
+  }
   for (const d of extra) available[d.name] = d;
 
   // Unlisted external decoders still run — loading a module IS the request to use it — and they go first,

@@ -355,3 +355,27 @@ npx tsx scripts/verify/concurrency.ts          # concurrent transactions, each v
 npx tsx scripts/verify/resilience.ts           # refuse-boot, engine-down recovery, pause, HMAC
 npx tsx scripts/verify/faults.ts               # insufficient credits, expiry
 ```
+
+## Decision-service relay (`/relay/*`)
+
+FICTIONAL Business Transaction Controls lab, Phase 6.4. Served on the health/admin listener when
+`admin.relay_clients[]` is set; otherwise `/relay/*` is 404. Each client sends `x-relay-client: <name>` and
+`x-api-key: <key>` (compared in constant time; unknown client or wrong key → 401; missing scope → 403). The
+admin key does not open these routes and a client key does not open the admin routes.
+
+| Route | Scope | Result |
+|---|---|---|
+| `GET /relay/proof/tx/:hash` | proof | gateway `/v1/proof/tx/:hash` |
+| `GET /relay/proof/:id/bundle` | proof | gateway `/v1/proof/:id/bundle` |
+| `GET /relay/tx/:hash/signatures?principal=<acc url>` | tx | `{ txid, status, header, bodyType, signatures:[{signer, book, vote, keyHash?, delegators}] }` |
+| `GET /relay/tx/:hash/receipt` | tx | gateway `/v1/proof/tx/:hash/receipt` |
+| `POST /relay/evm/:chainId/call` `{to, data}` | tx | `{ result }` of `eth_call` on a `relay.evm` chain |
+| `GET /relay/pending/:hash` | pending | the PolicyRequest this signer built for the tx, or 404 |
+| `POST /relay/governance` `{page, operations}` | governance + `x-governance-key` | `{ txid, status, txids }` |
+
+The gateway is `relay.gateway`, else the top-level `gateway` block. Governance operations are the typed
+`add-key`, `remove-key`, `set-threshold`, `add-delegate`, `remove-delegate` (1–10 per call, applied in order
+through the same path as `POST /v1/admin/key-page`), and only for a page in this signer's keyring (else 403).
+`status` is `confirmed`, `awaiting_consent` (a delegate must still sign) or `failed` (HTTP 400).
+
+`GET /v1/config/version` (admin) returns the `configVersion` stamped on every PolicyRequest and Receipt.

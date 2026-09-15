@@ -31,12 +31,12 @@ export const EVM_READ_METHODS: ReadonlySet<string> = new Set([
 
 const MAX_RPC_BODY = 1024 * 1024;
 const MAX_BATCH = 100;
-const HEX64 = /^(?:0x)?[0-9a-fA-F]{64}$/;
-const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+export const HEX64 = /^(?:0x)?[0-9a-fA-F]{64}$/;
+export const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 /** Accumulate URL: authority + optional path; no userinfo, query, fragment, spaces or `@`. */
-const ACC_URL = /^acc:\/\/[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9._-]+)*\/?$/;
+export const ACC_URL = /^acc:\/\/[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9._-]+)*\/?$/;
 /** `.` / `..` path segments are refused outright rather than normalized. */
-const DOT_SEGMENT = /(^|\/)\.{1,2}(\/|$)/;
+export const DOT_SEGMENT = /(^|\/)\.{1,2}(\/|$)/;
 const TX_ID = /^acc:\/\/([0-9a-fA-F]{64})@([A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9._-]+)*)$/;
 
 export interface RelayDeps {
@@ -54,7 +54,7 @@ export interface RelayDeps {
 
 export type RelayHandler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => Promise<void>;
 
-function send(res: http.ServerResponse, code: number, obj: unknown) {
+export function send(res: http.ServerResponse, code: number, obj: unknown) {
   // JSON only, never cached, and deliberately no Access-Control-* headers: a browser page on another
   // origin gets nothing from this surface.
   res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
@@ -73,7 +73,7 @@ export function bearerMatches(header: string | string[] | undefined, token: stri
   return timingSafeEqual(given, expected) && m !== null;
 }
 
-function readCapped(req: http.IncomingMessage, cap: number): Promise<string | null> {
+export function readCapped(req: http.IncomingMessage, cap: number): Promise<string | null> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0, over = false;
@@ -101,13 +101,16 @@ export const GATEWAY_ROUTES: readonly GatewayRoute[] = [
   { re: /^\/v1\/relay\/gateway\/transaction\/([^/]+)$/, param: 'uuid', to: (p) => `/v1/transaction/${p}` },
 ];
 
-export function createRelayHandler(d: RelayDeps): RelayHandler {
-  if (!d.token) throw new Error('relay: refusing to start without a token');
+export type Upstream = (url: string, init: RequestInit) => Promise<{ status: number; body: unknown } | { error: string }>;
+
+/**
+ * The one way the relay reaches an upstream: no redirects followed, a timeout, JSON only, and a response
+ * that echoes the gateway api key is withheld. Shared by the hub relay and the decision-service relay.
+ */
+export function makeUpstream(d: { fetchImpl?: typeof fetch; timeoutMs?: number; logger: Logger; gatewayApiKey?: string }): Upstream {
   const doFetch = d.fetchImpl ?? fetch;
   const timeoutMs = d.timeoutMs ?? 15_000;
-  const chains = new Map(d.evm.map((c) => [c.chainId, c.rpcUrl]));
-
-  async function upstream(url: string, init: RequestInit): Promise<{ status: number; body: unknown } | { error: string }> {
+  return async (url, init) => {
     let r: Response;
     try {
       r = await doFetch(url, { ...init, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
@@ -118,11 +121,17 @@ export function createRelayHandler(d: RelayDeps): RelayHandler {
     }
     if (r.status >= 300 && r.status < 400) return { error: 'upstream redirected; not followed' };
     const text = await r.text();
-    if (d.gateway?.apiKey && text.includes(d.gateway.apiKey)) return { error: 'upstream response withheld' };
+    if (d.gatewayApiKey && text.includes(d.gatewayApiKey)) return { error: 'upstream response withheld' };
     if (text === '') return { status: r.status, body: null };
     try { return { status: r.status, body: JSON.parse(text) }; }
     catch { return { error: 'upstream returned non-JSON' }; }
-  }
+  };
+}
+
+export function createRelayHandler(d: RelayDeps): RelayHandler {
+  if (!d.token) throw new Error('relay: refusing to start without a token');
+  const chains = new Map(d.evm.map((c) => [c.chainId, c.rpcUrl]));
+  const upstream = makeUpstream({ fetchImpl: d.fetchImpl, timeoutMs: d.timeoutMs, logger: d.logger, gatewayApiKey: d.gateway?.apiKey });
 
   return async (req, res, url) => {
     const path = url.pathname;
@@ -206,7 +215,7 @@ export function createRelayHandler(d: RelayDeps): RelayHandler {
   };
 }
 
-function accError(res: http.ServerResponse, e: unknown) {
+export function accError(res: http.ServerResponse, e: unknown) {
   const msg = (e as Error)?.message ?? '';
   // "No such record" is an answer (404); anything else is a failure to ask (502), never an empty record.
   if (isDefinitiveNotFound(msg)) return send(res, 404, { error: 'not found' });

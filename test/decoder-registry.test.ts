@@ -100,7 +100,7 @@ describe('buildRegistry configuration', () => {
   });
 
   it('ships the documented built-in names', () => {
-    expect(Object.keys(BUILTIN_DECODERS).sort()).toEqual(['certen-intent', 'send-tokens', 'write-data']);
+    expect(Object.keys(BUILTIN_DECODERS).sort()).toEqual(['certen-intent', 'governance', 'send-tokens', 'write-data']);
   });
 });
 
