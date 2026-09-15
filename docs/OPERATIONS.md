@@ -409,7 +409,8 @@ signing page (or the outermost delegator) must be a human page. A prepare is sin
 `header.initiator` is that `sigMdHash`), verifies the ECDSA signature over `sha256(sigMdHash ‖ txHash)`, and
 for a transaction ref confirms it is still pending; any mismatch or tampered echoed field is
 `400 {"error":"signature_invalid"}` and nothing is submitted. It then polls the transaction's signatures for
-this key up to `landed_timeout_ms`. Prepares and proposals are held in memory: a restart discards them.
+this key up to `landed_timeout_ms`. A proposal submitted on a page whose threshold is above 1 is recorded by its transaction hash with the
+proposal's display and summaryHash, so further officers on that page sign it as a transaction ref. Prepares and proposals are held in memory: a restart discards them.
 
 A signer with `officer_intake` and no `wallet.scopes`, `wallet.signer_url` or `signer` runs **intake-only**:
 no keys, no poller, no policy engine (the `policy` block may be omitted), only the relay and officer routes.

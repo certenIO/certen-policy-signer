@@ -53,6 +53,11 @@ export interface OfficerIntakeDeps {
   readPage: (page: string) => Promise<PageState>;
   /** The stored PolicyRequest for a tx hash (the Console was asked about it). */
   getPolicyRequest: (txHash: string) => Promise<PolicyRequest | undefined>;
+  /**
+   * Store a request for a transaction this signer submitted that still awaits signatures (a proposal on a page
+   * with threshold > 1), so further officers can sign it by tx ref. Absent => not recorded.
+   */
+  saveAwaiting?: (pr: PolicyRequest) => Promise<void>;
   /** Decode a body for a tx this signer never stored (intake-only). Absent => such refs are 404. */
   decode?: (body: { type: string; [k: string]: unknown }, principal: string) => { summary: ActionSummary; operationId?: string };
   labels?: Record<string, string>;
@@ -401,13 +406,42 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
       d.logger.warn({ audit: 'officer_signature_submit_failed', ref: rec.ref, keyHash: rec.keyHash, code: sub.code, err: sub.error }, 'officer signature refused by the network');
       return send(res, 502, { error: 'submit_rejected', code: sub.code ?? 'error' });
     }
-    if (proposal) { proposal.status = 'submitted'; proposal.txHash = rec.txHash; }
+    if (proposal) {
+      proposal.status = 'submitted'; proposal.txHash = rec.txHash;
+      await recordProposalAwaiting(proposal, rec.txHash);
+    }
     d.logger.warn({ audit: 'officer_signature_submitted', ref: rec.ref, txHash: rec.txHash, keyHash: rec.keyHash, page: rec.page, delegators: rec.delegators, vote: rec.vote }, 'OFFICER SIGNATURE SUBMITTED');
 
     // 7. Poll until this key's signature is recorded.
     const status = await pollLanded(rec);
     if (proposal && status === 'landed') proposal.status = 'landed';
     return send(res, 200, { txHash: rec.txHash, status, page: rec.page, keyHash: rec.keyHash });
+  }
+
+  /**
+   * A proposal on a page needing more than one signature does not execute on the initiator's signature. Record
+   * it by tx hash with the proposal's own display and summaryHash (so a link carrying that hash stays valid),
+   * so the next officer signs it as a transaction ref.
+   */
+  async function recordProposalAwaiting(p: Proposal, txHash: string): Promise<void> {
+    if (!d.saveAwaiting) return;
+    try {
+      const st = await d.readPage(p.page);
+      if (st.threshold <= 1) return;
+      const operations = proposalOperations(p.operations).map((o) => ({
+        type: String(o.type), ...((o.entry ?? {}) as Record<string, string>), ...(o.threshold !== undefined ? { threshold: o.threshold } : {}),
+      }));
+      await d.saveAwaiting({
+        requestId: `proposal:${p.id}`, txHash, signerUrl: p.page, account: p.page,
+        actionSummary: `updateKeyPage on ${p.page} (proposal ${p.id}, awaiting further signatures)`,
+        bodyType: 'updateKeyPage', governance: { kind: 'updateKeyPage', principal: p.page, operations },
+        header: { principal: p.page }, display: p.display, summaryHash: p.summaryHash,
+        expiresAt: new Date(p.expiresAt).toISOString(),
+      });
+      d.logger.info({ proposalId: p.id, txHash, page: p.page, threshold: st.threshold }, 'proposal transaction awaits further signatures; recorded for officer intake');
+    } catch (e) {
+      d.logger.error({ proposalId: p.id, txHash, err: (e as Error).message }, 'could not record proposal transaction awaiting signatures');
+    }
   }
 
   async function pollLanded(rec: PrepareRecord): Promise<'landed' | 'submitted'> {

@@ -88,6 +88,7 @@ const HARBOR_P1 = 'acc://harbor-mfg-tcl1.acme/book/1';
 const HARBOR_P2 = 'acc://harbor-mfg-tcl1.acme/book/2';
 const TREASURY_P1 = 'acc://fdb-treasury-tcl1.acme/book/1';
 const ISSUANCE_P1 = 'acc://fdb-issuance-tcl1.acme/book/1';
+const BOARD_P1 = 'acc://fdb-board-tcl1.acme/book/1';
 const PRINCIPAL = 'acc://harbor-mfg-tcl1.acme/data';
 const TX = 'c0ffee00'.repeat(8);
 
@@ -133,6 +134,9 @@ class FakeChain implements IntakeChain {
     const delegators: string[] = [];
     while (s.type === 'delegated') { delegators.unshift(String(s.delegator)); s = s.signature; }
     const hash = String(s.transactionHash);
+    // A newly originated transaction (a proposal) becomes pending at its principal.
+    const t0 = envelope.transaction?.[0];
+    if (t0?.header?.initiator && !this.pending.has(hash)) this.pending.set(hash, { principal: String(t0.header.principal), body: t0.body });
     if (this.land) {
       const list = this.sigs.get(hash) ?? [];
       list.push({ type: s.type, publicKeyHash: createHash('sha256').update(Buffer.from(s.publicKey, 'hex')).digest('hex'), delegators, signer: String(s.signer) });
@@ -190,12 +194,13 @@ beforeEach(async () => {
   chain.pages.set(HARBOR_P2.toLowerCase(), { version: 1, threshold: 1, keys: [{ publicKeyHash: 'cc'.repeat(32) }] });
   chain.pages.set(TREASURY_P1.toLowerCase(), { version: 2, threshold: 1, keys: [{ publicKeyHash: tess.keyHash }] });
   chain.pages.set(ISSUANCE_P1.toLowerCase(), { version: 5, threshold: 1, keys: [{ publicKeyHash: 'dd'.repeat(32) }, { delegate: 'acc://fdb-treasury-tcl1.acme/book' }] });
+  chain.pages.set(BOARD_P1.toLowerCase(), { version: 7, threshold: 2, keys: [{ publicKeyHash: alice.keyHash }, { publicKeyHash: bob.keyHash }, { publicKeyHash: 'bb'.repeat(32) }] });
   chain.pending.set(TX, { principal: PRINCIPAL, body: { type: 'writeData', entry: { type: 'doubleHash', data: ['00'] } } });
   store = new MemoryStore();
   await store.savePolicyRequest(withDisplay({ requestId: 'r1', txHash: TX, account: PRINCIPAL, actionSummary: 'FICTIONAL payment', expiresAt: '2026-09-20T00:00:00Z', bodyType: 'writeData' }));
   intake = createOfficerIntake({
-    humanPages: [HARBOR_P1, TREASURY_P1, ISSUANCE_P1], chain, readPage: chain.readPage,
-    getPolicyRequest: (h) => store.getPolicyRequest(h), landedTimeoutMs: 150, pollIntervalMs: 10, logger: silent,
+    humanPages: [HARBOR_P1, TREASURY_P1, ISSUANCE_P1, BOARD_P1], chain, readPage: chain.readPage,
+    getPolicyRequest: (h) => store.getPolicyRequest(h), saveAwaiting: (pr) => store.savePolicyRequest(pr), landedTimeoutMs: 150, pollIntervalMs: 10, logger: silent,
   });
   awaitingOps.length = 0;
   const relayClients = createRelayClientsHandler({
@@ -524,5 +529,55 @@ describe('keypage: a page needing more than one signature', () => {
     expect(r.submitted).toHaveLength(1);
     expect(r.submitted[0]).toMatch(/^[0-9a-f]{64}$/);
     expect(submitted).toHaveLength(1);
+  });
+});
+
+describe('proposal on a threshold-2 page: further officers sign by tx ref', () => {
+  it('A initiates (submitted, recorded with the proposal summaryHash); B signs by tx ref; A signing again still verifies', async () => {
+    const created = await call(port, 'POST', '/relay/governance/proposal', { ...C, 'x-governance-key': GOV_KEY },
+      { page: BOARD_P1, operations: [{ type: 'remove-key', keyHash: 'bb'.repeat(32) }], proposer: 'board secretary (FICTIONAL)' });
+    expect(created.status).toBe(200);
+
+    const prepA = await prepare(alice, { ref: created.json.proposalId, page: BOARD_P1, vote: 'approve' });
+    expect(prepA.status).toBe(200);
+    const rA = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prepA.json.prepareId, signature: await signPrepared(alice, prepA.json) });
+    expect(rA.status).toBe(200);
+    expect(['landed', 'submitted']).toContain(rA.json.status);
+    const txHash = prepA.json.txHash;
+    expect(chain.submitted[0].transaction[0].header.initiator).toBeDefined();
+
+    const stored = await store.getPolicyRequest(txHash);
+    expect(stored).toMatchObject({ account: BOARD_P1, bodyType: 'updateKeyPage', summaryHash: created.json.summaryHash, display: created.json.display });
+
+    const path = `/relay/officer/pending/${txHash}`;
+    const view = await call(port, 'GET', path, { 'x-officer-auth': await authHeader(bob, 'GET', path) });
+    expect(view.json).toMatchObject({ ref: txHash, kind: 'transaction', principal: BOARD_P1, bodyType: 'updateKeyPage', status: 'pending', summaryHash: created.json.summaryHash });
+
+    const prepB = await prepare(bob, { ref: txHash, page: BOARD_P1, vote: 'approve' });
+    expect(prepB.status).toBe(200);
+    expect(prepB.json.summaryHash).toBe(created.json.summaryHash);
+    const rB = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prepB.json.prepareId, signature: await signPrepared(bob, prepB.json) });
+    expect(rB.json).toEqual({ txHash, status: 'landed', page: BOARD_P1, keyHash: bob.keyHash });
+    const envB = chain.submitted[1];
+    expect(envB.transaction).toHaveLength(1);
+    expect(envB.signatures).toHaveLength(1);
+    expect(envB.signatures[0]).toMatchObject({ type: 'ecdsaSha256', signer: BOARD_P1, transactionHash: txHash, publicKey: bytesToHex(bob.spki) });
+    expect(s6Verifies(envB.signatures[0])).toBe(true);
+
+    // Double-signing is the network's concern: A may sign again by tx ref and it still verifies.
+    const prepA2 = await prepare(alice, { ref: txHash, page: BOARD_P1, vote: 'approve' });
+    expect(prepA2.status).toBe(200);
+    const rA2 = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prepA2.json.prepareId, signature: await signPrepared(alice, prepA2.json) });
+    expect(rA2.status).toBe(200);
+    expect(rA2.json).toMatchObject({ txHash, page: BOARD_P1, keyHash: alice.keyHash });
+    expect(s6Verifies(chain.submitted[2].signatures[0])).toBe(true);
+  });
+
+  it('a threshold-1 page proposal is not recorded as awaiting', async () => {
+    const created = await call(port, 'POST', '/relay/governance/proposal', { ...C, 'x-governance-key': GOV_KEY },
+      { page: HARBOR_P1, operations: [{ type: 'remove-key', keyHash: 'bb'.repeat(32) }], proposer: 'ada' });
+    const prep = await prepare(alice, { ref: created.json.proposalId, page: HARBOR_P1, vote: 'approve' });
+    await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prep.json.prepareId, signature: await signPrepared(alice, prep.json) });
+    expect(await store.getPolicyRequest(prep.json.txHash)).toBeUndefined();
   });
 });
