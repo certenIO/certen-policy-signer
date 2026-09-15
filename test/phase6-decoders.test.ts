@@ -176,6 +176,24 @@ describe('evm-abi decoding of CERTEN intents', () => {
     expect(out.summary.targetKnown).toBe(false);
   });
 
+  it('selfCall survives non-canonical address spellings the validator accepts (no 0x, extra leading zeros, case)', () => {
+    const noPrefix = V7.slice(2).toUpperCase();
+    const padded = '0x0000' + V7.slice(2);
+    for (const from of [noPrefix, padded]) {
+      const out = decoder.decode(intentBody([callLeg(V7, '0x' + sel('ping(bytes32)') + REF, { from })]), CTX)!;
+      expect(out.summary.selfCall).toBe(true);
+    }
+  });
+
+  it('selfCall is unknown (not false) when a leg sender is missing or unreadable', () => {
+    for (const from of [undefined, 'not-an-address']) {
+      const leg: Record<string, unknown> = callLeg(FDBUSD, twr(DELTA, 1n), { from });
+      if (from === undefined) delete leg['from'];
+      const out = decoder.decode(intentBody([leg]), CTX)!;
+      expect(out.summary.selfCall).toBeUndefined();
+    }
+  });
+
   it('no contract-call legs: targetKnown is vacuously true and calldataDecoded absent', () => {
     const out = decoder.decode(intentBody([{ legId: 'l0', chain: 'base-sepolia', from: V7, to: DELTA, amountWei: '10', executionPayload: { target: DELTA, callData: '0x' } }]), CTX)!;
     expect(out.summary.targetKnown).toBe(true);

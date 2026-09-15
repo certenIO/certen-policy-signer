@@ -159,6 +159,18 @@ function hasCalldata(leg: Record<string, any>): boolean {
 }
 
 const lower = (v: unknown): string | undefined => (typeof v === 'string' && v ? v.toLowerCase() : undefined);
+
+/**
+ * An EVM address as the validator will read it (go-ethereum `common.HexToAddress`): optional 0x, hex digits,
+ * left-padded to 20 bytes, and the rightmost 20 bytes kept when longer. Undefined when it is not hex at all.
+ * Used for self-call detection so a non-canonical spelling of the same account cannot hide a self-call.
+ */
+export function canonicalAddress(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const h = v.trim().replace(/^0[xX]/, '');
+  if (h === '' || !/^[0-9a-fA-F]+$/.test(h)) return undefined;
+  return '0x' + h.toLowerCase().padStart(40, '0').slice(-40);
+}
 function legChainId(leg: Record<string, any>): number | undefined {
   const raw = leg?.executionPayload?.chainId ?? leg?.chainId ?? leg?.chain_id;
   const n = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : raw;
@@ -208,12 +220,17 @@ export function createCertenIntentDecoder(opts: CertenIntentOptions = {}): Summa
     const calls: LegCall[] = [];
     const assets: LegAsset[] = [];
     let targetKnown = true;
-    let selfCall = false;
+    // true: some leg calls its own sender; false: every leg's sender and target were readable and differ;
+    // undefined: some leg's sender or target could not be read, so a self-call rule stays indeterminate.
+    let selfCall: boolean | undefined = false;
     let pinnedPhrase0: string | undefined;
     legs!.forEach((l, legIndex) => {
       const target = lower(l?.executionPayload?.target) ?? lower(l?.to);
       const from = lower(l?.from) ?? lower(l?.executionPayload?.from);
-      if (target && from && target === from) selfCall = true;
+      const cTarget = canonicalAddress(l?.executionPayload?.target ?? l?.to);
+      const cFrom = canonicalAddress(l?.from ?? l?.executionPayload?.from);
+      if (cTarget && cFrom) { if (cTarget === cFrom) selfCall = true; }
+      else if (selfCall !== true) selfCall = undefined;
       if (!hasCalldata(l)) return;
       const chainId = legChainId(l);
       const pin = chainId !== undefined && target ? pins.get(`${chainId}:${target}`) : undefined;
