@@ -1,0 +1,47 @@
+{
+  "_about": "FICTIONAL recorded exchange for the Google Cloud KMS adapter. Hand-built from the public REST API shapes (cryptoKeyVersions.getPublicKey and cryptoKeyVersions.asymmetricSign, v1). The project, key ring, key and token are placeholders; {{…}} values are filled at test time from a P-256 key generated inside the test. No real project, credential or token.",
+  "config": {
+    "key_version_name": "projects/orchid-logistics-fictional/locations/europe-west1/keyRings/tcl-fictional/cryptoKeys/machine-orchid/cryptoKeyVersions/1"
+  },
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://cloudkms.googleapis.com/v1/projects/orchid-logistics-fictional/locations/europe-west1/keyRings/tcl-fictional/cryptoKeys/machine-orchid/cryptoKeyVersions/1/publicKey",
+        "headers": { "authorization": "Bearer {{token}}" }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "pem": "{{pem}}",
+          "algorithm": "EC_SIGN_P256_SHA256",
+          "pemCrc32c": "{{pem_crc32c}}",
+          "name": "projects/orchid-logistics-fictional/locations/europe-west1/keyRings/tcl-fictional/cryptoKeys/machine-orchid/cryptoKeyVersions/1",
+          "protectionLevel": "HSM"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://cloudkms.googleapis.com/v1/projects/orchid-logistics-fictional/locations/europe-west1/keyRings/tcl-fictional/cryptoKeys/machine-orchid/cryptoKeyVersions/1:asymmetricSign",
+        "headers": { "authorization": "Bearer {{token}}", "content-type": "application/json" },
+        "body": { "digest": { "sha256": "{{digest_b64}}" }, "digestCrc32c": "{{digest_crc32c}}" }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "signature": "{{signature_der_b64}}",
+          "signatureCrc32c": "{{signature_crc32c}}",
+          "verifiedDigestCrc32c": true,
+          "name": "projects/orchid-logistics-fictional/locations/europe-west1/keyRings/tcl-fictional/cryptoKeys/machine-orchid/cryptoKeyVersions/1",
+          "protectionLevel": "HSM"
+        }
+      }
+    }
+  ],
+  "error_example": {
+    "status": 403,
+    "body": { "error": { "code": 403, "message": "Permission 'cloudkms.cryptoKeyVersions.useToSign' denied on resource (or it may not exist).", "status": "PERMISSION_DENIED" } }
+  }
+}

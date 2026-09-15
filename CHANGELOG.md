@@ -13,6 +13,16 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Added
 
+- **Phase 8 key sources (FICTIONAL Business Transaction Controls lab).** `signer.provider: pkcs11` signs
+  with a key in a PKCS#11 token: Ed25519 via `CKM_EDDSA`, P-256 via `CKM_ECDSA` with the output converted
+  to DER. The key must be non-extractable and sensitive. The PIN is either process-held or released per
+  signature by a PIN custodian (`pin_source`). `signer.provider: cloud-kms` signs with a P-256 key in AWS
+  KMS, Azure Key Vault or Google Cloud KMS. `KeySigner.sign` takes an optional transaction context
+  (`txHash`, `principal`, `page`), which existing providers ignore. A key source that throws while signing
+  now makes the vote backend return `signing failed: …`; before, the exception propagated. Either way no
+  signature is produced. See docs/KEY-SOURCES.md. `npm run test:pkcs11` (SoftHSM2) and `npm run test:kms`
+  (LocalStack) exercise the real backends.
+
 - **Phase 6 seat contract (FICTIONAL Business Transaction Controls lab).** ABI pins (`decoders.evm_abi[]`,
   `decoders.labels`) with a strict built-in ABI decoder; new PolicyRequest fields `bodyType`,
   `configVersion`, `assets`, `selfCall`, `targetKnown`, `governance`, `acceptance`; `configVersion` on

@@ -23,13 +23,34 @@ import { p256 } from '@noble/curves/nist.js';
  */
 export type AccumulateSignatureType = 'ed25519' | 'ecdsaSha256' | 'rsaSha256';
 
+/**
+ * What a signature is FOR, handed to the key source beside the preimage. Phase 8 (K3).
+ *
+ * The preimage alone cannot say which transaction it commits to — it is a hash over the metadata and the
+ * transaction hash together. A key source whose credential is released per transaction (a PKCS#11 PIN
+ * from the key holder's own cell, contract §2) has to name the transaction to whoever releases it, so
+ * the vote path passes it along. Every other key source ignores it. It is context, never authority: the
+ * preimage is still exactly what gets signed.
+ */
+export interface SignContext {
+  /** The transaction hash, hex. */
+  txHash: string;
+  /** The transaction's principal account. */
+  principal: string;
+  /** The key page this signature is made on. */
+  page: string;
+}
+
 export interface KeySigner {
   /** Which Accumulate signature this key produces. Goes into the metadata, so it is part of the preimage. */
   readonly signatureType: AccumulateSignatureType;
   /** The public key in the encoding its signature type carries — raw for Ed25519, PKIX/SPKI DER for ECDSA. */
   publicKey(): Promise<Uint8Array>;
-  /** Sign the 32-byte preimage. The 32 bytes ARE the digest; nothing here hashes them again. */
-  sign(preimage32: Uint8Array): Promise<Uint8Array>;
+  /**
+   * Sign the 32-byte preimage. The 32 bytes ARE the digest; nothing here hashes them again.
+   * `ctx` names the transaction; providers that do not need it ignore it, and one that does refuses without it.
+   */
+  sign(preimage32: Uint8Array, ctx?: SignContext): Promise<Uint8Array>;
   /** Optional readiness probe (e.g. can reach Vault). */
   health?(): Promise<boolean>;
 }

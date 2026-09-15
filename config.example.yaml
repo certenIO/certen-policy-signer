@@ -116,6 +116,33 @@ signer:
   #   private_key_der_hex: "env:SIGNER_P256_DER_HEX"
   #   private_key_der_file: "/run/secrets/signer_p256.der.hex"
 
+  # provider: "pkcs11" — the key is generated inside a PKCS#11 token (HSM, smartcard, SoftHSM) and refused
+  # unless the token reports it non-extractable and sensitive. Every signature is its own session and login.
+  # Exactly one of `pin` (process-held: the party hosts its own signer) or `pin_source` (a per-signature PIN
+  # released by the key holder's own cell for an approved transaction — custody Mode 3). Both are env: refs;
+  # a literal value refuses the boot. A custodian refusal or timeout produces no signature. The pkcs11js
+  # addon is built explicitly in the image. See docs/KEY-SOURCES.md.
+  # pkcs11:
+  #   module: "/usr/lib/softhsm/libsofthsm2.so"
+  #   token_label: "orchid-seat"
+  #   key_label: "machine-orchid-logistics"
+  #   key_type: "ecdsa-p256"                 # or "ed25519"
+  #   pin: "env:PKCS11_PIN"
+  #   # pin_source:
+  #   #   url: "http://pin-custodian:8080/v1/pin"
+  #   #   hmac_secret: "env:PIN_CUSTODIAN_HMAC"
+  #   #   timeout_ms: 5000
+
+  # provider: "cloud-kms" — an ECDSA P-256 key inside a cloud KMS the party controls. Only the chosen
+  # vendor's block may be present. AWS credentials come from the SDK's default chain; Azure and GCP take an
+  # env: bearer token or, absent one, the platform's managed/metadata identity. A key that is not a P-256
+  # signing key is refused before anything is signed. See docs/KEY-SOURCES.md.
+  # cloud_kms:
+  #   vendor: "aws"                          # aws | azure | gcp
+  #   aws:   { region: "us-east-1", key_id: "alias/machine-orchid", endpoint: "http://kms-orchid:4566" }
+  #   azure: { vault_url: "https://orchid.vault.azure.net", key_name: "machine-orchid", key_version: "7f1c2d3e…", access_token: "env:AZURE_KV_TOKEN" }
+  #   gcp:   { key_version_name: "projects/orchid/locations/europe-west1/keyRings/tcl/cryptoKeys/machine/cryptoKeyVersions/1" }
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 #  YOUR POLICY ENGINE — the decision this signer obeys.
 #  Contract and a runnable reference implementation: examples/policy-engine.mjs

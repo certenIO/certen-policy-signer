@@ -174,7 +174,16 @@ export class GatewayVoteBackend implements VoteBackend {
         return { ok: false, error: 'gateway signing data transaction mismatch' };
       }
 
-      const signature = await signer.sign(hexToBytes(sd.dataForSignature));
+      // Same rule as the direct backend: a key source that cannot sign produces no signature, and the vote
+      // is withheld. The spent sign request is simply abandoned.
+      let signature: Uint8Array;
+      try {
+        signature = await signer.sign(hexToBytes(sd.dataForSignature), { txHash: tx.txHash, principal: tx.account, page: tx.signerUrl });
+      } catch (e) {
+        const msg = (e as Error).message;
+        this.logger.error({ tx: tx.txHash, page: tx.signerUrl, err: msg, via: 'gateway' }, 'signing failed; vote withheld');
+        return { ok: false, error: `signing failed: ${msg}` };
+      }
       const res = await this.gw.submitSignature(sd, signature, publicKey);
       if (res.ok) {
         this.logger.info(

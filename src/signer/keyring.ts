@@ -12,6 +12,8 @@
 import { KeySigner, LocalSigner, LocalEcdsaP256Signer } from './signer.js';
 import { VaultTransitSigner } from './vault-transit.js';
 import { WindowsCertStoreSigner } from './windows-cert-store.js';
+import { Pkcs11Signer } from './pkcs11.js';
+import { AwsKmsAdapter, AzureKeyVaultAdapter, CloudKmsSigner, GcpKmsAdapter } from './cloud-kms.js';
 import { resolveLocalEcdsaKey, resolveLocalSeed, SignerSpec } from '../config.js';
 import { Logger } from '../logger.js';
 
@@ -40,6 +42,54 @@ export function buildSignerFromSpec(spec: SignerSpec, logger: Logger, label: str
       ...(w.machine !== undefined ? { machine: w.machine } : {}),
       ...(w.timeout_ms !== undefined ? { timeoutMs: w.timeout_ms } : {}),
     });
+  }
+  if (spec.provider === 'pkcs11') {
+    const p = spec.pkcs11;
+    if (!p) throw new Error(`${label}: signer.provider=pkcs11 requires a pkcs11 block (module, token_label, key_label, key_type, and pin or pin_source)`);
+    if (Boolean(p.pin) === Boolean(p.pin_source)) {
+      throw new Error(`${label}: signer.pkcs11 needs exactly one of pin (process-held) or pin_source (released per signature by the key holder's cell)`);
+    }
+    logger.info({ scope: label, token: p.token_label, keyLabel: p.key_label, keyType: p.key_type, pinMode: p.pin ? 'pin' : 'pin_source' },
+      'using a PKCS#11 token: the private key stays in the token');
+    return new Pkcs11Signer({
+      module: p.module,
+      tokenLabel: p.token_label,
+      keyLabel: p.key_label,
+      keyType: p.key_type,
+      ...(p.pin ? { pin: p.pin } : {}),
+      ...(p.pin_source
+        ? { pinSource: { url: p.pin_source.url, hmacSecret: p.pin_source.hmac_secret, ...(p.pin_source.timeout_ms ? { timeoutMs: p.pin_source.timeout_ms } : {}) } }
+        : {}),
+      logger,
+    });
+  }
+  if (spec.provider === 'cloud-kms') {
+    const c = spec.cloud_kms;
+    if (!c) throw new Error(`${label}: signer.provider=cloud-kms requires a cloud_kms block with a vendor`);
+    const block = c[c.vendor];
+    if (!block) throw new Error(`${label}: signer.cloud_kms.vendor is ${c.vendor} but there is no cloud_kms.${c.vendor} block`);
+    for (const other of ['aws', 'azure', 'gcp'] as const) {
+      if (other !== c.vendor && c[other]) throw new Error(`${label}: signer.cloud_kms.vendor is ${c.vendor}; remove the cloud_kms.${other} block`);
+    }
+    logger.info({ scope: label, vendor: c.vendor }, 'using a cloud KMS key: the private key stays in the KMS');
+    if (c.vendor === 'aws') {
+      const a = c.aws!;
+      return new CloudKmsSigner(new AwsKmsAdapter({ region: a.region, keyId: a.key_id, ...(a.endpoint ? { endpoint: a.endpoint } : {}) }));
+    }
+    if (c.vendor === 'azure') {
+      const a = c.azure!;
+      return new CloudKmsSigner(new AzureKeyVaultAdapter({
+        vaultUrl: a.vault_url, keyName: a.key_name, keyVersion: a.key_version,
+        ...(a.access_token ? { accessToken: a.access_token } : {}),
+        ...(a.api_version ? { apiVersion: a.api_version } : {}),
+      }));
+    }
+    const g = c.gcp!;
+    return new CloudKmsSigner(new GcpKmsAdapter({
+      keyVersionName: g.key_version_name,
+      ...(g.access_token ? { accessToken: g.access_token } : {}),
+      ...(g.endpoint ? { endpoint: g.endpoint } : {}),
+    }));
   }
   if (spec.provider === 'local-ecdsa-p256') {
     const der = resolveLocalEcdsaKey(spec.local);

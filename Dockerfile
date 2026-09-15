@@ -2,11 +2,15 @@
 # the signer asks your policy engine for a decision and signs only on an approval.
 FROM node:20-slim AS build
 WORKDIR /app
+# A compiler for the ONE native addon, pkcs11js (the pkcs11 key source), built explicitly below.
+RUN apt-get update  && apt-get install -y --no-install-recommends python3 make g++  && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json* ./
-# Both scripts `npm ci`'s prepare hook runs must exist before it fires: the patch fixes accumulate.js's
-# Time.encode, and the build no-ops here (src/ arrives below, so this layer stays cacheable).
-COPY scripts/fix-accumulate-encoding.mjs scripts/build.mjs ./scripts/
-RUN npm ci
+COPY scripts/fix-accumulate-encoding.mjs scripts/build.mjs scripts/build-pkcs11js.sh ./scripts/
+# No dependency install script runs (supply chain). The two things they would have done are explicit steps:
+# the accumulate.js Time.encode patch, and the pinned pkcs11js build (read first; see the script and
+# docs/KEY-SOURCES.md).
+RUN npm ci --ignore-scripts && node scripts/fix-accumulate-encoding.mjs
+RUN sh scripts/build-pkcs11js.sh
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build         # esbuild bundle -> dist/signer.cjs (inlines the patched accumulate.js)
@@ -19,6 +23,9 @@ COPY package.json package-lock.json* ./
 # baked into the bundle, and this stage has no scripts/ dir to run it from anyway.
 RUN npm install --omit=dev --no-save --ignore-scripts pino@^9 && npm cache clean --force
 COPY --from=build /app/dist ./dist
+# pkcs11js is external to the bundle (a native addon): its loader and the addon compiled in the build stage.
+COPY --from=build /app/node_modules/pkcs11js/package.json /app/node_modules/pkcs11js/index.js ./node_modules/pkcs11js/
+COPY --from=build /app/node_modules/pkcs11js/build/Release/pkcs11.node ./node_modules/pkcs11js/build/Release/pkcs11.node
 # The durable store (store.path) lives here. Own it as `node` in the image so an empty volume mounted
 # over it inherits that ownership — otherwise the non-root process cannot write its state.
 RUN mkdir -p /data && chown node:node /data

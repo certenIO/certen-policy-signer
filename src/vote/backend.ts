@@ -146,7 +146,17 @@ export class DirectVoteBackend implements VoteBackend {
       // The key declares its own algorithm; the metadata must say the same thing, because the type is
       // inside the hash that gets signed. Never assume Ed25519 here — a PKI key on the page is normal.
       const pre = buildPreimage(hexToBytes(tx.txHash), { publicKey, signatureType: signer.signatureType, signerUrl: tx.signerUrl, signerVersion, timestamp, vote, delegators });
-      const sigBytes = await signer.sign(pre.dataForSignature);
+      // The key source is told which transaction this is (a per-signature credential names it to whoever
+      // releases it). A key source that cannot sign — a custodian refusal, a device error — produces NO
+      // signature: the vote is withheld and recorded as a signing failure, never retried around.
+      let sigBytes: Uint8Array;
+      try {
+        sigBytes = await signer.sign(pre.dataForSignature, { txHash: tx.txHash, principal: tx.account, page: tx.signerUrl });
+      } catch (e) {
+        const msg = (e as Error).message;
+        this.logger.error({ tx: tx.txHash, page: tx.signerUrl, err: msg }, 'signing failed; vote withheld');
+        return { ok: false, error: `signing failed: ${msg}` };
+      }
       const sigObj = delegators?.length
         ? buildDelegatedSignatureObject(pre, sigBytes, tx.txHash)
         : buildSignatureObject(pre, sigBytes, tx.txHash);
