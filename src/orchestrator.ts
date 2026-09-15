@@ -248,8 +248,10 @@ export class Orchestrator {
       bodyType: tx.bodyType,
       ...(this.d.configVersion ? { configVersion: this.d.configVersion } : {}),
       ...(tx.summary.assets ? { assets: tx.summary.assets } : {}),
-      ...(tx.summary.selfCall !== undefined ? { selfCall: tx.summary.selfCall } : {}),
-      ...(tx.summary.targetKnown !== undefined ? { targetKnown: tx.summary.targetKnown } : {}),
+      // A body that provably carries no contract call (an acceptance, a governance body, or any non-WriteData body)
+      // has selfCall=false and targetKnown=true. An undecoded WriteData leaves both absent, so rules stay indeterminate.
+      ...(tx.summary.selfCall !== undefined ? { selfCall: tx.summary.selfCall } : noContractCall(tx) ? { selfCall: false } : {}),
+      ...(tx.summary.targetKnown !== undefined ? { targetKnown: tx.summary.targetKnown } : noContractCall(tx) ? { targetKnown: true } : {}),
       ...(tx.governance ? { governance: tx.governance } : {}),
       ...(tx.acceptance ? { acceptance: tx.acceptance } : {}),
       // Policy TTL for THIS request. Not the on-chain deadline, which is `header.expiresAt`.
@@ -548,4 +550,9 @@ export function approverKeyRefs(evidence: Record<string, unknown> | undefined): 
   if (refs.length) return refs;
   const single = approverKeyRef(evidence);
   return single ? [single] : [];
+}
+
+/** True when the transaction provably carries no contract call: acceptance and governance facts, or a non-WriteData body. */
+function noContractCall(tx: { bodyType?: string; acceptance?: unknown; governance?: unknown }): boolean {
+  return Boolean(tx.acceptance || tx.governance || (tx.bodyType && tx.bodyType !== 'writeData'));
 }

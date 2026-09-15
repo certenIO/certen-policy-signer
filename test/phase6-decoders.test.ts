@@ -288,11 +288,20 @@ describe('the PolicyRequest and Receipt carry the Phase 6 fields', () => {
     expect(req.bodyType).toBe('updateKeyPage');
     expect(req.governance).toEqual({ kind: 'updateKeyPage', principal: PAGE, operations: [{ type: 'setThreshold', threshold: 2 }] });
     expect(req.actionSummary).toBe(`updateKeyPage on ${PAGE}: setThreshold threshold=2`);
+    expect(req).toMatchObject({ selfCall: false, targetKnown: true });
   });
 
   it('an acceptance WriteData carries the acceptance', async () => {
     const content = `{"amount":1,"category":"equipment","firm":"acc://f.acme/book","instructionHash":"${'12'.repeat(32)}"}`;
     const { req } = await run({ type: 'writeData', entry: { type: 'doubleHash', data: [Buffer.from(content).toString('hex')] } }, 'acc://fictional-customer-tcl1.acme/acceptances');
     expect(req.acceptance).toEqual({ instructionHash: '12'.repeat(32), category: 'equipment', amount: 1, firm: 'acc://f.acme/book' });
+    // no contract call: seat A7 rules must be decidable, not indeterminate
+    expect(req).toMatchObject({ selfCall: false, targetKnown: true });
+  });
+
+  it('an unrecognized WriteData leaves selfCall/targetKnown absent (rules stay indeterminate)', async () => {
+    const { req } = await run({ type: 'writeData', entry: { type: 'doubleHash', data: ['00ff'] } }, 'acc://fictional-customer-tcl1.acme/data');
+    expect(req.selfCall).toBeUndefined();
+    expect(req.targetKnown).toBeUndefined();
   });
 });
