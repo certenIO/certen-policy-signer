@@ -66,7 +66,15 @@ x-pin-auth: t=<unix ms>,v1=<hex hmac-sha256(hmac_secret, t + "." + body)>
 ```
 
 The custodian answers `200 {"pin"}` or `403 {"reason"}`. It runs in the key holder's cell and releases the
-PIN only for a transaction its own party approved (contract §2).
+PIN only for a transaction its own party approved (contract §2). **The custodian gates each PIN release on
+the party's approval.**
+
+> **What Mode 3 does not stop.** A SoftHSM token has one static user PIN. The bank controls the signer
+> process, so a compromised or dishonest host can keep the PIN after a single release. Holding the token
+> files, it can then sign without asking the custodian, or attack the token offline. The custodian cannot
+> detect or prevent either. Protecting each individual use needs a per-signature credential, or an HSM
+> that enforces party-authorised use: for example, a PIN the custodian rotates after every release, or an
+> HSM key-use-authorisation mechanism. Until then Mode 3 is the weaker mode, as its label says.
 
 **The provider fails closed.** Any of these produces no signature: a refusal, a timeout, a redirect
 (`redirect: error`), a 5xx, a body that is not JSON, or a 200 without a PIN. The vote path records it as

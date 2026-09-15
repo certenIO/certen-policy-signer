@@ -16,9 +16,9 @@
  *   pin_source   the PIN is released per signature by the key holder's cell (Mode 3, pin-source.ts).
  *
  * Either way every signature is its own session: open, (fetch the PIN), C_Login, sign, C_Logout, close.
- * No session stays logged in between votes, so a PIN released for one transaction is never reused for
- * another. PKCS#11 login state is per application rather than per session, so signatures on one module are
- * serialised.
+ * No session stays logged in between votes, and an honest signer process never reuses a PIN released for one
+ * transaction for another (a compromised host can: see pin-source.ts). PKCS#11 login state is per
+ * application rather than per session, so signatures on one module are serialised.
  *
  * WHEN THE KEY ATTRIBUTES ARE CHECKED. A private key object is invisible until the user is logged in. With
  * `pin`, the check runs at startup (the first `publicKey()` — the SR6 self-check — logs in, checks and logs

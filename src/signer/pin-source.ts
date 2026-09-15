@@ -4,8 +4,14 @@
  *
  * In Mode 3 the signer runs in the bank's cell but the HSM token's user PIN never lives there. For every
  * signature this client asks the custodian in the key holder's cell, naming the transaction; the custodian
- * releases the PIN only if its own party's decision service approved that transaction for its seat. So the
- * bank holding the token cannot sign on its own: a second party must agree, per transaction.
+ * releases the PIN only if its own party's decision service approved that transaction for its seat. The
+ * custodian therefore gates each PIN RELEASE on the party's approval, and an honest signer asks every time.
+ *
+ * WHAT THIS DOES NOT STOP. The token has one static user PIN. A compromised signer host — which the bank
+ * controls in Mode 3 — can keep the PIN after a single release, and holding the token files it can then sign
+ * without the custodian, or attack the token offline. Protection per USE needs a per-signature credential or
+ * an HSM that enforces party-authorised use: for example a PIN rotated by the custodian after every release,
+ * or an HSM key-use-authorisation mechanism. docs/KEY-SOURCES.md records this.
  *
  *   POST {url}   body    {"txHash","principal","page","keyLabel","ts","nonce"}
  *                header  x-pin-auth: t=<unix ms>,v1=<hex hmac-sha256(secret, t + "." + body)>
