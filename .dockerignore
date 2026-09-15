@@ -1,0 +1,18 @@
+# Keep the build context to what the Dockerfiles COPY: no installed modules, no build output, and none of
+# the local-only state or secret files .gitignore already keeps out of the repository.
+node_modules
+dist
+.git
+data
+coverage
+internal
+*.log
+.env
+deploy/.env
+deploy/*.seed
+deploy/signer-seed.txt
+deploy/config.generated.yaml
+wallet.db
+*-state.json
+agent/**/bin
+agent/**/obj

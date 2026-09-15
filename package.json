@@ -34,9 +34,12 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:vault": "node scripts/vault-it.mjs",
+    "test:pkcs11": "node scripts/pkcs11-it.mjs",
+    "test:kms": "node scripts/kms-it.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "3.1122.0",
     "@noble/curves": "^2.4.0",
     "accumulate.js": "^0.12.0",
     "axios": "^1.7.0",
@@ -44,6 +47,10 @@
     "pino": "^9.0.0",
     "tweetnacl": "^1.0.3",
     "zod": "^3.23.0"
+  },
+  "//optionalDependencies": "pkcs11js is a native addon. It is optional so an install on a host without a compiler still succeeds, and it is NEVER built by an install script: installs use --ignore-scripts, and the addon is compiled explicitly in the Docker test and image builds (docs/KEY-SOURCES.md). Without the compiled addon the pkcs11 provider refuses to start.",
+  "optionalDependencies": {
+    "pkcs11js": "2.1.6"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",

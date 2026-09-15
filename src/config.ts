@@ -51,7 +51,9 @@ const SignerSpecSchema = z.object({
   // `windows-cert-store` is the organisation's OWN PKI: a certificate already in the Windows
   // certificate store (Microsoft ADCS-issued, or a PIV/CAC card through its minidriver). Nothing is
   // enrolled or generated and NO key material appears in config — only which certificate to use.
-  provider: z.enum(['vault-transit', 'local', 'local-ecdsa-p256', 'windows-cert-store']),
+  // `pkcs11` and `cloud-kms` are Phase 8 (K3): a key generated inside an HSM token or a cloud KMS the
+  // party controls. See docs/KEY-SOURCES.md.
+  provider: z.enum(['vault-transit', 'local', 'local-ecdsa-p256', 'windows-cert-store', 'pkcs11', 'cloud-kms']),
   // `key_type` is what Vault holds under `key_name`. It defaults to ed25519 -- every config written
   // before Runbook F Phase F2 meant that -- and VaultTransitSigner checks the default against Vault's
   // own answer on the first read, so a wrong one refuses rather than signing with a mismatched
@@ -78,6 +80,43 @@ const SignerSpecSchema = z.object({
     machine: z.boolean(),     // read LocalMachine\My rather than CurrentUser\My
     timeout_ms: z.number().int().positive(),  // a card with a PIN prompt waits on a person
   }).partial().optional(),
+  // pkcs11 (contract §1.1). No key material: the key is in the token, looked up by label, and refused unless
+  // the token reports it non-extractable and sensitive. Exactly one of `pin` / `pin_source`, both `env:` refs.
+  // `.strict()`: a misspelled `pin_source` key must stop the boot, not quietly fall back to nothing.
+  pkcs11: z.object({
+    module: z.string().min(1),        // path to the PKCS#11 library, e.g. /usr/lib/softhsm/libsofthsm2.so
+    token_label: z.string().min(1),
+    key_label: z.string().min(1),
+    key_type: z.enum(['ed25519', 'ecdsa-p256']),
+    pin: z.string().min(1).optional(),           // `env:NAME` — a process-held PIN (the party hosts its signer)
+    pin_source: z.object({                       // a per-signature PIN from the key holder's cell (Mode 3)
+      url: z.string().url(),
+      hmac_secret: z.string().min(1),            // `env:NAME`
+      timeout_ms: z.number().int().positive().max(60_000).optional(),
+    }).strict().optional(),
+  }).strict().optional(),
+  // cloud-kms (contract §1.2). P-256 only. AWS credentials come from the SDK's default chain; Azure and GCP
+  // take an `env:` bearer token or, absent one, the platform's managed/metadata identity.
+  cloud_kms: z.object({
+    vendor: z.enum(['aws', 'azure', 'gcp']),
+    aws: z.object({
+      region: z.string().min(1),
+      key_id: z.string().min(1),
+      endpoint: z.string().url().optional(),
+    }).strict().optional(),
+    azure: z.object({
+      vault_url: z.string().url(),
+      key_name: z.string().min(1),
+      key_version: z.string().min(1),
+      access_token: z.string().min(1).optional(),  // `env:NAME`
+      api_version: z.string().min(1).optional(),
+    }).strict().optional(),
+    gcp: z.object({
+      key_version_name: z.string().min(1),
+      access_token: z.string().min(1).optional(),  // `env:NAME`
+      endpoint: z.string().url().optional(),
+    }).strict().optional(),
+  }).strict().optional(),
 });
 export type SignerSpec = z.infer<typeof SignerSpecSchema>;
 
@@ -363,7 +402,7 @@ export type Config = Omit<ParsedConfig, 'policy'> & { policy: NonNullable<Parsed
 /** Keys whose values are credentials (or may embed one) and never enter the config version. */
 const SECRET_KEYS = new Set([
   'token', 'api_key', 'hmac_secret', 'seed_hex', 'private_key_der_hex', 'auth_token', 'account_sid',
-  'webhook_url', 'governance_admin_key', 'rpc_url', 'key', 'password', 'secret',
+  'webhook_url', 'governance_admin_key', 'rpc_url', 'key', 'password', 'secret', 'pin', 'access_token',
 ]);
 
 /** Canonical JSON: sorted object keys, no whitespace, `undefined` members dropped. */
@@ -460,6 +499,21 @@ function resolveKeySecrets(spec: SignerSpec | undefined): void {
   if (spec.vault?.token) spec.vault.token = resolveSecret(spec.vault.token)!;
   if (spec.local?.seed_hex) spec.local.seed_hex = resolveSecret(spec.local.seed_hex);
   if (spec.local?.private_key_der_hex) spec.local.private_key_der_hex = resolveSecret(spec.local.private_key_der_hex);
+  // Phase 8 credentials: `env:` refs only. A PIN, an HMAC secret or a bearer token written literally into a
+  // config file is a secret in a file that gets copied, diffed and backed up — refuse it.
+  const envOnly = (v: string | undefined, where: string): string | undefined => {
+    if (v === undefined) return undefined;
+    if (!v.startsWith('env:')) throw new Error(`config: ${where} must be an env: reference, not a literal value`);
+    const resolved = resolveSecret(v);
+    if (!resolved) throw new Error(`config: ${where} (${v}) resolved to nothing — set the environment variable`);
+    return resolved;
+  };
+  if (spec.pkcs11) {
+    spec.pkcs11.pin = envOnly(spec.pkcs11.pin, 'signer pkcs11.pin');
+    if (spec.pkcs11.pin_source) spec.pkcs11.pin_source.hmac_secret = envOnly(spec.pkcs11.pin_source.hmac_secret, 'signer pkcs11.pin_source.hmac_secret')!;
+  }
+  if (spec.cloud_kms?.azure) spec.cloud_kms.azure.access_token = envOnly(spec.cloud_kms.azure.access_token, 'signer cloud_kms.azure.access_token');
+  if (spec.cloud_kms?.gcp) spec.cloud_kms.gcp.access_token = envOnly(spec.cloud_kms.gcp.access_token, 'signer cloud_kms.gcp.access_token');
 }
 
 /**

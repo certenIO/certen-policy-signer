@@ -8,6 +8,8 @@
  * worth the trouble.
  *
  * pino and pino-pretty stay external: they resolve transports by path at runtime, which a bundle breaks.
+ * pkcs11js stays external: it is a native addon (build/Release/pkcs11.node), compiled explicitly in the
+ * image and copied beside the bundle — see docs/KEY-SOURCES.md.
  */
 import { existsSync } from 'node:fs';
 
@@ -53,7 +55,7 @@ await build({
   target: 'node20',
   format: 'cjs',
   outfile: OUTFILE,
-  external: ['pino', 'pino-pretty'],
+  external: ['pino', 'pino-pretty', 'pkcs11js'],
   banner: { js: '#!/usr/bin/env node' },
 });
 
