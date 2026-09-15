@@ -155,7 +155,9 @@ export function decodeCalldata(table: Map<string, AbiFunction>, callData: unknow
     } else {
       // bytes | string: head holds the offset of a length-prefixed, zero-padded tail.
       const offBig = BigInt('0x' + Buffer.from(w).toString('hex'));
-      if (offBig % 32n !== 0n || offBig + 32n > BigInt(body.length)) return undefined;
+      // A tail offset must point past the head (canonical encoding); pointing into the head lets two different
+      // byte strings decode as the same call.
+      if (offBig % 32n !== 0n || offBig < BigInt(fn.inputs.length * 32) || offBig + 32n > BigInt(body.length)) return undefined;
       const off = Number(offBig);
       const lenBig = BigInt('0x' + Buffer.from(word(off)).toString('hex'));
       const padded = Number(((lenBig + 31n) / 32n) * 32n);

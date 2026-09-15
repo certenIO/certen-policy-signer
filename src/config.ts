@@ -576,6 +576,12 @@ export function loadAbis(cfg: Pick<Config, 'decoders'>, baseDir: string): void {
  * be unique, and differ from the admin, governance and hub relay credentials. Exported for tests.
  */
 export function validateRelayClients(cfg: Pick<Config, 'relay' | 'admin'>): void {
+  // The relay-client routes use relay.gateway even when the hub relay (relay.enabled) is off, so its key must be
+  // resolved here too — otherwise the literal `env:NAME` would be sent upstream as the gateway key.
+  if ((cfg.admin.relay_clients ?? []).length && cfg.relay.gateway) {
+    cfg.relay.gateway.api_key = resolveSecret(cfg.relay.gateway.api_key) ?? '';
+    if (!cfg.relay.gateway.api_key) throw new Error('config: relay.gateway.api_key resolved to nothing — check the env: ref, or remove relay.gateway');
+  }
   const names = new Set<string>();
   const keys = new Set<string>();
   const others = [cfg.admin.api_key, cfg.admin.governance_admin_key, cfg.relay.token].filter(Boolean);

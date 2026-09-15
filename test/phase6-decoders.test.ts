@@ -96,6 +96,12 @@ describe('ABI decoding', () => {
     expect(decodeCalldata(buildSelectorTable(DEPLOYER_ABI), cd)!.args).toEqual({ value: '0', salt: '0x' + REF, code: '0x' + code });
   });
 
+  it('refuses a dynamic offset that points back into the head', () => {
+    // offset 32 points at the salt word, so the "bytes" would alias head data
+    const cd = '0x' + sel('deploy(uint256,bytes32,bytes)') + word(0) + word(0) + word(32) + word(6) + 'deadbeefcafe'.padEnd(64, '0');
+    expect(decodeCalldata(buildSelectorTable(DEPLOYER_ABI), cd)).toBeUndefined();
+  });
+
   it('refuses non-canonical encodings rather than guessing', () => {
     const t = buildSelectorTable(FDBUSD_ABI);
     const good = twr(DELTA, 1n);
