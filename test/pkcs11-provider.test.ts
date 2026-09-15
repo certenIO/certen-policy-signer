@@ -291,6 +291,38 @@ describe('pkcs11 and cloud-kms configuration', () => {
     expect(() => loadConfig(write(`{ provider: "pkcs11", pkcs11: { ${base}, pin: "env:K3_TEST_PIN", pinsource: {} } }`))).toThrow();
   });
 
+  it('resolves and validates named keys (scopes[].keys) exactly like the scope key', () => {
+    process.env.K3_TEST_PIN = 'fictional-pin-value';
+    process.env.K3_TEST_VAULT_TOKEN = 'fictional-vault-token';
+    const scoped = (named: string) => {
+      const dir = mkdtempSync(join(tmpdir(), 'signer-k3-keys-'));
+      const p = join(dir, 'c.yaml');
+      writeFileSync(p, [
+        'wallet:',
+        '  org_id: "orchid-fictional"',
+        '  accumulate_endpoints: ["http://127.0.0.1:9/v3"]',
+        '  scopes:',
+        '    - page: "acc://orchid-logistics-fictional.acme/book/2"',
+        '      key: { provider: "local", local: { allow_ephemeral: true } }',
+        '      keys:',
+        `        "machine-fictional": ${named}`,
+        'policy: { url: "http://127.0.0.1:9/decide", auth: "none" }',
+      ].join('\n'));
+      return p;
+    };
+    const ok = loadConfig(scoped(`{ provider: "pkcs11", pkcs11: { ${base}, pin: "env:K3_TEST_PIN" } }`));
+    const spec = ok.wallet.scopes![0]!.keys!['machine-fictional']!;
+    expect(spec.pkcs11!.pin).toBe('fictional-pin-value');
+    expect(buildSignerFromSpec(spec, silent, 't')).toBeInstanceOf(Pkcs11Signer);
+
+    const vault = loadConfig(scoped('{ provider: "vault-transit", vault: { addr: "http://127.0.0.1:8200", key_name: "k", token: "env:K3_TEST_VAULT_TOKEN" } }'));
+    expect(vault.wallet.scopes![0]!.keys!['machine-fictional']!.vault!.token).toBe('fictional-vault-token');
+
+    expect(() => loadConfig(scoped(`{ provider: "pkcs11", pkcs11: { ${base}, pin: "123456" } }`))).toThrow(/env: reference.*keys\["machine-fictional"\]/);
+    expect(() => loadConfig(scoped(`{ provider: "pkcs11", pkcs11: { ${base}, pin: "env:K3_UNSET_VAR" } }`))).toThrow(/resolved to nothing/);
+    expect(() => loadConfig(scoped('{ provider: "cloud-kms", cloud_kms: { vendor: "gcp", gcp: { key_version_name: "projects/orchid-fictional/locations/x/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1", access_token: "literal" } } }'))).toThrow(/env: reference/);
+  });
+
   it('cloud-kms: the vendor must have its block and only its block', () => {
     process.env.K3_TEST_TOKEN = 'fictional-token';
     const aws = loadConfig(write('{ provider: "cloud-kms", cloud_kms: { vendor: "aws", aws: { region: "us-east-1", key_id: "alias/orchid-fictional", endpoint: "http://kms-orchid:4566" } } }'));

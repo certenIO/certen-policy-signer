@@ -245,6 +245,18 @@ async function main() {
   // An unreachable page (or one whose key hashes we cannot read) stops boot; that is exactly the case
   // where you most want it to stop.
   for (const scope of scopes) {
+    // The page's named keys too: reading a public key never signs, and it is where a key source checks its
+    // key (Vault's key type, a PKCS#11 token's extractable/sensitive flags, a KMS key spec). A named key
+    // that cannot be read stops the boot here rather than at the first vote cast in that approver's name.
+    for (const [ref, named] of Object.entries(scope.keys ?? {})) {
+      let namedPub: Uint8Array;
+      try {
+        namedPub = await named.publicKey();
+      } catch (e) {
+        throw new Error(`startup self-check: key "${ref}" on ${scope.page} could not be read: ${(e as Error).message}`);
+      }
+      logger.info({ page: scope.page, keyRef: ref, keyHash: createHash('sha256').update(namedPub).digest('hex') }, 'named signer key readable');
+    }
     const pub = await scope.signer.publicKey();
     const keyHash = createHash('sha256').update(pub).digest('hex');
     logger.info({ page: scope.page, pubkey: bytesToHex(pub), keyHash }, 'signer public key');

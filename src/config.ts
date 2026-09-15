@@ -563,6 +563,15 @@ export function loadConfig(path: string): Config {
     const seen = new Set<string>();
     for (const s of cfg.wallet.scopes!) {
       resolveKeySecrets(s.key);
+      // Every named key on the page gets exactly the same treatment as the scope key: its env: refs resolved
+      // and its literal-secret refusal applied. Skipping them used the string "env:NAME" as the credential.
+      for (const [ref, spec] of Object.entries(s.keys ?? {})) {
+        try {
+          resolveKeySecrets(spec);
+        } catch (e) {
+          throw new Error(`${(e as Error).message} (scope ${s.page}, keys["${ref}"])`);
+        }
+      }
       // Two scopes on one page means two pollers racing on the same work and two entries competing in the
       // keyring. Duplicates are always a mistake — usually a copy-paste while adding an agent.
       const key = s.page.toLowerCase();
