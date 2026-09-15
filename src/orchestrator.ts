@@ -9,7 +9,7 @@ import { Resolver } from './resolver.js';
 import { Logger } from './logger.js';
 import { VoteBackend, VoteResult, DirectVoteBackend } from './vote/backend.js';
 import { Notifier, NotifyEvent, NULL_NOTIFIER } from './notify.js';
-import { PendingRef, PolicyRequest, ResolvedTx, SigningRequest } from './types.js';
+import { PendingRef, PolicyRequest, Receipt, ResolvedTx, SigningRequest } from './types.js';
 import { headerDeadlinePassed } from './accumulate/header.js';
 
 export interface OrchestratorOptions {
@@ -55,6 +55,11 @@ export interface OrchestratorDeps {
   orgId?: string;
   /** Per-page rule overrides, keyed by the page URL LOWERCASED. Absent pages use the defaults. */
   scopeRules?: Map<string, ScopeRules>;
+  /**
+   * `sha256:` + hex of this signer's effective config (secrets removed), computed at startup. Stamped on
+   * every PolicyRequest and Receipt so a decision names the signer configuration it was taken under (A6).
+   */
+  configVersion?: string;
   options?: OrchestratorOptions;
   now?: () => number; // injectable clock (ms) for tests
 }
@@ -99,6 +104,11 @@ export class Orchestrator {
       guard: o?.guard !== undefined ? o.guard : this.opt.guard,
       submitRejectVote: o?.submitRejectVote ?? this.opt.submitRejectVote,
     };
+  }
+
+  /** Every receipt carries the signer-config version (A6). */
+  private saveReceipt(r: Receipt): Promise<void> {
+    return this.d.store.saveReceipt({ ...r, ...(this.d.configVersion ? { configVersion: this.d.configVersion } : {}) });
   }
 
   /**
@@ -234,10 +244,20 @@ export class Orchestrator {
       // principal, the additional authorities Accumulate will enforce (the submitter chose them — a
       // required-party rule must check this list, A2), the ON-CHAIN deadline and the memo.
       header: tx.header,
+      // Phase 6 seat contract §1. Spread so an absent fact is an absent key, never `undefined`.
+      bodyType: tx.bodyType,
+      ...(this.d.configVersion ? { configVersion: this.d.configVersion } : {}),
+      ...(tx.summary.assets ? { assets: tx.summary.assets } : {}),
+      ...(tx.summary.selfCall !== undefined ? { selfCall: tx.summary.selfCall } : {}),
+      ...(tx.summary.targetKnown !== undefined ? { targetKnown: tx.summary.targetKnown } : {}),
+      ...(tx.governance ? { governance: tx.governance } : {}),
+      ...(tx.acceptance ? { acceptance: tx.acceptance } : {}),
       // Policy TTL for THIS request. Not the on-chain deadline, which is `header.expiresAt`.
       expiresAt: new Date(this.now() + this.opt.policyTtlSeconds * 1000).toISOString(),
     };
     await store.update(ref.txHash, { policyRequestId: policyReq.requestId });
+    // Kept so a decision service can read back exactly what it was asked (`/relay/pending/:hash`, 6.4).
+    await store.savePolicyRequest(policyReq);
 
     // The decision request, carried off chain to the operator's own policy engine. It holds the decoded
     // action plus every gate-relevant amount; the reply drives accept / reject / withhold.
@@ -296,7 +316,7 @@ export class Orchestrator {
         rejectVote = res;
       }
       const final = await store.update(ref.txHash, { status: 'rejected' });
-      await store.saveReceipt({
+      await this.saveReceipt({
         txHash: tx.txHash, operationId: tx.operationId, decision: 'deny',
         vote: rules.submitRejectVote ? 'reject' : undefined,
         reason: decision.reason,
@@ -320,7 +340,7 @@ export class Orchestrator {
       logger.warn({ tx: ref.txHash, values: tx.summary.values, unpricedLegs: tx.summary.unpricedLegs }, 'local guard blocked an approved tx');
       // Keep the engine's reason and evidence on the record: the receipt must show that the engine
       // approved and WE refused, not merely that something was blocked.
-      await store.saveReceipt({
+      await this.saveReceipt({
         txHash: tx.txHash, operationId: tx.operationId, decision: 'approve',
         reason: decision.reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
@@ -340,7 +360,7 @@ export class Orchestrator {
     // the organisation signs as itself, exactly as before.
     const res = await this.castForApprovers(tx, 'approve', approverKeyRefs(decision.evidence));
     if (res.ok) {
-      await store.saveReceipt({
+      await this.saveReceipt({
         txHash: tx.txHash, operationId: tx.operationId, decision: 'approve', vote: 'approve',
         signatureHash: res.signatureHash, submittedAt: this.now(), accumulateResult: 'ok',
         reason: decision.reason,
@@ -393,7 +413,7 @@ export class Orchestrator {
       { tx: tx.txHash, headerExpiresAt: tx.header.expiresAt, decision: decision?.decision, err: refusal.lastError },
       refusal.reason,
     );
-    await this.d.store.saveReceipt({
+    await this.saveReceipt({
       txHash: tx.txHash, operationId: tx.operationId,
       ...(decision && (decision.decision === 'approve' || decision.decision === 'deny') ? { decision: decision.decision } : {}),
       reason: refusal.reason,

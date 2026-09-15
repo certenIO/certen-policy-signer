@@ -9,6 +9,7 @@ import { ActionSummary, PendingRef, ResolvedTx } from './types.js';
 import { DecoderRegistry, buildRegistry } from './decode/registry.js';
 import { TxBody } from './decode/types.js';
 import { extractTxHeader } from './accumulate/header.js';
+import { extractAcceptance, extractGovernance } from './decode/facts.js';
 
 export type ResolveResult =
   | { kind: 'resolved'; tx: ResolvedTx }
@@ -37,6 +38,9 @@ export class Resolver {
     // The header is read for EVERY transaction, independent of which decoder claimed the body: an
     // acceptance WriteData (decision 0028) needs `authorities` exactly as much as an intent does.
     const { header, expiryUnreadable } = pend.header ?? extractTxHeader(pend.rawTransaction, pend.principal ?? '');
+    // Body facts (Phase 6.1/6.2), read for every body whatever decoder claimed it — like the header.
+    const governance = extractGovernance(body, pend.principal ?? '');
+    const acceptance = extractAcceptance(body, pend.principal ?? '');
 
     return {
       kind: 'resolved',
@@ -48,6 +52,8 @@ export class Resolver {
         bodyType: body.type,
         operationId,
         summary,
+        ...(governance ? { governance } : {}),
+        ...(acceptance ? { acceptance } : {}),
         header,
         ...(expiryUnreadable ? { headerExpiryUnreadable: expiryUnreadable } : {}),
         rawTransaction: pend.rawTransaction,

@@ -13,6 +13,16 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Added
 
+- **Phase 6 seat contract (FICTIONAL Business Transaction Controls lab).** ABI pins (`decoders.evm_abi[]`,
+  `decoders.labels`) with a strict built-in ABI decoder; new PolicyRequest fields `bodyType`,
+  `configVersion`, `assets`, `selfCall`, `targetKnown`, `governance`, `acceptance`; `configVersion` on
+  every Receipt and at `GET /v1/config/version`; per-decision-service relay `/relay/*`
+  (`admin.relay_clients[]`); built-in `governance` decoder.
+  **Breaking (decision contract):** for a CERTEN intent `calldataDecoded` is now an array with one entry
+  per contract-call leg (`{ legIndex, chainId, target, abi, function, signature, args }`) instead of a
+  string, and is present for undecodable calls too (with `function: ""`). Migration: read
+  `calldataDecoded[i].function` / `.args` instead of parsing the string.
+
 - **`subject` on the policy decision request — WHO the transaction is about.** An optional object,
   `{ adi, keyBook?, id?, assertedBy? }`, carried whenever the payload named someone; the reference
   decoder reads it from blob 0 of a Certen intent, and the subject's ADI is written onto the receipt.

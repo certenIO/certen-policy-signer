@@ -14,6 +14,7 @@ import { DEFAULT_SIGNATURE_HEADER, LEGACY_SIGNATURE_HEADER } from './policy/poli
 import { REQUEST_STATUSES, RequestStatus } from './types.js';
 import { NotifyEvent } from './notify.js';
 import { RelayHandler, RELAY_PREFIX } from './relay.js';
+import { RelayClientsHandler, RELAY_CLIENT_PREFIX } from './relay-clients.js';
 
 export interface PauseController { paused: boolean; }
 
@@ -64,6 +65,10 @@ export interface ServerDeps {
   notify?: (event: NotifyEvent) => void;
   /** Read-only relay (src/relay.ts), when `relay.enabled` and no separate `relay.bind`. Absent => /v1/relay/* is 404. */
   relay?: RelayHandler;
+  /** Decision-service relay (src/relay-clients.ts, Phase 6.4), when `admin.relay_clients` is set. Absent => /relay/* is 404. */
+  relayClients?: RelayClientsHandler;
+  /** Shown on /v1/config/version for the admin views (Phase 6.3). */
+  configVersion?: string;
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -104,6 +109,11 @@ export function createServer(d: ServerDeps): http.Server {
       if (path === RELAY_PREFIX || path.startsWith(`${RELAY_PREFIX}/`)) {
         if (!d.relay) return json(res, 404, { error: 'not found' });
         return await d.relay(req, res, url);
+      }
+      // --- decision-service relay (6.4) --- per-client key + scopes; never falls through to the admin routes.
+      if (path === RELAY_CLIENT_PREFIX || path.startsWith(`${RELAY_CLIENT_PREFIX}/`)) {
+        if (!d.relayClients) return json(res, 404, { error: 'not found' });
+        return await d.relayClients(req, res, url);
       }
       // --- health ---
       // A wallet is only healthy if it can still SIGN (key provider reachable) and still SEE work
@@ -214,6 +224,10 @@ export function createServer(d: ServerDeps): http.Server {
         if (!reqRow) return json(res, 404, { error: 'not found' });
         d.orchestrator.handle({ txHash: m[1], signerUrl: reqRow.signerUrl }).catch(() => {});
         return json(res, 202, { retrying: m[1] });
+      }
+      // GET /v1/config/version — the signer-config version stamped on every PolicyRequest and Receipt (6.3).
+      if (method === 'GET' && path === '/v1/config/version') {
+        return json(res, 200, { configVersion: d.configVersion ?? null });
       }
       // POST /v1/admin/pause | resume
       if (method === 'POST' && path === '/v1/admin/pause') {

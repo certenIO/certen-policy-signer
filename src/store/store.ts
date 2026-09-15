@@ -1,7 +1,7 @@
 /** Persistence: SigningRequest + Receipt, keyed by txHash. Interface + in-memory and file-backed impls. */
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { Receipt, RequestStatus, SigningRequest } from '../types.js';
+import { PolicyRequest, Receipt, RequestStatus, SigningRequest } from '../types.js';
 
 export const TERMINAL: RequestStatus[] = ['signed', 'rejected', 'expired'];
 
@@ -11,6 +11,9 @@ export interface Store {
   update(txHash: string, patch: Partial<SigningRequest>): Promise<SigningRequest>;
   saveReceipt(r: Receipt): Promise<void>;
   getReceipt(txHash: string): Promise<Receipt | undefined>;
+  /** The latest PolicyRequest built for a transaction (Phase 6.4 `/relay/pending/:hash`). */
+  savePolicyRequest(r: PolicyRequest): Promise<void>;
+  getPolicyRequest(txHash: string): Promise<PolicyRequest | undefined>;
   listNonTerminal(): Promise<SigningRequest[]>;
   /**
    * Most-recently-updated requests, with their receipts — the operator's audit view.
@@ -33,6 +36,7 @@ export interface Store {
 export class MemoryStore implements Store {
   protected reqs = new Map<string, SigningRequest>();
   protected receipts = new Map<string, Receipt>();
+  protected policyRequests = new Map<string, PolicyRequest>();
   private locks = new Set<string>();
 
   async get(txHash: string) { return this.reqs.get(txHash); }
@@ -51,6 +55,8 @@ export class MemoryStore implements Store {
   }
   async saveReceipt(r: Receipt) { this.receipts.set(r.txHash, { ...r }); await this.persist(); }
   async getReceipt(txHash: string) { return this.receipts.get(txHash); }
+  async savePolicyRequest(r: PolicyRequest) { this.policyRequests.set(r.txHash, structuredClone(r)); await this.persist(); }
+  async getPolicyRequest(txHash: string) { return this.policyRequests.get(txHash); }
   async listNonTerminal() {
     return [...this.reqs.values()].filter((r) => !TERMINAL.includes(r.status));
   }
@@ -98,10 +104,11 @@ export class FileStore extends MemoryStore {
   private load() {
     try {
       const raw = JSON.parse(readFileSync(this.path, 'utf8')) as {
-        requests?: SigningRequest[]; receipts?: Receipt[];
+        requests?: SigningRequest[]; receipts?: Receipt[]; policyRequests?: PolicyRequest[];
       };
       for (const r of raw.requests ?? []) this.reqs.set(r.txHash, r);
       for (const r of raw.receipts ?? []) this.receipts.set(r.txHash, r);
+      for (const r of raw.policyRequests ?? []) this.policyRequests.set(r.txHash, r);
     } catch (e) {
       // A corrupt state file must not silently become an empty one: that would re-vote everything.
       throw new Error(`store: ${this.path} exists but is unreadable (${(e as Error).message}) — refusing to start with an empty history`);
@@ -112,6 +119,7 @@ export class FileStore extends MemoryStore {
     const snapshot = JSON.stringify({
       requests: [...this.reqs.values()],
       receipts: [...this.receipts.values()],
+      policyRequests: [...this.policyRequests.values()],
     });
     this.queue = this.queue.then(() => this.writeAtomic(snapshot)).catch(() => this.writeAtomic(snapshot));
     return this.queue;

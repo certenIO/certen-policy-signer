@@ -1,5 +1,7 @@
 /** Config load + validation. Every field is documented in config.example.yaml; secrets use `env:NAME` refs. */
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { dirname, resolve as resolvePath } from 'node:path';
 import yaml from 'js-yaml';
 import { z } from 'zod';
 import { NOTIFY_EVENTS } from './notify.js';
@@ -302,7 +304,30 @@ const Schema = z.object({
     }).strict()).default([]),
     timeout_ms: z.number().int().positive().default(15_000),
   }).strict().default({ enabled: false })),
-  admin: section(z.object({ api_key: z.string().optional(), governance_admin_key: z.string().optional() }).default({})),
+  // Phase 6.1 ABI pins: a contract-call leg whose (chain_id, address) is listed here is decoded with that ABI
+  // and counts as a KNOWN target; every other target is `targetKnown: false`. `.strict()`: a misspelled key
+  // must refuse the boot rather than silently unpin a contract.
+  decoders: section(z.object({
+    evm_abi: z.array(z.object({
+      chain_id: z.number().int().positive(),
+      address: z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'decoders.evm_abi[].address must be a 0x 20-byte address'),
+      name: z.string().min(1),
+      abi_file: z.string().optional(),   // JSON ABI (or an artifact with `abi`); relative to the config file
+      abi: z.array(z.record(z.unknown())).optional(),
+      asset: z.object({ symbol: z.string().min(1), decimals: z.number().int().min(0).max(36) }).strict().optional(),
+    }).strict()).default([]),
+    labels: z.record(z.string()).default({}),
+  }).strict().default({})),
+  admin: section(z.object({
+    api_key: z.string().optional(),
+    governance_admin_key: z.string().optional(),
+    // Phase 6.4: one credential per decision service for /relay/* (x-relay-client + x-api-key).
+    relay_clients: z.array(z.object({
+      name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, 'admin.relay_clients[].name must be 1-64 of [A-Za-z0-9._-]'),
+      key: z.string(),                   // `env:NAME`
+      scopes: z.array(z.enum(['proof', 'tx', 'pending', 'governance'])).min(1),
+    }).strict()).optional(),
+  }).default({})),
   health: section(z.object({ bind: z.string().default('0.0.0.0:8080') }).default({})),
   // Durable state: idempotency (never vote twice) + the receipt audit trail. Omit only for tests.
   store: section(z.object({ path: z.string().optional() }).default({})),
@@ -316,7 +341,48 @@ const Schema = z.object({
   }).default({})),
 });
 
-export type Config = z.infer<typeof Schema>;
+export type Config = z.infer<typeof Schema> & {
+  /** `sha256:` + hex of the canonical effective config, secrets removed (Phase 6.3). Set by loadConfig. */
+  configVersion?: string;
+};
+
+/** Keys whose values are credentials (or may embed one) and never enter the config version. */
+const SECRET_KEYS = new Set([
+  'token', 'api_key', 'hmac_secret', 'seed_hex', 'private_key_der_hex', 'auth_token', 'account_sid',
+  'webhook_url', 'governance_admin_key', 'rpc_url', 'key', 'password', 'secret',
+]);
+
+/** Canonical JSON: sorted object keys, no whitespace, `undefined` members dropped. */
+export function canonicalJson(v: unknown): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+  if (Array.isArray(v)) return `[${v.map((x) => (x === undefined ? 'null' : canonicalJson(x))).join(',')}]`;
+  const o = v as Record<string, unknown>;
+  return `{${Object.keys(o).sort().filter((k) => o[k] !== undefined).map((k) => `${JSON.stringify(k)}:${canonicalJson(o[k])}`).join(',')}}`;
+}
+
+/**
+ * Strip every secret value and every `env:` reference, recursively. A string-valued member under a secret
+ * key name is removed (an object under one, e.g. a scope's `key` spec, is kept and stripped inside).
+ */
+export function stripSecrets(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(stripSecrets).filter((x) => x !== undefined);
+  if (v && typeof v === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+      if (SECRET_KEYS.has(k) && (typeof x === 'string' || typeof x === 'number')) continue;
+      const s = stripSecrets(x);
+      if (s !== undefined) out[k] = s;
+    }
+    return out;
+  }
+  if (typeof v === 'string' && v.startsWith('env:')) return undefined;
+  return v;
+}
+
+/** The config version of a parsed (not yet secret-resolved) config. Phase 6.3. */
+export function computeConfigVersion(parsed: unknown): string {
+  return 'sha256:' + createHash('sha256').update(canonicalJson(stripSecrets(parsed))).digest('hex');
+}
 
 /** The policy and behavior a given scope actually runs under: its overrides merged over the defaults. */
 export interface EffectiveScopeRules {
@@ -384,7 +450,11 @@ function resolveKeySecrets(spec: SignerSpec | undefined): void {
 
 export function loadConfig(path: string): Config {
   const raw = yaml.load(readFileSync(path, 'utf8')) as Record<string, unknown>;
-  const cfg = Schema.parse(raw);
+  const cfg: Config = Schema.parse(raw);
+  loadAbis(cfg, dirname(resolvePath(path)));
+  // Computed over the parsed config BEFORE any `env:` ref is resolved (so no secret value can reach the
+  // hash), with ABI files inlined so a changed ABI is a changed version.
+  cfg.configVersion = computeConfigVersion(cfg);
 
   // Signing scope: exactly one of the two forms. Multi-scope (wallet.scopes) takes precedence.
   const multi = (cfg.wallet.scopes?.length ?? 0) > 0;
@@ -473,8 +543,51 @@ export function loadConfig(path: string): Config {
   if (cfg.trigger.webhook.hmac_secret) cfg.trigger.webhook.hmac_secret = resolveSecret(cfg.trigger.webhook.hmac_secret);
   if (cfg.admin.api_key) cfg.admin.api_key = resolveSecret(cfg.admin.api_key);
   if (cfg.admin.governance_admin_key) cfg.admin.governance_admin_key = resolveSecret(cfg.admin.governance_admin_key);
+  for (const c of cfg.admin.relay_clients ?? []) c.key = resolveSecret(c.key) ?? '';
   validateRelay(cfg);
+  validateRelayClients(cfg);
   return cfg;
+}
+
+/**
+ * Inline each `decoders.evm_abi[].abi_file` as `abi`, and refuse duplicate pins or an entry with neither or
+ * both sources. Exported for tests.
+ */
+export function loadAbis(cfg: Pick<Config, 'decoders'>, baseDir: string): void {
+  const seen = new Set<string>();
+  for (const e of cfg.decoders.evm_abi) {
+    const key = `${e.chain_id}:${e.address.toLowerCase()}`;
+    if (seen.has(key)) throw new Error(`config: decoders.evm_abi pins ${key} twice`);
+    seen.add(key);
+    if (!!e.abi_file === !!e.abi) throw new Error(`config: decoders.evm_abi ${e.name}: set exactly one of abi_file or abi`);
+    if (e.abi_file) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(readFileSync(resolvePath(baseDir, e.abi_file), 'utf8')); }
+      catch (err) { throw new Error(`config: decoders.evm_abi ${e.name}: cannot read abi_file ${e.abi_file} (${(err as Error).message})`); }
+      const list = Array.isArray(parsed) ? parsed : (parsed as { abi?: unknown })?.abi;
+      if (!Array.isArray(list)) throw new Error(`config: decoders.evm_abi ${e.name}: abi_file must hold a JSON ABI array or an artifact with \`abi\``);
+      e.abi = list as Array<Record<string, unknown>>;
+    }
+  }
+}
+
+/**
+ * Per-decision-service relay credentials (Phase 6.4). Each key must resolve, be at least 16 characters,
+ * be unique, and differ from the admin, governance and hub relay credentials. Exported for tests.
+ */
+export function validateRelayClients(cfg: Pick<Config, 'relay' | 'admin'>): void {
+  const names = new Set<string>();
+  const keys = new Set<string>();
+  const others = [cfg.admin.api_key, cfg.admin.governance_admin_key, cfg.relay.token].filter(Boolean);
+  for (const c of cfg.admin.relay_clients ?? []) {
+    if (names.has(c.name)) throw new Error(`config: admin.relay_clients lists ${c.name} twice`);
+    names.add(c.name);
+    if (!c.key) throw new Error(`config: admin.relay_clients ${c.name}: key resolved to nothing — check the env: ref`);
+    if (c.key.length < 16) throw new Error(`config: admin.relay_clients ${c.name}: key must be at least 16 characters`);
+    if (others.includes(c.key)) throw new Error(`config: admin.relay_clients ${c.name}: key must be its own secret, not an admin or relay credential`);
+    if (keys.has(c.key)) throw new Error(`config: admin.relay_clients ${c.name}: key is shared with another client`);
+    keys.add(c.key);
+  }
 }
 
 /**
@@ -482,7 +595,7 @@ export function loadConfig(path: string): Config {
  * by its OWN token (A6: each seat its own secret) — never missing, never empty, never shared with an
  * admin credential, since the relay's caller is a different component than the operator.
  */
-export function validateRelay(cfg: Pick<Config, 'relay' | 'admin'>): void {
+export function validateRelay(cfg: { relay: Config['relay']; admin: { api_key?: string; governance_admin_key?: string } }): void {
   const r = cfg.relay;
   if (!r.enabled) return;
   r.token = resolveSecret(r.token) ?? '';

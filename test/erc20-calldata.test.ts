@@ -131,7 +131,9 @@ describe('what a call grants', () => {
       amountWei: '4000', executionPayload: { target: TOKEN, value: '4000', callData: '0xdeadbeef' + word(1n) },
     })]), CTX)!;
     expect(out.summary.grant).toBeUndefined();
-    expect(out.summary.calldataDecoded).toBeUndefined();
+    // Phase 6.1: the leg is still listed (so "calldata present" is visible), with no function read.
+    expect(out.summary.calldataDecoded).toEqual([{ legIndex: 0, chainId: 11155111, target: TOKEN.toLowerCase(), abi: '', function: '', signature: '0xdeadbeef', args: {} }]);
+    expect(out.summary.targetKnown).toBe(false);
   });
 });
 
@@ -142,7 +144,10 @@ describe('certen-intent decoder with ERC-20 calldata', () => {
     })]), CTX)!;
     expect(out.summary.values).toEqual(['1000000']);
     expect(out.summary.unpricedLegs).toBeUndefined();
-    expect(out.summary.calldataDecoded).toMatch(/^transfer\(to = 0x/);
+    expect(out.summary.calldataDecoded).toEqual([{
+      legIndex: 0, chainId: 11155111, target: TOKEN.toLowerCase(), abi: '', function: 'transfer', signature: 'transfer(address,uint256)',
+      args: { to: TO.toLowerCase(), amount: '1000000' },
+    }]);
     expect(out.summary.action).toContain('transfer 1000000 token units on ' + TOKEN);
   });
 
