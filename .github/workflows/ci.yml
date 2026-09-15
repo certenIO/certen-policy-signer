@@ -18,9 +18,10 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-      # `npm ci` runs the postinstall that patches accumulate.js's Time.encode — if that hook ever breaks,
-      # this step fails, which is the point (docs/DEPLOY.md explains why the patch exists).
-      - run: npm ci
+      # Installs never run package scripts (supply chain); the accumulate.js Time.encode patch the postinstall
+      # would apply is run explicitly, so if it ever breaks this step fails (docs/DEPLOY.md explains the patch).
+      - run: npm ci --ignore-scripts
+      - run: node scripts/fix-accumulate-encoding.mjs
       - run: npm run typecheck
       - run: npm test
 
@@ -42,7 +43,8 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      - run: node scripts/fix-accumulate-encoding.mjs
       - name: create the transit keys the suite signs with (ed25519 and ecdsa-p256)
         run: |
           curl -sf -H "X-Vault-Token: root" -X POST http://127.0.0.1:8200/v1/sys/mounts/transit -d '{"type":"transit"}'
