@@ -148,7 +148,8 @@ export async function signAndSubmit(d: RotateDeps, page: string, body: unknown, 
   const txHash = tx.hash();
 
   const pre = buildPreimage(txHash, params);   // recomputes the identical sigMdHash == initiator
-  const sig = buildSignatureObject(pre, await signer.sign(pre.dataForSignature), bytesToHex(txHash));
+  const txHashHex = bytesToHex(txHash);
+  const sig = buildSignatureObject(pre, await signer.sign(pre.dataForSignature, { txHash: txHashHex, principal: page, page }), txHashHex);
   const res = await accumulate.submit(buildSubmitEnvelope(tx.asObject(), sig));
   if (!res.ok) throw new Error(`${label} rejected by the network: ${res.error ?? res.code}`);
   logger.info({ tx: bytesToHex(txHash), op: label }, 'rotation transaction submitted');
