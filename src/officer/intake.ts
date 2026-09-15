@@ -76,7 +76,8 @@ export interface Proposal {
   summaryHash: string;
   createdAt: number;
   expiresAt: number;
-  status: 'proposed' | 'submitted' | 'landed';
+  /** `submitting`: one intake holds it between its checks and its submit; nothing else may prepare or submit it. */
+  status: 'proposed' | 'submitting' | 'submitted' | 'landed';
   txHash?: string;
 }
 
@@ -362,6 +363,27 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     const der = toCanonicalDer(sigBytes);
     if (!der) return reject('signature_encoding');
 
+    // A proposal is claimed SYNCHRONOUSLY, before the first await below, so two concurrent intakes for the same
+    // proposal cannot both pass the open check and each submit a different updateKeyPage transaction.
+    let proposal: Proposal | undefined;
+    if (rec.kind === 'proposal') {
+      proposal = rec.proposalId ? proposals.get(rec.proposalId) : undefined;
+      if (!proposal || proposal.status !== 'proposed') return reject('proposal_not_open');
+      proposal.status = 'submitting';
+    }
+    let submitted = false;
+    try {
+      return await intakeClaimed(res, rec, der, proposal, reject, () => { submitted = true; });
+    } finally {
+      // Any refusal or failed submit gives the proposal back.
+      if (proposal && !submitted && proposal.status === 'submitting') proposal.status = 'proposed';
+    }
+  }
+
+  async function intakeClaimed(
+    res: http.ServerResponse, rec: PrepareRecord, der: Uint8Array, proposal: Proposal | undefined,
+    reject: (reason: string) => void, markSubmitted: () => void,
+  ) {
     // 2–3. Live authority, fresh reads.
     const refusal = await checkAuthority(rec.keyHash, rec.page, rec.delegators);
     if (refusal) return reject(refusal);
@@ -372,11 +394,8 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     const params = sigParams(rec);
     const sigMd = buildSigMetaHash(params);
     if (bytesToHex(sigMd) !== rec.sigMdHash) return reject('sigmd_mismatch');
-    let proposal: Proposal | undefined;
     let proposalTransaction: any;
-    if (rec.kind === 'proposal') {
-      proposal = rec.proposalId ? proposals.get(rec.proposalId) : undefined;
-      if (!proposal || proposal.status !== 'proposed') return reject('proposal_not_open');
+    if (proposal) {
       if (tclSummaryV1(proposal.display) !== rec.summaryHash) return reject('summary_mismatch');
       proposalTransaction = proposalTx(proposal, sigMd);
       if (bytesToHex(proposalTransaction.hash()) !== rec.txHash) return reject('tx_hash_mismatch');
@@ -406,9 +425,10 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
       d.logger.warn({ audit: 'officer_signature_submit_failed', ref: rec.ref, keyHash: rec.keyHash, code: sub.code, err: sub.error }, 'officer signature refused by the network');
       return send(res, 502, { error: 'submit_rejected', code: sub.code ?? 'error' });
     }
+    markSubmitted();
     if (proposal) {
       proposal.status = 'submitted'; proposal.txHash = rec.txHash;
-      await recordProposalAwaiting(proposal, rec.txHash);
+      await recordProposalAwaiting(proposal, rec);
     }
     d.logger.warn({ audit: 'officer_signature_submitted', ref: rec.ref, txHash: rec.txHash, keyHash: rec.keyHash, page: rec.page, delegators: rec.delegators, vote: rec.vote }, 'OFFICER SIGNATURE SUBMITTED');
 
@@ -423,10 +443,13 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
    * it by tx hash with the proposal's own display and summaryHash (so a link carrying that hash stays valid),
    * so the next officer signs it as a transaction ref.
    */
-  async function recordProposalAwaiting(p: Proposal, txHash: string): Promise<void> {
+  async function recordProposalAwaiting(p: Proposal, rec: PrepareRecord): Promise<void> {
+    const txHash = rec.txHash;
     if (!d.saveAwaiting) return;
     try {
-      const st = await d.readPage(p.page);
+      // The threshold that governs execution is the SIGNING authority's: the outermost delegator, else the page that signed.
+      const signingPage = rec.delegators.length ? rec.delegators[rec.delegators.length - 1] : rec.page;
+      const st = await d.readPage(signingPage);
       if (st.threshold <= 1) return;
       const operations = proposalOperations(p.operations).map((o) => ({
         type: String(o.type), ...((o.entry ?? {}) as Record<string, string>), ...(o.threshold !== undefined ? { threshold: o.threshold } : {}),
@@ -438,7 +461,7 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
         header: { principal: p.page }, display: p.display, summaryHash: p.summaryHash,
         expiresAt: new Date(p.expiresAt).toISOString(),
       });
-      d.logger.info({ proposalId: p.id, txHash, page: p.page, threshold: st.threshold }, 'proposal transaction awaits further signatures; recorded for officer intake');
+      d.logger.info({ proposalId: p.id, txHash, page: p.page, signingPage, threshold: st.threshold }, 'proposal transaction awaits further signatures; recorded for officer intake');
     } catch (e) {
       d.logger.error({ proposalId: p.id, txHash, err: (e as Error).message }, 'could not record proposal transaction awaiting signatures');
     }

@@ -581,3 +581,75 @@ describe('proposal on a threshold-2 page: further officers sign by tx ref', () =
     expect(await store.getPolicyRequest(prep.json.txHash)).toBeUndefined();
   });
 });
+
+describe('proposal intake: claim and signing-page threshold', () => {
+  const propose = (page: string) => call(port, 'POST', '/relay/governance/proposal', { ...C, 'x-governance-key': GOV_KEY },
+    { page, operations: [{ type: 'add-key', keyHash: 'e1'.repeat(32) }], proposer: 'ada (FICTIONAL)' });
+
+  it('two concurrent intakes for one proposal produce exactly one submit; prepare is refused while it is submitting', async () => {
+    const created = await propose(HARBOR_P2);
+    const pa = await prepare(alice, { ref: created.json.proposalId, page: HARBOR_P1, vote: 'approve' });
+    const pb = await prepare(bob, { ref: created.json.proposalId, page: HARBOR_P1, vote: 'approve' });
+    expect([pa.status, pb.status]).toEqual([200, 200]);
+    const sa = await signPrepared(alice, pa.json);
+    const sb = await signPrepared(bob, pb.json);
+    // Hold the first submit open so the second intake runs its checks meanwhile.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const realSubmit = chain.submit.bind(chain);
+    chain.submit = async (env: any) => { await gate; return realSubmit(env); };
+    const first = call(port, 'POST', '/relay/officer-signature', {}, { prepareId: pa.json.prepareId, signature: sa });
+    const second = call(port, 'POST', '/relay/officer-signature', {}, { prepareId: pb.json.prepareId, signature: sb });
+    for (let i = 0; i < 100 && intake.proposals()[0]?.status !== 'submitting'; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(intake.proposals()[0].status).toBe('submitting');
+    const during = await prepare(alice, { ref: created.json.proposalId, page: HARBOR_P1, vote: 'approve' });
+    expect(during.status).toBe(409);
+    const r2 = await second;
+    release();
+    const r1 = await first;
+    expect([r1.status, r2.status].sort()).toEqual([200, 400]);
+    expect(chain.submitted).toHaveLength(1);
+    expect(intake.proposals()[0].status).toBe('landed');
+  });
+
+  it('a refused intake gives the proposal back', async () => {
+    const created = await propose(HARBOR_P2);
+    const pa = await prepare(alice, { ref: created.json.proposalId, page: HARBOR_P1, vote: 'approve' });
+    const bad = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: pa.json.prepareId, signature: await signPrepared(bob, pa.json) });
+    expect(bad.status).toBe(400);
+    expect(intake.proposals()[0].status).toBe('proposed');
+    expect(chain.submitted).toHaveLength(0);
+    expect((await prepare(alice, { ref: created.json.proposalId, page: HARBOR_P1, vote: 'approve' })).status).toBe(200);
+  });
+
+  it('records by the SIGNING page threshold: signing page 2, proposal page 1 → recorded; the reverse → not', async () => {
+    chain.pages.get(HARBOR_P1.toLowerCase())!.threshold = 2;   // signing page
+    chain.pages.get(HARBOR_P2.toLowerCase())!.threshold = 1;   // proposal page
+    const c1 = await propose(HARBOR_P2);
+    const p1 = await prepare(alice, { ref: c1.json.proposalId, page: HARBOR_P1, vote: 'approve' });
+    await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: p1.json.prepareId, signature: await signPrepared(alice, p1.json) });
+    expect(await store.getPolicyRequest(p1.json.txHash)).toMatchObject({ account: HARBOR_P2, summaryHash: c1.json.summaryHash });
+
+    chain.pages.get(HARBOR_P1.toLowerCase())!.threshold = 1;
+    chain.pages.get(HARBOR_P2.toLowerCase())!.keys.push({ publicKeyHash: 'e2'.repeat(32) });
+    chain.pages.get(HARBOR_P2.toLowerCase())!.threshold = 2;
+    const c2 = await call(port, 'POST', '/relay/governance/proposal', { ...C, 'x-governance-key': GOV_KEY },
+      { page: HARBOR_P2, operations: [{ type: 'add-key', keyHash: 'e3'.repeat(32) }], proposer: 'ada (FICTIONAL)' });
+    const p2 = await prepare(bob, { ref: c2.json.proposalId, page: HARBOR_P1, vote: 'approve' });
+    await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: p2.json.prepareId, signature: await signPrepared(bob, p2.json) });
+    expect(await store.getPolicyRequest(p2.json.txHash)).toBeUndefined();
+  });
+
+  it('delegated: reads the outermost delegator threshold', async () => {
+    const ISSUANCE_P2 = 'acc://fdb-issuance-tcl1.acme/book/2';
+    chain.pages.set(ISSUANCE_P2.toLowerCase(), { version: 1, threshold: 1, keys: [{ publicKeyHash: 'f1'.repeat(32) }] });
+    chain.pages.get(ISSUANCE_P1.toLowerCase())!.threshold = 2;
+    const c = await propose(ISSUANCE_P2);
+    expect(c.status).toBe(200);
+    const p = await prepare(tess, { ref: c.json.proposalId, page: TREASURY_P1, delegators: [ISSUANCE_P1], vote: 'approve' });
+    expect(p.status).toBe(200);
+    const r = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: p.json.prepareId, signature: await signPrepared(tess, p.json) });
+    expect(r.status).toBe(200);
+    expect(await store.getPolicyRequest(p.json.txHash)).toMatchObject({ account: ISSUANCE_P2, summaryHash: c.json.summaryHash });
+  });
+});
