@@ -36,6 +36,10 @@ export interface RelayClientsDeps {
   /** Pages this signer holds a key for (the keyring). Governance is refused for any other page. */
   pages: () => string[];
   applyKeyPageOp?: (op: KeyPageOp, page: string) => Promise<KeyPageResult>;
+  /** Phase 7: record a governance tx this signer submitted that still awaits another signature (officer intake). */
+  recordAwaiting?: (r: { txHash: string; page: string; op: KeyPageOp }) => Promise<void>;
+  /** Phase 7: `POST /relay/governance/proposal` (officer intake). Absent => 404. */
+  propose?: (page: string, operations: KeyPageOp[], proposer: string) => Promise<{ status: number; body: unknown }>;
   timeoutMs?: number;
   logger: Logger;
   fetchImpl?: typeof fetch;
@@ -56,7 +60,7 @@ const sameUrl = (a: string, b: string) => a.toLowerCase().replace(/\/+$/, '') ==
 const accUrlOk = (u: unknown): u is string => typeof u === 'string' && ACC_URL.test(u) && !DOT_SEGMENT.test(u.slice(6));
 
 /** Validate one governance operation into a typed KeyPageOp, or return the reason it is refused. */
-function toKeyPageOp(o: unknown): KeyPageOp | string {
+export function toKeyPageOp(o: unknown): KeyPageOp | string {
   if (!o || typeof o !== 'object' || Array.isArray(o)) return 'operation must be an object';
   const r = o as Record<string, unknown>;
   const type = r.type;
@@ -189,6 +193,31 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
       if (typeof rpc?.result !== 'string') return send(res, 502, { error: 'eth_call returned no result' });
       return send(res, 200, { result: rpc.result });
     }
+    // POST /relay/governance/proposal  { page, operations: [...], proposer } — Phase 7; nothing is signed or submitted.
+    if (path === '/relay/governance/proposal') {
+      if (!need('governance')) return send(res, 403, { error: 'forbidden: scope governance required' });
+      if (method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+      if (!d.governanceKey || !d.propose) return send(res, 403, { error: 'proposals disabled (needs admin.governance_admin_key and officer_intake)' });
+      if (!keyMatches(req.headers['x-governance-key'], d.governanceKey)) return send(res, 401, { error: 'unauthorized' });
+      const raw = await readCapped(req, 64 * 1024);
+      if (raw === null) return send(res, 413, { error: 'body too large' });
+      let b: { page?: unknown; operations?: unknown; proposer?: unknown };
+      try { b = JSON.parse(raw); } catch { return send(res, 400, { error: 'body must be JSON' }); }
+      if (!accUrlOk(b?.page)) return send(res, 400, { error: 'page must be an acc:// key page URL' });
+      if (typeof b.proposer !== 'string' || !/^[^\u0000-\u001f\u007f]{1,128}$/.test(b.proposer)) return send(res, 400, { error: 'proposer must be 1..128 printable characters' });
+      if (!Array.isArray(b.operations) || b.operations.length === 0 || b.operations.length > MAX_GOV_OPS) {
+        return send(res, 400, { error: `operations must be an array of 1..${MAX_GOV_OPS}` });
+      }
+      const ops: KeyPageOp[] = [];
+      for (const o of b.operations) {
+        const v = toKeyPageOp(o);
+        if (typeof v === 'string') return send(res, 400, { error: v });
+        ops.push(v);
+      }
+      d.logger.warn({ audit: 'relay_governance_proposal', client: client.name, page: b.page, ops, proposer: b.proposer }, 'GOVERNANCE PROPOSAL REQUESTED (relay client)');
+      const out = await d.propose((b.page as string).replace(/\/+$/, ''), ops, b.proposer);
+      return send(res, out.status, out.body);
+    }
     // POST /relay/governance  { page, operations: [...] }
     if (path === '/relay/governance') {
       if (!need('governance')) return send(res, 403, { error: 'forbidden: scope governance required' });
@@ -218,6 +247,14 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
       for (const op of ops) {
         const r = await d.applyKeyPageOp(op, page);
         txids.push(...r.submitted);
+        // Phase 7: a submitted transaction still waiting for another signature (a delegate's consent, a
+        // threshold above one) is recorded so a human on that page can sign it through officer intake.
+        if (r.submitted.length && (r.awaitingConsent || !r.ok) && d.recordAwaiting) {
+          for (const t of r.submitted) {
+            const hash = /([0-9a-fA-F]{64})/.exec(t)?.[1]?.toLowerCase();
+            if (hash) await d.recordAwaiting({ txHash: hash, page, op }).catch((e) => d.logger.error({ err: (e as Error).message, tx: hash }, 'could not record awaiting governance transaction'));
+          }
+        }
         if (!r.ok) {
           d.logger.warn({ audit: 'relay_governance_result', client: client.name, page, ok: false }, 'GOVERNANCE OPERATION FAILED');
           return send(res, 400, { txid: txids[txids.length - 1] ?? null, status: 'failed', error: r.error ?? 'governance operation failed', txids });

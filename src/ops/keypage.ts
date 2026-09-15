@@ -51,7 +51,9 @@ export interface KeyPageResult {
   /**
    * Submitted, and the network is holding it until somebody else signs.
    *
-   * Only `add-delegate` produces this, and it is the normal outcome rather than a degraded one:
+   * `add-delegate` produces this, and so does any operation on a page whose threshold is above one (the
+   * page holds the transaction until further signatures arrive, e.g. an officer's via officer intake).
+   * For `add-delegate` it is the normal outcome rather than a degraded one:
    * `update_key_page.go` `TransactionIsReady` requires that all new delegates sign the transaction
    * that adds them, so the seat does not exist until the employee's own key has agreed to hold it.
    * That is invariant F-5, enforced by the protocol.
@@ -99,6 +101,21 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
     return v;
   };
 
+  // Hashes the network ACCEPTED, kept even when confirmation later fails: a submitted transaction that is
+  // still pending (awaiting another signature) must not vanish from the result.
+  const submitted: string[] = [];
+  const submit = async (body: unknown, label: string) => {
+    const tx = await signAndSubmit({ accumulate, signer, logger }, page, body, label);
+    submitted.push(tx);
+    return tx;
+  };
+  // A page needing more than one signature holds our transaction until somebody else signs (Phase 7: an
+  // officer, through officer intake). Waiting on the page would only time out, so say so instead.
+  const awaiting = (op: string, tx: string): KeyPageResult => {
+    logger.info({ page, op, tx, threshold: before.threshold }, 'governance transaction submitted; the page needs further signatures');
+    return { ok: true, op, submitted: [tx], before, after: before, awaitingConsent: true };
+  };
+
   try {
     switch (req.op) {
       case 'rotate-key': {
@@ -112,9 +129,10 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
       case 'add-key': {
         const kh = hash(req.keyHash, 'keyHash');
         if (before.keyHashes.includes(kh)) throw new Error(`key ${kh} is already on ${page}`);
-        const tx = await signAndSubmit({ accumulate, signer, logger }, page, {
+        const tx = await submit({
           type: 'updateKeyPage', operation: [{ type: 'add', entry: { keyHash: hexToBytes(kh) } }],
         }, 'updateKeyPage/add');
+        if (before.threshold > 1) return awaiting(req.op, tx);
         const after = await confirmPage(accumulate, page, { present: [kh], minVersion: before.version + 1 }, logger, timeoutMs);
         return { ok: true, op: req.op, submitted: [tx], before, after };
       }
@@ -124,9 +142,10 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
         if (!before.keyHashes.includes(kh)) throw new Error(`key ${kh} is not on ${page}`);
         // Refuse to strip the page of its last key: that would make the org permanently unable to sign.
         if (before.keyHashes.length <= 1) throw new Error('refusing to remove the only key on the page — the org would lose its authority irrecoverably');
-        const tx = await signAndSubmit({ accumulate, signer, logger }, page, {
+        const tx = await submit({
           type: 'updateKeyPage', operation: [{ type: 'remove', entry: { keyHash: hexToBytes(kh) } }],
         }, 'updateKeyPage/remove');
+        if (before.threshold > 1) return awaiting(req.op, tx);
         const after = await confirmPage(accumulate, page, { absent: [kh], minVersion: before.version + 1 }, logger, timeoutMs);
         return { ok: true, op: req.op, submitted: [tx], before, after };
       }
@@ -135,9 +154,10 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
         const t = Number(req.threshold);
         if (!Number.isInteger(t) || t < 1) throw new Error('threshold must be a positive integer');
         if (t > before.keyHashes.length) throw new Error(`threshold ${t} exceeds the ${before.keyHashes.length} key(s) on the page — it could never be met`);
-        const tx = await signAndSubmit({ accumulate, signer, logger }, page, {
+        const tx = await submit({
           type: 'updateKeyPage', operation: [{ type: 'setThreshold', threshold: t }],
         }, 'updateKeyPage/setThreshold');
+        if (before.threshold > 1) return awaiting(req.op, tx);
         const after = await confirmPage(accumulate, page, { minVersion: before.version + 1 }, logger, timeoutMs);
         return { ok: true, op: req.op, submitted: [tx], before, after };
       }
@@ -147,7 +167,7 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
         if (before.entries.some((e) => e.delegate && sameUrl(e.delegate, book))) {
           throw new Error(`${book} already holds a seat on ${page}`);
         }
-        const tx = await signAndSubmit({ accumulate, signer, logger }, page, {
+        const tx = await submit({
           type: 'updateKeyPage', operation: [{ type: 'add', entry: { delegate: book } }],
         }, 'updateKeyPage/add-delegate');
 
@@ -168,9 +188,10 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
         }
         // The same protection remove-key has: a page with no entries authorises nothing, forever.
         if (before.entries.length <= 1) throw new Error('refusing to remove the only entry on the page — the role would become permanently unexercisable');
-        const tx = await signAndSubmit({ accumulate, signer, logger }, page, {
+        const tx = await submit({
           type: 'updateKeyPage', operation: [{ type: 'remove', entry: { delegate: book } }],
         }, 'updateKeyPage/remove-delegate');
+        if (before.threshold > 1) return awaiting(req.op, tx);
         // Removal confirms, unlike the proposal: nobody else is being asked for anything, so the page
         // moves on the next block and a caller may rely on the result.
         const after = await confirmPage(accumulate, page, { delegatesAbsent: [book], minVersion: before.version + 1 }, logger, timeoutMs);
@@ -183,6 +204,6 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
   } catch (e) {
     const error = (e as Error).message;
     logger.error({ op: (req as { op?: string }).op, err: error, page }, 'governance operation FAILED');
-    return { ok: false, op: String((req as { op?: string }).op), submitted: [], before, after: await readPage(accumulate, page).catch(() => before), error };
+    return { ok: false, op: String((req as { op?: string }).op), submitted, before, after: await readPage(accumulate, page).catch(() => before), error };
   }
 }

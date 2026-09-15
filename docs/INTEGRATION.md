@@ -217,6 +217,8 @@ POST <policy.url>    content-type: application/json
     "expiresAt":   "2026-07-26T13:00:00Z",         // the ON-CHAIN deadline (header.expire.atTime); absent if none
     "memo":        "PO-1043"                       // submitter free text, display only; absent if none
   },
+  "display":       [["Principal", "acc://acme.acme/orders"], ["Body type", "writeData"], ["Payer", "acc://acme.acme"]],  // Phase 7: what a human is shown
+  "summaryHash":   "77533e7e…",       // tcl-summary/v1 of `display` (lowercase hex); tx hash and vote are NOT inside
   "expiresAt":     "2026-07-26T12:00:00Z"         // THIS REQUEST's validity (policy TTL) — not the on-chain deadline
 }
 ```
@@ -237,6 +239,20 @@ asset produces the business summary `Pay $42,500.00 FDBUSD to Delta Equipment �
 `acc://…/acceptances` account with exactly one data element that is byte-for-byte the canonical JSON
 `{"amount":N,"category":S,"firm":S,"instructionHash":64hex}`. `bodyType` and `configVersion` are on every
 request; `configVersion` is also on every receipt and at `GET /v1/config/version` (admin).
+
+### Display and summary hash (Phase 7)
+
+`display` is the ordered `[label, value]` list a human is shown before signing personally, built only from
+decoded facts: Principal and Body type always; for a payment Payer (the principal's identity), Payee, Amount
+(with the pinned asset symbol), Instruction hash, Chain and Target; for an acceptance Firm, Instruction hash,
+Amount and Category; for governance Page, Operation, Key hash or Delegate, and Threshold. A fact the decoders
+did not produce is an absent pair — the signer never shows an invoice reference, because it never learns one.
+`summaryHash = sha256("tcl-summary/v1
+" + for each pair: len(label) ":" label "=" len(value) ":" value "
+")`
+with UTF-8 byte lengths. A signing client (Approver Signing Agent, sign-link) recomputes it over the display it
+is shown and refuses when it differs from the hash in its link. See `src/display.ts` and
+`test/fixtures/phase7-summary-vectors.json`.
 
 ### The transaction header: who Accumulate will wait for, and until when
 

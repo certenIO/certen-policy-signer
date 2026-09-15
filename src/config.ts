@@ -193,6 +193,7 @@ const Schema = z.object({
     // as packages. Loaded decoders run ahead of the built-ins unless `decoders` states an explicit order.
     decoder_modules: z.array(z.string()).optional(),
   }).default({})),
+  // Required for every signing mode; absent only in intake-only mode (see isIntakeOnly), which asks no engine.
   policy: z.object({
     // Only sync mode is implemented: the wallet POSTs the decision request and waits. `async` (engine
     // calls back to /v1/decisions later) is NOT implemented — /v1/decisions only acknowledges. Accepting
@@ -213,7 +214,7 @@ const Schema = z.object({
     timestamp_header: z.string().default('x-signer-timestamp'),
     timeout_ms: z.number().default(10_000),
     async_ttl_seconds: z.number().default(900),
-  }),
+  }).optional(),
   // Optional: vote through the Certen api-gateway's external-signing seam instead of submitting to
   // Accumulate ourselves. The org's key still never leaves the wallet — the gateway hands us bytes to sign.
   // Discovery and intent-decoding stay OURS either way: the gateway's pending list carries no transaction
@@ -328,6 +329,14 @@ const Schema = z.object({
       scopes: z.array(z.enum(['proof', 'tx', 'pending', 'governance'])).min(1),
     }).strict()).optional(),
   }).default({})),
+  // Phase 7 officer intake (contract §3–4): personal signatures made on a person's own device, verified and
+  // submitted here. `human_pages` are the key pages whose humans may sign through this signer (including
+  // delegate-book pages this cell serves). No key of theirs is ever configured. `.strict()`: a typo refuses the boot.
+  officer_intake: section(z.object({
+    enabled: z.boolean().default(false),
+    human_pages: z.array(z.string()).default([]),
+    landed_timeout_ms: z.number().int().positive().max(600_000).default(90_000),
+  }).strict().default({ enabled: false })),
   health: section(z.object({ bind: z.string().default('0.0.0.0:8080') }).default({})),
   // Durable state: idempotency (never vote twice) + the receipt audit trail. Omit only for tests.
   store: section(z.object({ path: z.string().optional() }).default({})),
@@ -341,7 +350,12 @@ const Schema = z.object({
   }).default({})),
 });
 
-export type Config = z.infer<typeof Schema> & {
+type ParsedConfig = z.infer<typeof Schema>;
+/**
+ * `policy` is typed as present because loadConfig refuses every mode that signs without one. The single
+ * exception is intake-only (`isIntakeOnly`), which never builds a policy client or an orchestrator.
+ */
+export type Config = Omit<ParsedConfig, 'policy'> & { policy: NonNullable<ParsedConfig['policy']> } & {
   /** `sha256:` + hex of the canonical effective config, secrets removed (Phase 6.3). Set by loadConfig. */
   configVersion?: string;
 };
@@ -448,9 +462,41 @@ function resolveKeySecrets(spec: SignerSpec | undefined): void {
   if (spec.local?.private_key_der_hex) spec.local.private_key_der_hex = resolveSecret(spec.local.private_key_der_hex);
 }
 
+/**
+ * Intake-only: officer intake enabled and NO signing configuration at all — no scopes, no signer_url, no
+ * signer. The post-retirement shape for a party without a machine page (contract §4): no keys in process,
+ * no poller, no policy engine; only the relay and officer routes.
+ */
+export function isIntakeOnly(cfg: Pick<ParsedConfig, 'officer_intake' | 'wallet' | 'signer'>): boolean {
+  return cfg.officer_intake.enabled && !(cfg.wallet.scopes?.length) && !cfg.wallet.signer_url && !cfg.signer;
+}
+
+const PAGE_URL = /^acc:\/\/[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9._-]+)*\/\d+$/;
+
+/** Officer intake checks. Exported for tests. */
+export function validateOfficerIntake(cfg: Pick<ParsedConfig, 'officer_intake' | 'relay' | 'gateway' | 'wallet' | 'signer' | 'policy'>): void {
+  const o = cfg.officer_intake;
+  if (!o.enabled) return;
+  if (!o.human_pages.length) throw new Error('config: officer_intake.enabled requires a non-empty officer_intake.human_pages');
+  const seen = new Set<string>();
+  for (const p of o.human_pages) {
+    if (!PAGE_URL.test(p) || /(^|\/)\.{1,2}(\/|$)/.test(p.slice(6))) throw new Error(`config: officer_intake.human_pages entry ${JSON.stringify(p)} must be an acc:// key page URL (…/book/<n>)`);
+    if (seen.has(p.toLowerCase())) throw new Error(`config: officer_intake.human_pages lists ${p} twice`);
+    seen.add(p.toLowerCase());
+  }
+  if (isIntakeOnly(cfg)) {
+    if (cfg.relay.only) throw new Error('config: intake-only mode cannot also be relay.only');
+    if (cfg.gateway.enabled) throw new Error('config: intake-only mode holds no key and cannot vote through gateway.enabled');
+  }
+}
+
 export function loadConfig(path: string): Config {
   const raw = yaml.load(readFileSync(path, 'utf8')) as Record<string, unknown>;
-  const cfg: Config = Schema.parse(raw);
+  const parsed = Schema.parse(raw);
+  validateOfficerIntake(parsed);
+  const intakeOnly = isIntakeOnly(parsed);
+  if (!parsed.policy && !intakeOnly) throw new Error('config: policy is required (policy.url) — only an intake-only signer runs without a policy engine');
+  const cfg = parsed as Config;
   loadAbis(cfg, dirname(resolvePath(path)));
   // Computed over the parsed config BEFORE any `env:` ref is resolved (so no secret value can reach the
   // hash), with ABI files inlined so a changed ABI is a changed version.
@@ -472,6 +518,8 @@ export function loadConfig(path: string): Config {
       // `env:` treatment and the same refusal to run under a stated-but-absent authentication.
       if (s.policy?.hmac_secret) s.policy.hmac_secret = resolveSecret(s.policy.hmac_secret);
     }
+  } else if (intakeOnly) {
+    // Intake-only: nothing to resolve — there is no key, and isIntakeOnly already proved there is no signer block.
   } else if (cfg.relay.only) {
     // Relay-only: holding a key here would contradict the mode, so any signing configuration refuses the boot.
     if (cfg.wallet.signer_url || cfg.signer) throw new Error('config: relay.only must not configure wallet.signer_url or a signer');
@@ -487,7 +535,7 @@ export function loadConfig(path: string): Config {
   if (cfg.gateway.enabled && (!cfg.gateway.url || !cfg.gateway.api_key || !cfg.gateway.identity)) {
     throw new Error('gateway.enabled requires gateway.url, gateway.api_key and gateway.identity');
   }
-  if (cfg.policy.hmac_secret) cfg.policy.hmac_secret = resolveSecret(cfg.policy.hmac_secret);
+  if (cfg.policy?.hmac_secret) cfg.policy.hmac_secret = resolveSecret(cfg.policy.hmac_secret);
 
   // `policy.auth` states an intent, and a stated intent must not silently downgrade to no protection.
   //
@@ -496,7 +544,7 @@ export function loadConfig(path: string): Config {
   // nor verify the replies — while the operator reads `auth: "hmac"` and believes the channel is
   // authenticated. Anything on the network path could return `{"decision":"approve"}` and be obeyed.
   // Refuse to start instead; this is the same rule the gateway block already follows.
-  validatePolicyAuth(cfg.policy, 'top-level');
+  if (cfg.policy) validatePolicyAuth(cfg.policy, 'top-level');
 
   // Every scope is validated on its EFFECTIVE rules, not on its override in isolation. A scope that sets
   // only `auth: "hmac"` inherits the default secret and is fine; a scope that sets a different `url` but

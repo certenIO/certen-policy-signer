@@ -41,50 +41,16 @@ wallet:
   #     policy: { url: "https://rules.internal/team-b/decide", hmac_secret: "env:TEAM_B_HMAC" }
   #     behavior: { value_ceiling: "100000", submit_reject_vote: true }
   #
-  # A ROLE PAGE WITH ONE SEAT PER APPROVER. A key page holds several keys with a threshold, so a page
-  # can carry a seat per person -- and then the PROTOCOL counts the approvals, not an application. `key`
-  # stays the key this wallet signs with when nobody is named; `keys` are the named ones, and a ref this
-  # wallet holds no key for is refused rather than falling back to `key`.
+  # HUMAN APPROVERS DO NOT SIGN IN THIS PROCESS. A key page may hold a seat per person with a threshold, so
+  # the PROTOCOL counts the approvals -- but a person's key is never configured here: not as a Vault key
+  # named after them, not as a certificate thumbprint this process can invoke. Either would let this process
+  # sign in their name without them (P3: whoever holds a key is that authority).
   #
-  # The refs are opaque to this file -- nothing here can check one against an identity, and what binds
-  # a ref to a person is the key page entry it resolves to, which is on chain and was put there
-  # deliberately. But they are NOT arbitrary:
-  #
-  #   ** A REF MUST BE THE APPROVER'S CONSOLE SIGN-IN, EXACTLY. **
-  #
-  # The approval console names the approver on its decision (`evidence.approverKeyRef`, Runbook F T29)
-  # using the account they signed in with, and this wallet looks that string up here. A ref of "alice"
-  # against a console that sends "alice@bank.example" matches nothing -- and a ref this wallet holds no
-  # key for is REFUSED, never quietly signed with `key` above, so the vote does not happen at all. That
-  # refusal is deliberate: substituting the organisation's key would put one person's approval on chain
-  # under a key they never touched, which is the whole thing T29 exists to prevent.
-  #
-  #   - page: "acc://bank.acme/roles/treasury/1"      # accept threshold 2, set on chain
-  #     key:  { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "treasury-org", token: "env:VAULT_TOKEN" } }
-  #     keys:
-  #       alice@bank.example: { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "alice-seat", token: "env:VAULT_TOKEN", key_type: "ecdsa-p256" } }
-  #       bob@bank.example:   { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "bob-seat",   token: "env:VAULT_TOKEN", key_type: "ecdsa-p256" } }
-  #
-  # THE SAME THING WITH THE BANK'S OWN PKI, which is the point of Runbook F: no key is generated for
-  # anybody and NO KEY MATERIAL APPEARS IN THIS FILE. Each approver's certificate stays in the Windows
-  # certificate store -- issued by the corporate CA, or on the PIV/CAC card they already carry -- and is
-  # named here only by thumbprint. Build the agent once:
-  #   dotnet build agent/windows-cert-store/certen-cert-agent.csproj -c Release
-  #
-  #   - page: "acc://bank.acme/roles/treasury/1"
-  #     key:  { provider: "vault-transit", vault: { addr: "https://vault:8200", key_name: "treasury-org", token: "env:VAULT_TOKEN" } }
-  #     keys:
-  #       alice@bank.example:
-  #         provider: "windows-cert-store"
-  #         windows: { thumbprint: "9BAE0FE822B270A258395C26436CEFC8BB42E37B", agent_path: "agent/windows-cert-store/bin/Release/net9.0/certen-cert-agent.exe" }
-  #       bob@bank.example:
-  #         provider: "windows-cert-store"
-  #         windows: { thumbprint: "266777A1E4BA2F5F49C92F26C8E73B7D60903650", agent_path: "agent/windows-cert-store/bin/Release/net9.0/certen-cert-agent.exe" }
-  #
-  # The signature type is read off each certificate rather than configured, so the same block works
-  # whether an approver's credential is RSA (what a corporate CA usually issues) or ECDSA P-256 (what a
-  # YubiKey you provision yourself usually holds). A card that demands a PIN per signature gets to: the
-  # agent is invoked once per signature and is not kept alive between them.
+  # People sign on their own device -- the Approver Signing Agent (Windows certificate store, NonExportable,
+  # ecdsaSha256) for officers, or sign-link (WebCrypto non-extractable P-256) for engineers -- and hand the
+  # signature to THIS signer, which verifies it and submits it. Configure that with `officer_intake` below.
+  # `scopes[].keys` and the `windows-cert-store` provider remain for MACHINE keys only (e.g. a service
+  # certificate on the machine page); they are not an approver mechanism.
   #
   # THE ORGANISATION HOLDING A KEY INSIDE SOMEBODY'S IDENTITY. Runbook F 0.4 accepts this: a page in an
   # employee's own book, carrying the organisation's key, so an expired certificate can be rotated and
@@ -102,12 +68,6 @@ wallet:
   # algorithm is a heuristic -- the organisation's own key may be ECDSA, which this file already
   # supports. Omit it wherever the organisation signs as itself; that is the ordinary case and stays
   # silent, because an alarm that fires on every transaction is worth nothing within a week.
-
-  # WHAT A PER-PERSON KEY IN THE ORGANISATION'S VAULT DOES AND DOES NOT ESTABLISH. It makes attribution
-  # real on chain -- two seats, two signatures, two distinct keys in the record. It does NOT establish
-  # that the person agreed: this process can ask Vault for either signature at any time, without them.
-  # That is a pilot posture, and the production choice between it, a smartcard, and a remote signing
-  # service is Runbook F's §F6. See the header of src/signer/vault-transit.ts.
 
   # How this signer is attached to the transactions it signs.
   #   authority — the key book is named as an authority (the usual case)
@@ -316,6 +276,16 @@ admin:
   # needs x-governance-key and only ever touches pages this signer holds).
   # relay_clients:
   #   - { name: "compliance-decision", key: "env:SIGNER_RELAY_KEY_COMPLIANCE", scopes: [proof, tx, pending] }
+
+# Officer intake (Phase 7; docs/OPERATIONS.md "Officer intake"). Personal signatures made on a person's own
+# device are verified here and submitted by this signer; no human key is ever configured. `human_pages` lists
+# every key page whose humans may sign through this signer (including delegate-book pages this cell serves).
+# A signer with officer_intake and NO wallet scopes / signer_url / signer runs intake-only: no keys, no
+# poller, no policy engine -- the shape for a party without a machine page.
+# officer_intake:
+#   enabled: true
+#   human_pages: ["acc://harbor-mfg-tcl1.acme/book/1"]   # FICTIONAL
+#   landed_timeout_ms: 90000
 
 # Read-only relay (docs/OPERATIONS.md "Read-only relay"). Off by default. Lets another component in the cell
 # read Accumulate, the gateway proof API and EVM read methods through this signer. Never signs or submits.

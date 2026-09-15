@@ -8,6 +8,16 @@ is installed, no key is generated for them, and no key material leaves the certi
 **What makes it credible.** Every claim is checkable on-chain afterwards, and the demo reads the
 result back off the network rather than reporting what it believes it did.
 
+> **Phase 7 change — human approvers use officer intake.** Earlier versions of this demo configured the
+> employee's certificate *inside the signer* (`signer.provider: windows-cert-store`, or a per-approver
+> `scopes[].keys` entry), so the signer process invoked the agent and signed in her name. That posture is
+> retired for people: a process that can invoke a person's key can sign without them (P3). The employee now
+> signs on her own machine with the **Approver Signing Agent** (`certen-approve://…` link, NonExportable
+> key, `ecdsaSha256`), and hands the signature to her party's signer, which verifies it and submits it
+> (`officer_intake`, contract §3–4). The `windows-cert-store` provider stays for **machine** keys only. The
+> on-chain results recorded below were produced under the old posture and remain valid as records of what
+> the network accepted; the configuration they used is no longer the one to show.
+
 ---
 
 ## 0 · What this rests on, and what it does not
@@ -100,22 +110,24 @@ enrolment — no new credential, no key ceremony. The bank's CA already bound th
 
 ---
 
-## 3 · Point the signer at it
+## 3 · Point the signer at her page — not at her key
 
 ```yaml
-signer:
-  provider: windows-cert-store
-  windows:
-    thumbprint: "<THUMBPRINT>"
-    agent_path: "agent/windows-cert-store/bin/Release/net9.0/certen-cert-agent.exe"
+officer_intake:
+  enabled: true
+  human_pages: ["acc://bank.acme/roles/treasury/1"]   # the page her certificate's key hash is on
+  landed_timeout_ms: 90000
 ```
 
-**Say:** *there is no key in this configuration. There is a thumbprint. The private key stays in the
-certificate store — on a card, it cannot leave at all.*
+**Say:** *there is no key and no thumbprint in this configuration. The signer knows which page her key
+must be on, reads that page live, and accepts a signature only if it verifies against a key the page lists.
+The private key stays in her certificate store — on a card, it cannot leave at all — and only her own
+machine can ask it to sign.*
 
-The signature type is read from the certificate, not configured, so the same block works whether the
-employee's credential is RSA or ECDSA. That matters more than it sounds: a corporate CA usually
-issues RSA, while a YubiKey you provision yourself is usually P-256.
+The agent authenticates every call with her own key (`x-officer-auth`), recomputes the `tcl-summary/v1`
+hash of what the signer shows and refuses if it differs from her link, then signs
+`sha256(sigMdHash ‖ txHash)`. The signer rejects any tampered field with `signature_invalid` and submits
+nothing. The signature type is still read from the certificate: P-256 for the agent's `ecdsaSha256` path.
 
 ---
 
@@ -170,8 +182,8 @@ demonstrate on one of those.
 ## 6 · The questions you will be asked
 
 **"Where is the private key?"** In the certificate store, in its key-storage provider. On a card, in
-the card. The signer holds a thumbprint and calls an agent; it never sees key material. That is why
-the agent exists rather than being a convenience.
+the card. The signer holds neither the key nor a way to invoke it: the employee's own Approver Signing
+Agent signs on her machine after she confirms, and the signer only verifies and submits what it receives.
 
 **"What if the employee leaves?"** Revocation removes the seat, and the next vote from that key
 fails. Demonstrated in `roster-enrolment.ts`.

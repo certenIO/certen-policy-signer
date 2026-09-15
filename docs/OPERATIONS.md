@@ -376,6 +376,41 @@ admin key does not open these routes and a client key does not open the admin ro
 The gateway is `relay.gateway`, else the top-level `gateway` block. Governance operations are the typed
 `add-key`, `remove-key`, `set-threshold`, `add-delegate`, `remove-delegate` (1–10 per call, applied in order
 through the same path as `POST /v1/admin/key-page`), and only for a page in this signer's keyring (else 403).
-`status` is `confirmed`, `awaiting_consent` (a delegate must still sign) or `failed` (HTTP 400).
+`status` is `confirmed`, `awaiting_consent` (a delegate must still sign, or the page needs more than one
+signature) or `failed` (HTTP 400). A submitted transaction still awaiting a signature is stored with its
+governance display, so a human on the other page can sign it through officer intake as a transaction ref.
 
 `GET /v1/config/version` (admin) returns the `configVersion` stamped on every PolicyRequest and Receipt.
+
+## Officer intake (`/relay/officer*`, Phase 7)
+
+FICTIONAL Business Transaction Controls lab. Enabled by `officer_intake.enabled` with a non-empty
+`human_pages` list of key page URLs. No human key is ever configured: people sign on their own device and
+this signer verifies and submits (contract `phase7-personal-signing-contract.md` §3–4).
+
+Officer routes authenticate with `x-officer-auth: v1 key=<SPKI DER hex>,ts=<unix ms>,sig=<ECDSA hex>` over
+`tcl-officer-read/v1
+<METHOD>
+<path+query>
+<ts>` (±120 s; the key hash must be on a human page, read live
+and cached ≤ 30 s). Any failure is `401 {"error":"officer_auth_failed"}`.
+
+| Route | Auth | Result |
+|---|---|---|
+| `GET /relay/officer/pending/:ref[?principal=]` | officer | `{ref, kind, principal, page?, bodyType, display, summaryHash, expiresAt?, status}` |
+| `POST /relay/officer-signature/prepare` `{ref, page, delegators?, vote, principal?}` | officer | `{prepareId, txHash, sigMdHash, signerVersion, timestamp, principal, display, summaryHash, expiresAt}` |
+| `POST /relay/officer-signature` `{prepareId, signature}` | the signature | `{txHash, status: landed\|submitted, page, keyHash}` |
+| `POST /relay/governance/proposal` `{page, operations, proposer}` | relay client `governance` + `x-governance-key` | `{proposalId, display, summaryHash}` |
+
+`ref` is a 64-hex transaction hash or `proposal:<id>`. `delegators` are key page URLs in wrapping order:
+`delegators[0]` lists the signing page's book as a delegate, and the last is the outermost authority. The
+signing page (or the outermost delegator) must be a human page. A prepare is single use and expires after
+10 minutes. The intake re-reads the pages, recomputes `sigMdHash` (and a proposal's transaction hash, whose
+`header.initiator` is that `sigMdHash`), verifies the ECDSA signature over `sha256(sigMdHash ‖ txHash)`, and
+for a transaction ref confirms it is still pending; any mismatch or tampered echoed field is
+`400 {"error":"signature_invalid"}` and nothing is submitted. It then polls the transaction's signatures for
+this key up to `landed_timeout_ms`. A proposal submitted on a page whose threshold is above 1 is recorded by its transaction hash with the
+proposal's display and summaryHash, so further officers on that page sign it as a transaction ref. Prepares and proposals are held in memory: a restart discards them.
+
+A signer with `officer_intake` and no `wallet.scopes`, `wallet.signer_url` or `signer` runs **intake-only**:
+no keys, no poller, no policy engine (the `policy` block may be omitted), only the relay and officer routes.

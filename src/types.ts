@@ -313,6 +313,13 @@ export interface PolicyRequest {
    */
   header?: TransactionHeaderInfo;
   /**
+   * What a human is shown for this item: ordered `[label, value]` pairs built from this signer's decoders
+   * (Phase 7 contract §2). The transaction hash and the vote are NOT part of it.
+   */
+  display?: [string, string][];
+  /** `tcl-summary/v1` hash of `display`, lowercase hex. A signing client refuses when its link carries a different one. */
+  summaryHash?: string;
+  /**
    * How long THIS DECISION REQUEST is valid (policy TTL, default 15 min) — NOT the tx's on-chain
    * deadline. The on-chain deadline is `header.expiresAt`.
    */

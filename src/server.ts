@@ -15,6 +15,7 @@ import { REQUEST_STATUSES, RequestStatus } from './types.js';
 import { NotifyEvent } from './notify.js';
 import { RelayHandler, RELAY_PREFIX } from './relay.js';
 import { RelayClientsHandler, RELAY_CLIENT_PREFIX } from './relay-clients.js';
+import { OfficerIntakeHandler, OFFICER_PATHS } from './officer/intake.js';
 
 export interface PauseController { paused: boolean; }
 
@@ -67,6 +68,8 @@ export interface ServerDeps {
   relay?: RelayHandler;
   /** Decision-service relay (src/relay-clients.ts, Phase 6.4), when `admin.relay_clients` is set. Absent => /relay/* is 404. */
   relayClients?: RelayClientsHandler;
+  /** Officer intake (src/officer/intake.ts, Phase 7), when `officer_intake.enabled`. Its own authentication; absent => 404. */
+  officerIntake?: OfficerIntakeHandler;
   /** Shown on /v1/config/version for the admin views (Phase 6.3). */
   configVersion?: string;
 }
@@ -109,6 +112,11 @@ export function createServer(d: ServerDeps): http.Server {
       if (path === RELAY_PREFIX || path.startsWith(`${RELAY_PREFIX}/`)) {
         if (!d.relay) return json(res, 404, { error: 'not found' });
         return await d.relay(req, res, url);
+      }
+      // --- officer intake (Phase 7) --- authenticated by the officer's own key, never by a relay client key.
+      if (OFFICER_PATHS(path)) {
+        if (!d.officerIntake) return json(res, 404, { error: 'not found' });
+        return await d.officerIntake(req, res, url);
       }
       // --- decision-service relay (6.4) --- per-client key + scopes; never falls through to the admin routes.
       if (path === RELAY_CLIENT_PREFIX || path.startsWith(`${RELAY_CLIENT_PREFIX}/`)) {
