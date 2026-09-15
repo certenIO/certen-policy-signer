@@ -13,6 +13,7 @@ import { Logger } from './logger.js';
 import { DEFAULT_SIGNATURE_HEADER, LEGACY_SIGNATURE_HEADER } from './policy/policy.js';
 import { REQUEST_STATUSES, RequestStatus } from './types.js';
 import { NotifyEvent } from './notify.js';
+import { RelayHandler, RELAY_PREFIX } from './relay.js';
 
 export interface PauseController { paused: boolean; }
 
@@ -61,6 +62,8 @@ export interface ServerDeps {
   metricsPublic?: boolean;
   /** Fire a lifecycle notification. Absent when no `notify.url` is configured. Best-effort by contract. */
   notify?: (event: NotifyEvent) => void;
+  /** Read-only relay (src/relay.ts), when `relay.enabled` and no separate `relay.bind`. Absent => /v1/relay/* is 404. */
+  relay?: RelayHandler;
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -97,6 +100,11 @@ export function createServer(d: ServerDeps): http.Server {
     const path = url.pathname;
     const method = req.method ?? 'GET';
     try {
+      // --- read-only relay (P2) --- its own bearer token; never falls through to the admin routes.
+      if (path === RELAY_PREFIX || path.startsWith(`${RELAY_PREFIX}/`)) {
+        if (!d.relay) return json(res, 404, { error: 'not found' });
+        return await d.relay(req, res, url);
+      }
       // --- health ---
       // A wallet is only healthy if it can still SIGN (key provider reachable) and still SEE work
       // (the discovery loop is polling successfully). A dead poller means pending transactions are

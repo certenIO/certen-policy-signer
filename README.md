@@ -216,6 +216,10 @@ Everything is fail-closed: the signer stops rather than signs when it cannot pro
 - **Admin routes are always authenticated.** They share the health listener, so `admin.api_key` — not a
   bind address — is what protects them. Without it, every admin route returns 403. Credentials are
   compared in constant time.
+- **Read-only relay (optional, off by default).** `relay.enabled` lets another component in the cell read
+  Accumulate, the gateway proof API and allowlisted EVM read methods *through* the signer, which stays the
+  only thing in the cell that talks to chains or the gateway (P2). Its own bearer token; no route can
+  sign or submit. See [OPERATIONS.md](docs/OPERATIONS.md#read-only-relay-p2).
 - **Refuses to boot on an unusable key config** rather than generating a random key and casting votes the
   network will reject.
 - **Signs only after an `approve`**, optionally over an HMAC-authenticated channel with a replay window.

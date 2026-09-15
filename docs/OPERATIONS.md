@@ -206,6 +206,41 @@ key page — still serious, still audited, but bounded.
 
 ---
 
+## Read-only relay (P2)
+
+FICTIONAL Business Transaction Controls lab, runbook Phase 5.3. Decision P2: in every cell the signer is
+the **only** component that talks to the CERTEN gateway or to chains. A component that has to *read*
+them (the bank payment hub's release gate) reads through this relay instead of holding a chain client of
+its own. It is **read-only by construction**: Accumulate `query` only, an exact allowlist of gateway GET
+paths, an allowlist of EVM read methods. No route reaches the keyring, submits, or signs (P3), and no
+response carries the relay token, the gateway api key or an RPC URL.
+
+```yaml
+relay:
+  enabled: true
+  token: "env:RELAY_TOKEN"          # required when enabled; >= 16 chars; not an admin credential (A6)
+  # bind: "127.0.0.1:8090"          # own listener; omit to share the health/admin listener
+  gateway: { url: "https://gateway.example", api_key: "env:RELAY_GATEWAY_API_KEY" }
+  evm:
+    - { chain_id: 84532, rpc_url: "env:BASE_SEPOLIA_RPC_URL" }
+```
+
+Every route needs `Authorization: Bearer <token>` (constant-time compare; 401 otherwise). JSON only,
+`cache-control: no-store`, no CORS headers.
+
+| Route | Answers |
+|---|---|
+| `GET /v1/relay/accumulate/tx?id=acc://<hash>@<principal>` | `{txid, hash, status, statusNo, principal, header:{principal, authorities[], expireAtTime?, memo?}, body, signatures:[{signer, book, type, vote, keyHash?, delegators[], timestamp?}]}` |
+| `GET /v1/relay/accumulate/account?url=acc://…` | the account record from v3 `query` |
+| `GET /v1/relay/gateway/proof/tx/:hash[/receipt]`, `/proof/:uuid[/bundle]`, `/transaction/:uuid` | gateway status + JSON body, passed through |
+| `POST /v1/relay/evm/:chainId` | JSON-RPC (single or batch) limited to `eth_chainId`, `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getTransactionReceipt`, `eth_getTransactionByHash`, `eth_getLogs`, `eth_call`, `eth_getCode`; 1 MB cap |
+
+A forbidden RPC method answers `-32601` without forwarding; a batch holding one forbidden entry is
+refused whole. Signatures with an unreadable vote are dropped, never reported as `accept`. Everything
+relayed is a **reading for the caller to verify**, not evidence the signer vouches for — a proof's
+`requiredLevel` in particular is relayer-set and never evidence (F5). Unreachable upstream: 502;
+Accumulate "not found": 404.
+
 ## Emergency stop
 
 ```bash
