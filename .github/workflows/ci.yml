@@ -54,6 +54,51 @@ jobs:
           VAULT_TOKEN: root
           VAULT_KEY: wallet-test
 
+  pkcs11:
+    # Phase 8.1 key source against a real PKCS#11 token: SoftHSM2 in the container test/docker/softhsm builds,
+    # with the pkcs11js addon compiled explicitly (scripts/build-pkcs11js.sh), never by an install script.
+    # The token, its throwaway PINs and its keys are created inside the container and die with it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node scripts/pkcs11-it.mjs
+
+  kms:
+    # Phase 8.2 AWS KMS adapter against LocalStack (kms only). The suite creates its own keys inside
+    # LocalStack; the credentials are LocalStack's documented placeholders, not secrets.
+    runs-on: ubuntu-latest
+    services:
+      localstack:
+        image: localstack/localstack:4.4.0
+        env:
+          SERVICES: kms
+        ports: ["15466:4566"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/fix-accumulate-encoding.mjs
+      - name: wait for LocalStack KMS
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:15466/_localstack/health | grep -Eq '"kms": *"(available|running)"'; then exit 0; fi
+            sleep 2
+          done
+          echo "LocalStack KMS never became available" >&2
+          exit 1
+      - run: npx vitest run test/cloud-kms-aws.test.ts
+        env:
+          KMS_ENDPOINT: http://127.0.0.1:15466
+          AWS_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+
   image:
     # The deployable artifact must actually build. This is what caught the postinstall/Dockerfile break.
     runs-on: ubuntu-latest

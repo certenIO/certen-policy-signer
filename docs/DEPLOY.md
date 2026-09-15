@@ -102,6 +102,14 @@ only secret is a Vault token — scope it to `transit/sign/org-accum` and use Ap
 *Vault's* public key hash on a a live test-network key page, and shows the network accepting votes that Vault signed.
 See the production key posture in `OPERATIONS.md`, and key rotation to migrate an existing org from the pilot key to a Vault key.
 
+### HSM token or cloud KMS
+
+`provider: "pkcs11"` signs with a key generated inside a PKCS#11 token. The provider refuses the key unless
+the token reports it non-extractable and sensitive. The PIN is either held by the process or released per
+signature by the key holder's own cell. `provider: "cloud-kms"` signs with a P-256 key in AWS KMS, Azure
+Key Vault or Google Cloud KMS. Configuration, the explicit pkcs11js build and the tests are in
+[KEY-SOURCES.md](KEY-SOURCES.md).
+
 ### Fail-closed either way
 
 No seed and no explicit `allow_ephemeral` → the signer **refuses to boot**, rather than generating a random
@@ -171,8 +179,9 @@ it encodes `time.Time` transaction-header fields (`expire`, `holdUntil`) as an *
 an expiry is rejected as "not signed".
 
 The patch is idempotent and warns loudly if upstream changes shape. It must run **before** the esbuild
-bundle, since the bundle inlines accumulate.js — the Dockerfile therefore copies the script before `npm ci`,
-and the runtime stage uses `--ignore-scripts` (the fix is already baked into `dist/signer.cjs`). Removing the
+bundle, since the bundle inlines accumulate.js. The Dockerfile therefore runs `npm ci --ignore-scripts` and
+then invokes the script explicitly, before the bundle is built. The runtime stage also uses
+`--ignore-scripts`, because the fix is already baked into `dist/signer.cjs`. Removing the
 hook silently reintroduces the bug. Remove it only when accumulate.js fixes this upstream.
 
 It lives in `prepare` rather than `postinstall` deliberately. npm runs `postinstall` for installed

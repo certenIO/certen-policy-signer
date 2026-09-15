@@ -10,6 +10,7 @@
 | 4 | [PATTERNS.md](PATTERNS.md) | Four deployment shapes. Read the one that is yours before you design around the docs above. |
 | 5 | [DEPLOY.md](DEPLOY.md) | Key custody, the threat model, Docker and Helm. |
 | 6 | [OPERATIONS.md](OPERATIONS.md) | Key rotation, cutover, backup, upgrades, the signing gap. |
+| 7 | [KEY-SOURCES.md](KEY-SOURCES.md) | PKCS#11 tokens (HSM, SoftHSM, a per-signature PIN custodian) and cloud KMS (AWS, Azure, GCP). |
 
 ## Reference
 
