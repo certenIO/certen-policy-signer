@@ -303,6 +303,16 @@ admin:
   # for your organization, so it is deliberately not the same credential as the pause.
   # governance_admin_key: "env:GOVERNANCE_ADMIN_KEY"
 
+# Read-only relay (docs/OPERATIONS.md "Read-only relay"). Off by default. Lets another component in the cell
+# read Accumulate, the gateway proof API and EVM read methods through this signer. Never signs or submits.
+# relay:
+#   enabled: true
+#   token: "env:RELAY_TOKEN"            # required; its own secret, not the admin key
+#   bind: "127.0.0.1:8090"              # omit to share the health listener
+#   gateway: { url: "https://gateway.example", api_key: "env:RELAY_GATEWAY_API_KEY" }
+#   evm:
+#     - { chain_id: 84532, rpc_url: "env:BASE_SEPOLIA_RPC_URL" }
+
 observability:
   log_level: "info"
   metrics: true

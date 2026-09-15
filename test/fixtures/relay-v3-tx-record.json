@@ -1,0 +1,117 @@
+{
+  "_comment": "FICTIONAL. Hand-written in the shape of an Accumulate v3 `query` message record for a pending transaction (signature sets nested, delegated + authority + system signatures, one duplicate). Public keys are placeholder bytes, not real keys.",
+  "recordType": "message",
+  "id": "acc://c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00@fictional-supplier-payments.acme/data",
+  "status": "pending",
+  "statusNo": 202,
+  "message": {
+    "type": "transaction",
+    "transaction": {
+      "header": {
+        "principal": "acc://fictional-supplier-payments.acme/data",
+        "initiator": "00aa00aa00aa00aa00aa00aa00aa00aa00aa00aa00aa00aa00aa00aa00aa00aa",
+        "memo": "FICTIONAL supplier payment SP-0001",
+        "expire": { "atTime": "2026-10-01T12:00:00Z" },
+        "authorities": ["acc://fictional-bank.acme/book", "acc://fictional-corporate.acme/book"]
+      },
+      "body": { "type": "writeData", "entry": { "type": "doubleHash", "data": ["deadbeef"] } }
+    }
+  },
+  "signatures": {
+    "recordType": "range",
+    "records": [
+      {
+        "recordType": "signatureSet",
+        "account": { "type": "keyPage", "url": "acc://fictional-corporate.acme/book/1" },
+        "signatures": {
+          "recordType": "range",
+          "records": [
+            {
+              "recordType": "message",
+              "message": {
+                "type": "signature",
+                "signature": {
+                  "type": "ed25519",
+                  "publicKey": "1111111111111111111111111111111111111111111111111111111111111111",
+                  "signature": "aa",
+                  "signer": "acc://fictional-corporate.acme/book/1",
+                  "signerVersion": 3,
+                  "timestamp": 1790000000001
+                }
+              }
+            },
+            {
+              "recordType": "message",
+              "message": {
+                "type": "signature",
+                "signature": {
+                  "type": "delegated",
+                  "delegator": "acc://fictional-corporate.acme/book/1",
+                  "signature": {
+                    "type": "ecdsaSha256",
+                    "publicKey": "2222222222222222222222222222222222222222222222222222222222222222",
+                    "signature": "bb",
+                    "signer": "acc://fictional-approver-ada.acme/book/1",
+                    "signerVersion": 1,
+                    "timestamp": 1790000000002,
+                    "vote": "reject"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "recordType": "signatureSet",
+        "account": { "type": "keyPage", "url": "acc://fictional-bank.acme/book/1" },
+        "signatures": {
+          "records": [
+            {
+              "message": {
+                "type": "signature",
+                "signature": {
+                  "type": "ed25519",
+                  "publicKey": "1111111111111111111111111111111111111111111111111111111111111111",
+                  "signature": "aa",
+                  "signer": "acc://fictional-corporate.acme/book/1",
+                  "signerVersion": 3,
+                  "timestamp": 1790000000001
+                }
+              }
+            },
+            {
+              "message": {
+                "type": "signature",
+                "signature": {
+                  "type": "authority",
+                  "origin": "acc://fictional-bank.acme/book/1",
+                  "authority": "acc://fictional-bank.acme/book",
+                  "vote": "abstain",
+                  "delegator": []
+                }
+              }
+            },
+            {
+              "message": {
+                "type": "signature",
+                "signature": { "type": "partition", "sourceNetwork": "acc://bvn-fictional.acme", "destinationNetwork": "acc://dn.acme" }
+              }
+            },
+            {
+              "message": {
+                "type": "signature",
+                "signature": {
+                  "type": "ed25519",
+                  "publicKey": "3333333333333333333333333333333333333333333333333333333333333333",
+                  "signer": "acc://fictional-bank.acme/book/1",
+                  "vote": "maybe"
+                }
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -18,6 +18,7 @@ import { Orchestrator, ScopeRules } from './orchestrator.js';
 import { Poller } from './poller.js';
 import { createServer, PauseController, HealthSource } from './server.js';
 import { bytesToHex } from './accumulate/signing.js';
+import { createRelayHandler, createRelayServer, RelayHandler } from './relay.js';
 
 /** Host of an endpoint URL, for the startup log when `wallet.network` carries no label. */
 function hostOf(endpoint: string): string {
@@ -37,6 +38,24 @@ async function main() {
 
   const cfg = loadConfig(inv.configPath);
   const logger = baseLogger.child({ org: cfg.wallet.org_id });
+
+  // --- relay-only process: no scopes, no keyring, no poller, no votes; only the read-only relay listener ---
+  if (cfg.relay.only) {
+    if (cfg.wallet.scopes?.length) throw new Error('config: relay.only must not configure wallet.scopes');
+    const reader = new RawAccumulateClient(cfg.wallet.accumulate_endpoints[0], logger);
+    const handler = createRelayHandler({
+      token: cfg.relay.token!,
+      query: (scope, q) => reader.query(scope, q),
+      gateway: cfg.relay.gateway ? { url: cfg.relay.gateway.url, apiKey: cfg.relay.gateway.api_key } : undefined,
+      evm: cfg.relay.evm.map((c) => ({ chainId: c.chain_id, rpcUrl: c.rpc_url })),
+      timeoutMs: cfg.relay.timeout_ms,
+      logger,
+    });
+    const rb = parseBind(cfg.relay.bind!);
+    createRelayServer(handler, logger).listen(rb.port, rb.host);
+    logger.info({ bind: cfg.relay.bind, gateway: Boolean(cfg.relay.gateway), evm_chains: cfg.relay.evm.map((c) => c.chain_id) }, 'RELAY-ONLY mode: read-only relay listening; no signing scopes, keyring or poller');
+    return;
+  }
 
   // --- signing scopes + keyring (key custody) ---
   // Multi-scope: watch several key pages, each with its own key/provider. Single-scope (signer_url + the
@@ -251,8 +270,29 @@ async function main() {
       }
     : undefined;
 
+  // --- read-only relay (P2): other components in the cell read chains and the gateway THROUGH us ---
+  let relay: RelayHandler | undefined;
+  if (cfg.relay.enabled) {
+    relay = createRelayHandler({
+      token: cfg.relay.token!,
+      query: (scope, q) => (accumulate as RawAccumulateClient).query(scope, q),
+      gateway: cfg.relay.gateway ? { url: cfg.relay.gateway.url, apiKey: cfg.relay.gateway.api_key } : undefined,
+      evm: cfg.relay.evm.map((c) => ({ chainId: c.chain_id, rpcUrl: c.rpc_url })),
+      timeoutMs: cfg.relay.timeout_ms,
+      logger,
+    });
+    const where = cfg.relay.bind ?? cfg.health.bind;
+    logger.info({ bind: where, gateway: Boolean(cfg.relay.gateway), evm_chains: cfg.relay.evm.map((c) => c.chain_id) }, 'read-only relay enabled (bearer token required)');
+    if (cfg.relay.bind) {
+      const rb = parseBind(cfg.relay.bind);
+      createRelayServer(relay, logger).listen(rb.port, rb.host);
+      relay = undefined;   // its own listener; not also on the health server
+    }
+  }
+
   // --- server (health/metrics/webhook/admin) ---
   const server = createServer({
+    relay,
     orchestrator, store, keyring, accumulate, pause, logger, poller: pollerHealth,
     webhookHmacSecret: cfg.trigger.webhook.enabled ? cfg.trigger.webhook.hmac_secret : undefined,
     webhookSignatureHeader: cfg.trigger.webhook.signature_header,

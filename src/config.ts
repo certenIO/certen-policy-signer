@@ -280,6 +280,28 @@ const Schema = z.object({
   // Admin routes are served on the SAME listener as health (there is one HTTP server, on `health.bind`).
   // There is no separate admin port, so `api_key` — not a bind address — is what protects them:
   // without it every admin route (incl. SR8 pause) returns 403.
+  // Read-only relay (src/relay.ts; BTC runbook Phase 5.3, decision P2): lets another component in this
+  // cell READ Accumulate, the gateway proof API and EVM RPCs through the signer, which stays the only
+  // thing in the cell with a gateway client or a chain connection. Disabled by default. `.strict()`
+  // throughout: a misspelled key must refuse the boot, not quietly widen or drop a restriction.
+  relay: section(z.object({
+    enabled: z.boolean().default(false),
+    // Relay-only process: no signing scopes, no keyring, no poller, no votes. For a cell component that needs
+    // chain/gateway READS but whose seat signer runs elsewhere (e.g. the bank payment hub). Requires `bind`.
+    only: z.boolean().default(false),
+    // Absent => served on the health/admin listener. Set => its own listener on this host:port.
+    bind: z.string().regex(/^[A-Za-z0-9.\-\[\]:]+:\d{1,5}$/, 'relay.bind must be host:port').optional(),
+    token: z.string().optional(),       // bearer token; `env:NAME`. Required when enabled.
+    gateway: z.object({
+      url: z.string().url(),
+      api_key: z.string(),              // `env:NAME`
+    }).strict().optional(),
+    evm: z.array(z.object({
+      chain_id: z.number().int().positive(),
+      rpc_url: z.string(),              // http(s) URL or `env:NAME` (provider URLs often embed a key)
+    }).strict()).default([]),
+    timeout_ms: z.number().int().positive().default(15_000),
+  }).strict().default({ enabled: false })),
   admin: section(z.object({ api_key: z.string().optional(), governance_admin_key: z.string().optional() }).default({})),
   health: section(z.object({ bind: z.string().default('0.0.0.0:8080') }).default({})),
   // Durable state: idempotency (never vote twice) + the receipt audit trail. Omit only for tests.
@@ -380,6 +402,10 @@ export function loadConfig(path: string): Config {
       // `env:` treatment and the same refusal to run under a stated-but-absent authentication.
       if (s.policy?.hmac_secret) s.policy.hmac_secret = resolveSecret(s.policy.hmac_secret);
     }
+  } else if (cfg.relay.only) {
+    // Relay-only: holding a key here would contradict the mode, so any signing configuration refuses the boot.
+    if (cfg.wallet.signer_url || cfg.signer) throw new Error('config: relay.only must not configure wallet.signer_url or a signer');
+    if (!cfg.relay.enabled || !cfg.relay.bind) throw new Error('config: relay.only requires relay.enabled and relay.bind');
   } else {
     if (!cfg.wallet.signer_url) throw new Error('config: set wallet.signer_url (+ a top-level signer), or wallet.scopes[]');
     if (!cfg.signer) throw new Error('config: single-scope mode requires a top-level `signer` block');
@@ -447,7 +473,44 @@ export function loadConfig(path: string): Config {
   if (cfg.trigger.webhook.hmac_secret) cfg.trigger.webhook.hmac_secret = resolveSecret(cfg.trigger.webhook.hmac_secret);
   if (cfg.admin.api_key) cfg.admin.api_key = resolveSecret(cfg.admin.api_key);
   if (cfg.admin.governance_admin_key) cfg.admin.governance_admin_key = resolveSecret(cfg.admin.governance_admin_key);
+  validateRelay(cfg);
   return cfg;
+}
+
+/**
+ * Resolve and check the relay block. Exported for tests. A relay that is enabled must be authenticated
+ * by its OWN token (A6: each seat its own secret) — never missing, never empty, never shared with an
+ * admin credential, since the relay's caller is a different component than the operator.
+ */
+export function validateRelay(cfg: Pick<Config, 'relay' | 'admin'>): void {
+  const r = cfg.relay;
+  if (!r.enabled) return;
+  r.token = resolveSecret(r.token) ?? '';
+  if (!r.token || r.token.trim() === '') {
+    throw new Error('config: relay.enabled requires relay.token (a bearer token, e.g. `env:RELAY_TOKEN`) — it is missing or resolved to nothing');
+  }
+  if (r.token.length < 16) throw new Error('config: relay.token must be at least 16 characters');
+  if (r.token === cfg.admin.api_key || r.token === cfg.admin.governance_admin_key) {
+    throw new Error('config: relay.token must be its own secret, not an admin credential');
+  }
+  if (r.bind) {
+    const port = Number(r.bind.slice(r.bind.lastIndexOf(':') + 1));
+    if (!(port >= 1 && port <= 65535)) throw new Error('config: relay.bind port must be 1..65535');
+  }
+  if (r.gateway) {
+    r.gateway.api_key = resolveSecret(r.gateway.api_key) ?? '';
+    if (!r.gateway.api_key) throw new Error('config: relay.gateway.api_key resolved to nothing — check the env: ref, or remove relay.gateway');
+  }
+  const seen = new Set<number>();
+  for (const c of r.evm) {
+    if (seen.has(c.chain_id)) throw new Error(`config: relay.evm lists chain_id ${c.chain_id} twice`);
+    seen.add(c.chain_id);
+    c.rpc_url = resolveSecret(c.rpc_url) ?? '';
+    let ok = false;
+    try { ok = /^https?:$/.test(new URL(c.rpc_url).protocol); } catch { ok = false; }
+    // Never echo the URL: a provider RPC URL usually carries its key.
+    if (!ok) throw new Error(`config: relay.evm chain_id ${c.chain_id}: rpc_url must resolve to an http(s) URL`);
+  }
 }
 
 export function parseBind(bind: string): { host: string; port: number } {

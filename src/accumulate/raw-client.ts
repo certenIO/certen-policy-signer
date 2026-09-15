@@ -289,6 +289,119 @@ export function extractSignatureRequestTxIds(records: any[]): string[] {
   return [...out];
 }
 
+/** One signature on a transaction, as the relay reports it. FACTS read off the record, nothing inferred. */
+export interface RelaySignature {
+  /** The key page (keyed signature) or originating page (authority signature). */
+  signer: string;
+  /** The book that page belongs to — the authority a header names. */
+  book: string;
+  type: string;
+  vote: 'accept' | 'reject' | 'abstain';
+  /** sha256(publicKey), which is what a key page entry holds. Absent for authority signatures. */
+  keyHash?: string;
+  delegators: string[];
+  timestamp?: number | string;
+}
+
+export interface RelayTxRecord {
+  txid: string;
+  hash: string;
+  status: string;
+  statusNo: number | null;
+  principal: string;
+  header: { principal: string; authorities: string[]; expireAtTime?: string | number; memo?: string };
+  body: unknown;
+  signatures: RelaySignature[];
+}
+
+/** The book a page URL belongs to: `acc://org.acme/book/1` → `acc://org.acme/book`. */
+function bookOfPage(page: string): string {
+  const i = page.lastIndexOf('/');
+  return i > 'acc://'.length ? page.slice(0, i) : page;
+}
+
+/**
+ * v3 JSON omits the vote when it is the zero value (accept). Anything present and unrecognised is NOT
+ * mapped to accept — an unreadable vote reported as an approval is the one wrong answer that matters —
+ * so the signature is dropped by the caller instead.
+ */
+function readVote(v: unknown): RelaySignature['vote'] | undefined {
+  if (v === undefined || v === null || v === 'accept' || v === 0) return 'accept';
+  if (v === 'reject' || v === 1) return 'reject';
+  if (v === 'abstain' || v === 2) return 'abstain';
+  return undefined;
+}
+
+/**
+ * Normalize a v3 transaction message record for the read-only relay (runbook Phase 5.3, decision P2).
+ *
+ * Uses the same signature walk and delegation unwrap as `getTxSignatures`, so the two can never disagree
+ * about which signatures a record holds. Keyed signatures carry a key hash; authority signatures (the
+ * network's record that a book's page reached its threshold) carry the originating page and authority
+ * book and no key hash. Signatures that name no signer (system/partition signatures) are omitted.
+ * The header is passed through as recorded — `expireAtTime` is not reinterpreted here.
+ */
+export function normalizeTxRecord(rec: any): RelayTxRecord {
+  const message = rec?.message ?? rec?.value?.message ?? {};
+  const tx = message?.transaction ?? rec?.transaction ?? {};
+  const h = tx?.header && typeof tx.header === 'object' ? tx.header : {};
+  const principal = typeof h.principal === 'string' ? h.principal : '';
+  const txid = String(rec?.id ?? message?.id ?? '');
+  const hash = (/^(?:acc:\/\/)?([0-9a-fA-F]{64})@/.exec(txid)?.[1] ?? '').toLowerCase();
+
+  const header: RelayTxRecord['header'] = {
+    principal,
+    authorities: Array.isArray(h.authorities) ? h.authorities.filter((a: unknown): a is string => typeof a === 'string' && a !== '') : [],
+  };
+  const atTime = h.expire && typeof h.expire === 'object' ? h.expire.atTime : undefined;
+  if (typeof atTime === 'string' || typeof atTime === 'number') header.expireAtTime = atTime;
+  if (typeof h.memo === 'string' && h.memo !== '') header.memo = h.memo;
+
+  const messages: Record<string, unknown>[] = [];
+  collectSignatureMessages(rec?.signatures ?? [], messages);
+
+  const seen = new Set<string>();
+  const signatures: RelaySignature[] = [];
+  for (const m of messages) {
+    const raw = m['signature'];
+    if (!raw || typeof raw !== 'object') continue;
+    const { inner, delegators } = unwrapDelegation(raw as Record<string, unknown>);
+    const type = String(inner['type'] ?? 'unknown');
+    const vote = readVote(inner['vote']);
+    if (!vote) continue;
+
+    let entry: RelaySignature | undefined;
+    const publicKey = inner['publicKey'];
+    if (typeof publicKey === 'string' && publicKey !== '' && typeof inner['signer'] === 'string' && inner['signer']) {
+      const signer = inner['signer'] as string;
+      entry = {
+        signer, book: bookOfPage(signer), type, vote,
+        keyHash: createHash('sha256').update(Buffer.from(publicKey, 'hex')).digest('hex'),
+        delegators,
+      };
+    } else if (typeof inner['origin'] === 'string' && inner['origin'] && typeof inner['authority'] === 'string' && inner['authority']) {
+      // Authority signature: `delegator` is a list of the delegation path here, not a nested wrapper.
+      const path = Array.isArray(inner['delegator']) ? (inner['delegator'] as unknown[]).filter((d): d is string => typeof d === 'string') : [];
+      entry = { signer: inner['origin'] as string, book: inner['authority'] as string, type, vote, delegators: [...delegators, ...path] };
+    }
+    if (!entry) continue;
+    const ts = inner['timestamp'];
+    if (typeof ts === 'number' || (typeof ts === 'string' && ts !== '')) entry.timestamp = ts;
+
+    // The same signature can appear under the signer's set and the principal's set; report it once.
+    const key = JSON.stringify(entry);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    signatures.push(entry);
+  }
+
+  const statusNo = Number(rec?.statusNo);
+  return {
+    txid, hash, status: String(rec?.status ?? ''), statusNo: Number.isFinite(statusNo) && rec?.statusNo !== undefined ? statusNo : null,
+    principal, header, body: tx?.body ?? null, signatures,
+  };
+}
+
 /** Split an Accumulate txID `acc://<hash>@<principal>` into its hash and principal parts. */
 export function splitTxId(txId: string): { hash: string; principal: string } {
   const clean = String(txId ?? '').replace(/^acc:\/\//, '');
