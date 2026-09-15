@@ -313,7 +313,7 @@ describe('relay mounted on the health/admin server', () => {
 });
 
 describe('relay config', () => {
-  const base = (relay: unknown): Pick<Config, 'relay' | 'admin'> => ({ relay: { enabled: true, evm: [], timeout_ms: 1000, ...(relay as object) } as Config['relay'], admin: { api_key: 'test-admin-key-000' } });
+  const base = (relay: unknown): Pick<Config, 'relay' | 'admin'> => ({ relay: { enabled: true, only: false, evm: [], timeout_ms: 1000, ...(relay as object) } as Config['relay'], admin: { api_key: 'test-admin-key-000' } });
 
   it('refuses an enabled relay without a usable token', () => {
     delete process.env.TEST_RELAY_TOKEN_UNSET;
@@ -361,6 +361,30 @@ describe('relay config', () => {
       expect(() => loadConfig(write(`relay:\n  enabled: true\n  token: "${TOKEN}"\n  methods: ["eth_sendRawTransaction"]`))).toThrow();
       const cfg = loadConfig(write(`relay:\n  enabled: true\n  token: "${TOKEN}"\n  bind: "127.0.0.1:8090"\n  evm:\n    - chain_id: 84532\n      rpc_url: "https://sepolia.base.invalid"`));
       expect(cfg.relay).toMatchObject({ enabled: true, bind: '127.0.0.1:8090', evm: [{ chain_id: 84532 }] });
+    });
+    it('relay.only boots without any signing scope, and refuses a signer or a missing bind', () => {
+      const bare = (relay: string) => {
+        const p = join(tmp, 'only.yaml');
+        writeFileSync(p, ['wallet:', '  org_id: "fictional-bank-relay"', '  accumulate_endpoints: ["http://127.0.0.1:26660/v3"]',
+          'policy:', '  url: "http://127.0.0.1:9/unused"', relay].join('\n'));
+        return p;
+      };
+      const ok = loadConfig(bare(`relay:
+  enabled: true
+  only: true
+  token: "${TOKEN}"
+  bind: "127.0.0.1:8090"`));
+      expect(ok.relay).toMatchObject({ enabled: true, only: true });
+      expect(() => loadConfig(bare(`relay:
+  enabled: true
+  only: true
+  token: "${TOKEN}"`))).toThrow(/relay.only requires/);
+      expect(() => loadConfig(write(`relay:
+  enabled: true
+  only: true
+  token: "${TOKEN}"
+  bind: "127.0.0.1:8090"`))).toThrow(/relay.only must not/);
+      expect(() => loadConfig(bare(''))).toThrow(/signer_url/);
     });
   });
 });

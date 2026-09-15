@@ -286,6 +286,9 @@ const Schema = z.object({
   // throughout: a misspelled key must refuse the boot, not quietly widen or drop a restriction.
   relay: section(z.object({
     enabled: z.boolean().default(false),
+    // Relay-only process: no signing scopes, no keyring, no poller, no votes. For a cell component that needs
+    // chain/gateway READS but whose seat signer runs elsewhere (e.g. the bank payment hub). Requires `bind`.
+    only: z.boolean().default(false),
     // Absent => served on the health/admin listener. Set => its own listener on this host:port.
     bind: z.string().regex(/^[A-Za-z0-9.\-\[\]:]+:\d{1,5}$/, 'relay.bind must be host:port').optional(),
     token: z.string().optional(),       // bearer token; `env:NAME`. Required when enabled.
@@ -399,6 +402,10 @@ export function loadConfig(path: string): Config {
       // `env:` treatment and the same refusal to run under a stated-but-absent authentication.
       if (s.policy?.hmac_secret) s.policy.hmac_secret = resolveSecret(s.policy.hmac_secret);
     }
+  } else if (cfg.relay.only) {
+    // Relay-only: holding a key here would contradict the mode, so any signing configuration refuses the boot.
+    if (cfg.wallet.signer_url || cfg.signer) throw new Error('config: relay.only must not configure wallet.signer_url or a signer');
+    if (!cfg.relay.enabled || !cfg.relay.bind) throw new Error('config: relay.only requires relay.enabled and relay.bind');
   } else {
     if (!cfg.wallet.signer_url) throw new Error('config: set wallet.signer_url (+ a top-level signer), or wallet.scopes[]');
     if (!cfg.signer) throw new Error('config: single-scope mode requires a top-level `signer` block');

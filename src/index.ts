@@ -39,6 +39,24 @@ async function main() {
   const cfg = loadConfig(inv.configPath);
   const logger = baseLogger.child({ org: cfg.wallet.org_id });
 
+  // --- relay-only process: no scopes, no keyring, no poller, no votes; only the read-only relay listener ---
+  if (cfg.relay.only) {
+    if (cfg.wallet.scopes?.length) throw new Error('config: relay.only must not configure wallet.scopes');
+    const reader = new RawAccumulateClient(cfg.wallet.accumulate_endpoints[0], logger);
+    const handler = createRelayHandler({
+      token: cfg.relay.token!,
+      query: (scope, q) => reader.query(scope, q),
+      gateway: cfg.relay.gateway ? { url: cfg.relay.gateway.url, apiKey: cfg.relay.gateway.api_key } : undefined,
+      evm: cfg.relay.evm.map((c) => ({ chainId: c.chain_id, rpcUrl: c.rpc_url })),
+      timeoutMs: cfg.relay.timeout_ms,
+      logger,
+    });
+    const rb = parseBind(cfg.relay.bind!);
+    createRelayServer(handler, logger).listen(rb.port, rb.host);
+    logger.info({ bind: cfg.relay.bind, gateway: Boolean(cfg.relay.gateway), evm_chains: cfg.relay.evm.map((c) => c.chain_id) }, 'RELAY-ONLY mode: read-only relay listening; no signing scopes, keyring or poller');
+    return;
+  }
+
   // --- signing scopes + keyring (key custody) ---
   // Multi-scope: watch several key pages, each with its own key/provider. Single-scope (signer_url + the
   // top-level `signer`) folds into a one-element list so everything downstream is uniform.
