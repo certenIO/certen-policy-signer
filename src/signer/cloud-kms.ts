@@ -95,29 +95,46 @@ export class CloudKmsSigner implements KeySigner {
     throw new Error(`cloud-kms ${this.adapter.vendor}: signatureType is not known until the key has been read; await publicKey() first`);
   }
 
+  /** One read of the key from the vendor, checked and converted. Never cached here. */
+  async #fetch(): Promise<ReadKey> {
+    if (!this.adapter.getKeyInfo) return { type: 'ecdsaSha256', publicKey: checkP256Spki(await this.adapter.getPublicKeySpki()) };
+    const info = await this.adapter.getKeyInfo();
+    if (info.algorithm === 'ed25519') return { type: 'ed25519', publicKey: ed25519RawFromSpki(info.spki) };
+    if (info.algorithm === 'ecdsa-p256') return { type: 'ecdsaSha256', publicKey: checkP256Spki(info.spki) };
+    throw new Error(`cloud-kms ${this.adapter.vendor}: unsupported key algorithm ${String(info.algorithm)} — refusing`);
+  }
+
+  /** The key this signer declared (its page entry, its metadata type): read once, then held. */
   #read(): Promise<ReadKey> {
     if (!this.#key) {
-      this.#key = (async (): Promise<ReadKey> => {
-        let k: ReadKey;
-        if (!this.adapter.getKeyInfo) {
-          k = { type: 'ecdsaSha256', publicKey: checkP256Spki(await this.adapter.getPublicKeySpki()) };
-        } else {
-          const info = await this.adapter.getKeyInfo();
-          if (info.algorithm === 'ed25519') k = { type: 'ed25519', publicKey: ed25519RawFromSpki(info.spki) };
-          else if (info.algorithm === 'ecdsa-p256') k = { type: 'ecdsaSha256', publicKey: checkP256Spki(info.spki) };
-          else throw new Error(`cloud-kms ${this.adapter.vendor}: unsupported key algorithm ${String(info.algorithm)} — refusing`);
-        }
-        // A key whose type changed under a running signer (a re-pointed alias) is refused, never followed:
-        // everything already declared for this scope (the page entry, the type in the metadata) is the old one's.
-        if (this.#type && this.#type !== k.type) {
-          throw new Error(`cloud-kms ${this.adapter.vendor}: the key's type changed from ${this.#type} to ${k.type} — refusing`);
-        }
-        this.#type = k.type;
-        return k;
-      })();
+      this.#key = this.#fetch().then((k) => { this.#type = k.type; return k; });
       this.#key.catch(() => { this.#key = undefined; });
     }
     return this.#key;
+  }
+
+  /**
+   * Review #10: the key must still be the one this signer declared, at the moment it signs.
+   *
+   * An AWS `key_id` may be an alias, and an alias can be re-pointed at another key -- of another type --
+   * under a running signer. Everything already declared for the scope (the page entry, the metadata type)
+   * belongs to the old key, so the key's metadata is RE-READ BEFORE EVERY SIGNATURE and a changed type or
+   * public key is refused. Cost: one extra `GetPublicKey` call per signature (a vote is one or two
+   * signatures, against one `Sign` call each), which is small beside the guarantee.
+   *
+   * Azure and GCP adapters address a PINNED key version (`key_version` / `cryptoKeyVersions/<n>`), which
+   * cannot change; their sign responses are already checked to come from exactly that version (`kid` /
+   * `name`), so no re-read is made for them.
+   */
+  async #confirmUnchanged(declared: ReadKey): Promise<void> {
+    if (!this.adapter.getKeyInfo) return;
+    const now = await this.#fetch();
+    if (now.type !== declared.type) {
+      throw new Error(`cloud-kms ${this.adapter.vendor}: the key's type changed from ${declared.type} to ${now.type} since it was declared — refusing to sign`);
+    }
+    if (!Buffer.from(now.publicKey).equals(Buffer.from(declared.publicKey))) {
+      throw new Error(`cloud-kms ${this.adapter.vendor}: the key behind this key id is not the one declared for this scope — refusing to sign`);
+    }
   }
 
   /** P-256: the SPKI DER (91 bytes). Ed25519: the raw 32-byte key. sha256 of this is the page entry. */
@@ -128,6 +145,7 @@ export class CloudKmsSigner implements KeySigner {
   async sign(preimage32: Uint8Array): Promise<Uint8Array> {
     if (preimage32.length !== 32) throw new Error('expected 32-byte message');
     const key = await this.#read();
+    await this.#confirmUnchanged(key);
     if (key.type === 'ed25519') {
       if (!this.adapter.signEd25519) throw new Error(`cloud-kms ${this.adapter.vendor}: this adapter cannot sign with an Ed25519 key — refusing`);
       const sig = await this.adapter.signEd25519(preimage32);

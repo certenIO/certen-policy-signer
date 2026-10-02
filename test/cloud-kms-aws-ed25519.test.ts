@@ -102,7 +102,8 @@ let key: ReturnType<typeof edKey>;
 beforeEach(() => {
   key = edKey();
   replay = {
-    exchanges: FX.exchanges,
+    // GetPublicKey to declare the key, GetPublicKey again before the signature (review #10), then Sign.
+    exchanges: [FX.exchanges[0]!, FX.exchanges[0]!, FX.exchanges[1]!],
     vars: { key_id: FX.config.key_id!, key_arn: FX.config.key_arn!, spki_b64: b64(key.spki) },
     signer: key.privateKey,
     seen: [],
@@ -137,21 +138,41 @@ describe('AWS KMS Ed25519 (ECC_NIST_EDWARDS25519): contract', () => {
     expect(nacl.sign.detached.verify(pre.dataForSignature, sig, pub)).toBe(true);
 
     // What the SDK sent: GetPublicKey, then Sign over the preimage itself, RAW, pure Ed25519 -- signed with SigV4.
-    expect(replay.seen.map((x) => x.target)).toEqual(['TrentService.GetPublicKey', 'TrentService.Sign']);
-    expect(replay.seen[1]!.body).toEqual({ KeyId: FX.config.key_id, Message: b64(pre.dataForSignature), MessageType: 'RAW', SigningAlgorithm: 'ED25519_SHA_512' });
-    expect(replay.seen[1]!.contentType).toBe('application/x-amz-json-1.1');
-    expect(replay.seen[1]!.auth).toMatch(/^AWS4-HMAC-SHA256 /);
+    expect(replay.seen.map((x) => x.target)).toEqual(['TrentService.GetPublicKey', 'TrentService.GetPublicKey', 'TrentService.Sign']);
+    expect(replay.seen[2]!.body).toEqual({ KeyId: FX.config.key_id, Message: b64(pre.dataForSignature), MessageType: 'RAW', SigningAlgorithm: 'ED25519_SHA_512' });
+    expect(replay.seen[2]!.contentType).toBe('application/x-amz-json-1.1');
+    expect(replay.seen[2]!.auth).toMatch(/^AWS4-HMAC-SHA256 /);
   });
 
-  it('reads the key once and keeps signing with it', async () => {
-    replay.exchanges = [FX.exchanges[0]!, FX.exchanges[1]!, FX.exchanges[1]!];
+  it('declares the key once, and re-reads it before every signature (review #10)', async () => {
+    replay.exchanges = [FX.exchanges[0]!, FX.exchanges[0]!, FX.exchanges[1]!, FX.exchanges[0]!, FX.exchanges[1]!];
     const s = signer();
     const pub = await s.publicKey();
     for (let i = 0; i < 2; i++) {
       const pre = preimage(pub, 'ed25519', i);
       expect(nacl.sign.detached.verify(pre.dataForSignature, await s.sign(pre.dataForSignature), pub)).toBe(true);
     }
-    expect(replay.seen.filter((x) => x.target === 'TrentService.GetPublicKey')).toHaveLength(1);
+    expect(replay.seen.map((x) => x.target)).toEqual([
+      'TrentService.GetPublicKey', 'TrentService.GetPublicKey', 'TrentService.Sign', 'TrentService.GetPublicKey', 'TrentService.Sign',
+    ]);
+  });
+
+  it('refuses to sign when the alias now points at another Ed25519 key -- before any Sign (review #10)', async () => {
+    const s = signer();
+    const pub = await s.publicKey();
+    replay.vars.spki_b64 = b64(edKey().spki);   // re-pointed
+    await expect(s.sign(preimage(pub, 'ed25519').dataForSignature)).rejects.toThrow(/not the one declared/);
+    expect(replay.seen.map((x) => x.target)).toEqual(['TrentService.GetPublicKey', 'TrentService.GetPublicKey']);
+  });
+
+  it('refuses to sign when the alias now points at a key of another type -- before any Sign (review #10)', async () => {
+    const s = signer();
+    const pub = await s.publicKey();
+    const ec = new Uint8Array(generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ type: 'spki', format: 'der' }));
+    replay.tamper = (i, body) => { if (i === 1) { body.KeySpec = 'ECC_NIST_P256'; body.SigningAlgorithms = ['ECDSA_SHA_256']; body.PublicKey = b64(ec); } };
+    await expect(s.sign(preimage(pub, 'ed25519').dataForSignature)).rejects.toThrow(/type changed from ed25519 to ecdsaSha256/);
+    expect(replay.seen.map((x) => x.target)).toEqual(['TrentService.GetPublicKey', 'TrentService.GetPublicKey']);
+    expect(s.signatureType).toBe('ed25519');   // the declared type does not follow the alias
   });
 
   it('refuses a signature made by another key (verified locally before it is used)', async () => {
@@ -162,11 +183,11 @@ describe('AWS KMS Ed25519 (ECC_NIST_EDWARDS25519): contract', () => {
   });
 
   it('refuses a signature of the wrong length, and a Sign answered with another algorithm', async () => {
-    replay.tamper = (i, body) => { if (i === 1) body.Signature = b64(new Uint8Array(65).fill(1)); };
+    replay.tamper = (i, body) => { if (i === 2) body.Signature = b64(new Uint8Array(65).fill(1)); };
     const s1 = signer();
     await expect(s1.sign(preimage(await s1.publicKey(), 'ed25519').dataForSignature)).rejects.toThrow(/length 65/);
 
-    replay = { ...replay, seen: [], tamper: (i, body) => { if (i === 1) body.SigningAlgorithm = 'ED25519_PH_SHA_512'; } };
+    replay = { ...replay, seen: [], tamper: (i, body) => { if (i === 2) body.SigningAlgorithm = 'ED25519_PH_SHA_512'; } };
     const s2 = signer();
     await expect(s2.sign(preimage(await s2.publicKey(), 'ed25519').dataForSignature)).rejects.toThrow(/not ED25519_SHA_512/);
   });
@@ -183,7 +204,7 @@ describe('AWS KMS Ed25519 (ECC_NIST_EDWARDS25519): contract', () => {
       [(b) => { b.PublicKey = b64(new Uint8Array(generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ type: 'spki', format: 'der' }))); }, /not Ed25519/],
     ];
     for (const [edit, err] of cases) {
-      replay = { ...replay, seen: [], tamper: (i, body) => { if (i === 0) edit(body); } };
+      replay = { ...replay, seen: [], tamper: (i, body) => { if (i <= 1) edit(body); } };
       const s = signer();
       replay.vars.message_b64 = b64(new Uint8Array(32).fill(3));
       await expect(s.sign(new Uint8Array(32).fill(3))).rejects.toThrow(err);
@@ -204,9 +225,9 @@ describe('AWS KMS Ed25519 (ECC_NIST_EDWARDS25519): contract', () => {
     const spki = new Uint8Array(ec.publicKey.export({ type: 'spki', format: 'der' }));
     replay.vars.spki_b64 = b64(spki);
     replay.tamper = (i, body) => {
-      if (i === 0) { body.KeySpec = 'ECC_NIST_P256'; body.CustomerMasterKeySpec = 'ECC_NIST_P256'; body.SigningAlgorithms = ['ECDSA_SHA_256']; }
+      if (i <= 1) { body.KeySpec = 'ECC_NIST_P256'; body.CustomerMasterKeySpec = 'ECC_NIST_P256'; body.SigningAlgorithms = ['ECDSA_SHA_256']; }
     };
-    replay.exchanges = [FX.exchanges[0]!, {
+    replay.exchanges = [FX.exchanges[0]!, FX.exchanges[0]!, {
       request: { target: 'TrentService.Sign', body: { KeyId: '{{key_id}}', Message: '{{message_b64}}', MessageType: 'DIGEST', SigningAlgorithm: 'ECDSA_SHA_256' } },
       response: { status: 200, body: { KeyId: '{{key_arn}}', Signature: '{{signature_b64}}', SigningAlgorithm: 'ECDSA_SHA_256' } },
     }];
@@ -219,10 +240,11 @@ describe('AWS KMS Ed25519 (ECC_NIST_EDWARDS25519): contract', () => {
     const { p256 } = await import('@noble/curves/nist.js');
     const d = Buffer.from((ec.privateKey.export({ format: 'jwk' }) as { d: string }).d, 'base64url');
     const der = p256.sign(pre.dataForSignature, d, { prehash: false, format: 'der' });
-    replay.tamper = (i, body) => { if (i === 1) body.Signature = b64(der); };
+    const spec = replay.tamper;
+    replay.tamper = (i, body) => { spec?.(i, body); if (i === 2) body.Signature = b64(der); };
     const sig = await s.sign(pre.dataForSignature);
     expect(sig[0]).toBe(0x30);
-    expect(replay.seen[1]!.body).toMatchObject({ MessageType: 'DIGEST', SigningAlgorithm: 'ECDSA_SHA_256' });
+    expect(replay.seen[2]!.body).toMatchObject({ MessageType: 'DIGEST', SigningAlgorithm: 'ECDSA_SHA_256' });
   });
 
   it('ed25519RawFromSpki refuses anything that is not a 44-byte Ed25519 SPKI', () => {

@@ -38,6 +38,10 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Changed
 
+- **cloud-kms review #10.** An AWS key's metadata is re-read before every signature and a changed type or
+  public key (a re-pointed alias) is refused; the declared type never follows the alias. One extra
+  `GetPublicKey` per signature. The previous "type changed" check could never fire and is gone.
+
 - **G-65 review #5.** A reject/response threshold already above the entries (a v1 executor never lowers
   them) no longer blocks every key-page change: only a change that creates or worsens one is refused, so a
   rotation or a repair on such a page passes. The accept-threshold rule is unchanged.

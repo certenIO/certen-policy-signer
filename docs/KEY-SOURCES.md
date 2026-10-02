@@ -148,6 +148,11 @@ signer:
 | **Azure** (REST, `fetch`) | `GET /keys/{name}/{version}`, JWK → SPKI | `kty` EC/EC-HSM, `crv` P-256, `key_ops` has `sign`, enabled, `kid` is the pinned version | `POST …/sign` with `alg: ES256`, value = digest | raw `r ‖ s` → DER |
 | **GCP** (REST, `fetch`) | `GET {version}/publicKey`, PEM | `algorithm = EC_SIGN_P256_SHA256`, `pemCrc32c` holds, `name` is the configured version | `POST {version}:asymmetricSign` with `digest.sha256` and `digestCrc32c` | DER; `verifiedDigestCrc32c` and `signatureCrc32c` must hold |
 
+- **AWS key changes are refused at signing time.** A `key_id` may be an alias, and an alias can be re-pointed
+  under a running signer. The key is declared once (its type and public key: the page entry and the metadata
+  type), and its metadata is read again **before every signature**; a different type or public key is refused
+  and nothing is signed. Cost: one extra `GetPublicKey` call per signature. Azure and GCP use a pinned key
+  version, which cannot change, and each sign response is checked to come from that version.
 - **AWS credentials** come from the SDK's default provider chain: environment, web identity, an instance
   or task role. `endpoint` is for LocalStack or a VPC endpoint.
 - **Azure and GCP** take a bearer token as an `env:` reference. Without one they use the platform identity:
