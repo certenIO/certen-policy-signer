@@ -38,6 +38,13 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Changed
 
+- **G-69 review fixes.** A human-only seat's request is keyed by transaction AND page, so it never
+  pre-empts a keyed seat acting on the same transaction (`GET /v1/requests/:tx` lists all as `seats`), and
+  human-only pollers no longer take the gateway pending list. `awaiting_human` ends only when the page's
+  accept (or reject) threshold is met by distinct seats on chain, read on every poll as well as when a
+  signature lands; partial signers are kept (`humanSignatures`). A vote opposite to the one owed is flagged
+  (`humanOverride`). `ChainSignature` gains `vote`.
+
 - **G-39 (signer half): officer-intake prepares and proposals survive a restart.** They are kept in the
   store (MemoryStore / FileStore: new `saveIntakeRecord` / `deleteIntakeRecord` / `listIntakeRecords`) and
   restored by `OfficerIntake.restore()` at startup, with expiry and single use intact (a prepare is deleted

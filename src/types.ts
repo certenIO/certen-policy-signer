@@ -396,6 +396,20 @@ export interface SigningRequest {
   pending?: PendingHold;
   /** G-64: the last hold, as it stood when it ended, with when and how. History, never a current state. */
   pendingFinal?: FinalisedHold;
+  /** G-69: the signatures from a human-only seat's page that the chain counts, one per seat (partial signers kept). */
+  humanSignatures?: HumanSignature[];
+  /** G-69: the people ended the request with the OPPOSITE of the vote the policy decision owed. */
+  humanOverride?: { owed: 'approve' | 'reject'; cast: 'approve' | 'reject' };
+}
+
+/** One seat's signature on a human-only seat's page, as read from the chain. */
+export interface HumanSignature {
+  /** `key:<hash>` for a key entry, `delegate:<book>` for a delegate seat. */
+  seat: string;
+  publicKeyHash: string;
+  type: string;
+  delegators: string[];
+  vote: 'approve' | 'reject' | 'abstain';
 }
 
 /** The version stamps a decision service returned with a hold (A6). Each only when it was returned. */
@@ -456,6 +470,10 @@ export interface Receipt {
   policyEvidence?: Record<string, unknown>;
   /** The signer-config version the decision was taken under (`sha256:…`). Decision A6. */
   configVersion?: string;
+  /** G-69: the counted signatures of a human-only seat's page, when it ended. */
+  humanSignatures?: HumanSignature[];
+  /** G-69: the people signed the opposite of the vote owed (see SigningRequest.humanOverride). */
+  humanOverride?: { owed: 'approve' | 'reject'; cast: 'approve' | 'reject' };
   /**
    * What actually satisfied the vote. Runbook F Phase F4.
    *

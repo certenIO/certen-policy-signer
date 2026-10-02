@@ -167,7 +167,11 @@ export class RawAccumulateClient implements AccumulateClient {
       if (typeof publicKey !== 'string' || publicKey === '') continue;
 
       const signerUrl = inner['signer'];
+      // Accept (0) marshals as absent; reject and abstain by name (or code, from an older encoding).
+      const rawVote = inner['vote'];
+      const vote = rawVote === 'reject' || rawVote === 1 ? 'reject' : rawVote === 'abstain' || rawVote === 2 ? 'abstain' : 'approve';
       signatures.push({
+        vote,
         type: String(inner['type'] ?? 'unknown'),
         publicKeyHash: createHash('sha256').update(Buffer.from(publicKey, 'hex')).digest('hex'),
         delegators,

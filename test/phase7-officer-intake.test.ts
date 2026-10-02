@@ -26,7 +26,7 @@ import { startIntakeOnly } from '../src/intake-only.js';
 import type { PageState } from '../src/ops/rotate.js';
 import type { KeyPageResult } from '../src/ops/keypage.js';
 import type { PolicyRequest } from '../src/types.js';
-import { recordHumanSignature } from '../src/officer/landed.js';
+import { advanceAwaitingHuman } from '../src/officer/landed.js';
 import { Orchestrator } from '../src/orchestrator.js';
 import { Resolver } from '../src/resolver.js';
 import { MockPolicyClient } from '../src/policy/policy.js';
@@ -119,7 +119,7 @@ class FakeChain implements IntakeChain {
   pages = new Map<string, { version: number; threshold: number; keys: Entry[] }>();
   pending = new Map<string, { principal: string; body: any; executed?: boolean }>();
   submitted: any[] = [];
-  sigs = new Map<string, Array<{ type: string; publicKeyHash: string; delegators: string[]; signer?: string }>>();
+  sigs = new Map<string, Array<{ type: string; publicKeyHash: string; delegators: string[]; signer?: string; vote?: 'approve' | 'reject' | 'abstain' }>>();
   land = true;
   readPage = async (page: string): Promise<PageState> => {
     const p = this.pages.get(page.toLowerCase());
@@ -138,14 +138,15 @@ class FakeChain implements IntakeChain {
     this.submitted.push(envelope);
     let s = envelope.signatures[0];
     const delegators: string[] = [];
-    while (s.type === 'delegated') { delegators.unshift(String(s.delegator)); s = s.signature; }
+    // Outermost first, as the chain reader (raw-client unwrapDelegation) reports them.
+    while (s.type === 'delegated') { delegators.push(String(s.delegator)); s = s.signature; }
     const hash = String(s.transactionHash);
     // A newly originated transaction (a proposal) becomes pending at its principal.
     const t0 = envelope.transaction?.[0];
     if (t0?.header?.initiator && !this.pending.has(hash)) this.pending.set(hash, { principal: String(t0.header.principal), body: t0.body });
     if (this.land) {
       const list = this.sigs.get(hash) ?? [];
-      list.push({ type: s.type, publicKeyHash: createHash('sha256').update(Buffer.from(s.publicKey, 'hex')).digest('hex'), delegators, signer: String(s.signer) });
+      list.push({ type: s.type, publicKeyHash: createHash('sha256').update(Buffer.from(s.publicKey, 'hex')).digest('hex'), delegators, signer: String(s.signer), vote: s.vote === 'reject' || s.vote === 1 ? 'reject' : 'approve' });
       this.sigs.set(hash, list);
     }
     return { ok: true };
@@ -207,7 +208,7 @@ beforeEach(async () => {
   intake = createOfficerIntake({
     humanPages: [HARBOR_P1, TREASURY_P1, ISSUANCE_P1, BOARD_P1], chain, readPage: chain.readPage,
     getPolicyRequest: (h) => store.getPolicyRequest(h), saveAwaiting: (pr) => store.savePolicyRequest(pr), landedTimeoutMs: 150, pollIntervalMs: 10, logger: silent,
-    onLanded: async (r) => { await recordHumanSignature(store, r); },
+    onLanded: async (r) => { await advanceAwaitingHuman({ store, getTxSignatures: (h, p) => chain.getTxSignatures(h), readPage: chain.readPage }, r.txHash, r.authority); },
   });
   awaitingOps.length = 0;
   const relayClients = createRelayClientsHandler({
@@ -960,5 +961,34 @@ describe('G-39: open prepares and proposals are persisted and restored', () => {
     expect(recs[0]!.spki).toBe(bytesToHex(alice.spki));   // the PUBLIC key
     expect(readFileSync(path, 'utf8')).not.toContain('"signature"');
     expect(pr.status).toBe(200);
+  });
+});
+
+describe('G-69 review #2: a human-only page with an accept threshold of 2 needs two people', () => {
+  const BTX = '7f'.repeat(32);
+  it('alice landing leaves it awaiting_human with her on the record; bob landing ends it as signed', async () => {
+    chain.pending.set(BTX, { principal: PRINCIPAL, body: { type: 'writeData', entry: { type: 'doubleHash', data: ['00'] } } });
+    const acc = {
+      getPendingTx: async (h: string) => { const t = chain.pending.get(h); return t ? chain.getPendingTx(h, t.principal) : { found: false }; },
+      getSignerInfo: (page: string) => chain.getSignerInfo(page),
+      getTxSignatures: (h: string) => chain.getTxSignatures(h),
+      listPendingForSigner: async () => [], listPendingViaSignatureChain: async () => [], submit: (env: unknown) => chain.submit(env),
+    } as unknown as AccumulateClient;
+    const o = new Orchestrator({
+      accumulate: acc, keyring: noKeyKeyring('human-only signer'), policy: new MockPolicyClient({ decision: 'approve' }),
+      store, resolver: new Resolver(acc), logger: silent, humanOnlyPages: [BOARD_P1], readPage: chain.readPage,
+    });
+    const KEY = humanRecordId(BTX, BOARD_P1);
+    expect((await o.handle({ txHash: BTX, signerUrl: BOARD_P1 })).status).toBe('awaiting_human');
+
+    const p1 = await prepare(alice, { ref: BTX, page: BOARD_P1, vote: 'approve' });
+    expect((await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: p1.json.prepareId, signature: await signPrepared(alice, p1.json) })).json.status).toBe('landed');
+    expect(await store.get(KEY)).toMatchObject({ status: 'awaiting_human', humanSignatures: [{ seat: `key:${alice.keyHash}`, vote: 'approve' }] });
+
+    const p2 = await prepare(bob, { ref: BTX, page: BOARD_P1, vote: 'approve' });
+    await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: p2.json.prepareId, signature: await signPrepared(bob, p2.json) });
+    const done = await store.get(KEY);
+    expect(done?.status).toBe('signed');
+    expect(done?.humanSignatures?.map((s) => s.publicKeyHash).sort()).toEqual([alice.keyHash, bob.keyHash].sort());
   });
 });

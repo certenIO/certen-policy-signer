@@ -449,11 +449,22 @@ people -- runs its seat with `wallet.human_scopes`. Each entry is a key page wit
   `policyEvidence.awaitingHumanSignature: {page, vote}`). A deny without `submit_reject_vote` is
   `rejected`, as for a keyed scope. The page has no entry in the keyring, so every signing lookup for it
   refuses; a process whose every seat is human-only holds a keyring with no key at all.
-- **A person signs** the stored request through officer intake (prepare with `ref` = the transaction
-  hash, `page` = the human page, `vote` as the receipt says). When their signature **lands**, the request
-  ends: `signed` for an approve, `rejected` for a reject, with `signedBy` (page, `ecdsaSha256`, key hash,
-  delegators) on the receipt. While `awaiting_human`, later polls do not ask the engine again; the
+- **People sign** the stored request through officer intake (prepare with `ref` = the transaction hash,
+  `page` = the human page, `vote` as the receipt says). The request ends when the **page's threshold is met
+  on chain**: the signer reads the transaction's signature set and the page, and counts distinct seats of
+  that page (a key entry, or a delegate seat when the page is the outermost delegator) by vote. Approvals
+  reaching the accept threshold end it `signed`; rejections reaching the reject threshold (0 = the accept
+  threshold) end it `rejected`. Until then every counted signature is kept on the request
+  (`humanSignatures`). This is read when officer intake sees a signature land AND on every poll, so a
+  signature that lands late is never lost. While `awaiting_human`, polls do not ask the engine again; the
   transaction executing or expiring also ends it.
+- **A human vote that contradicts the owed vote** ends the request as the chain says (`signed` /
+  `rejected`), but is never recorded as fulfilling the policy decision: the request and the receipt carry
+  `humanOverride: {owed, cast}`, `lastError` is `human_override: owed X, cast Y`, and it is logged at warn.
+- **Record identity.** A human-only page's request is keyed `<txHash>@<page>`, separate from a keyed seat's
+  record for the same transaction (keyed by the tx hash), so one never pre-empts the other.
+  `GET /v1/requests/:tx` returns every page's record under `seats`. A human-only poller gets no gateway
+  pending-list supplement (that list is the keyed identity's).
 
 A human-only page must be listed in `officer_intake.human_pages` (with intake enabled) and must not also be
 a keyed scope or `wallet.signer_url`; any key field on the entry refuses the boot. A `policy` block is

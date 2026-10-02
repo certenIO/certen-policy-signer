@@ -16,6 +16,7 @@ import type { PageState } from './ops/rotate.js';
 import { checkKeyPageChange, KeyPageRefusal } from './ops/keypage-guard.js';
 import { finaliseHold, recordHold } from './store/pending-hold.js';
 import { humanRecordId } from './store/store.js';
+import { advanceAwaitingHuman } from './officer/landed.js';
 
 export interface OrchestratorOptions {
   submitRejectVote?: boolean;   // default false: deny => withhold signature (tx expires)
@@ -230,8 +231,12 @@ export class Orchestrator {
     // would rewrite the decision under them; the request ends when their signature lands (officer intake)
     // or when the transaction goes away (handled just above).
     if (priorStatus === 'awaiting_human') {
-      logger.debug({ tx: ref.txHash }, 'awaiting a human signature through officer intake');
-      return (await store.get(this.rid(ref)))!;
+      // ...but the chain is read on every poll (review #3): the people's signatures are counted against the
+      // page's thresholds, so a signature that landed after officer intake stopped watching still ends it.
+      logger.debug({ tx: ref.txHash }, 'awaiting a human signature through officer intake; reading the chain');
+      const getTxSignatures = this.d.accumulate.getTxSignatures?.bind(this.d.accumulate);
+      return (await advanceAwaitingHuman({ store, readPage: this.d.readPage, ...(getTxSignatures ? { getTxSignatures } : {}), logger, now: this.now }, ref.txHash, ref.signerUrl))
+        ?? (await store.get(this.rid(ref)))!;
     }
     await store.update(this.rid(ref), {
       status: 'awaiting_policy', account: tx.account, signerVersion: tx.signerVersion,

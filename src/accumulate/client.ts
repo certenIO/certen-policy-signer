@@ -58,6 +58,8 @@ export interface ChainSignature {
   delegators: string[];
   /** The key page the signature was made on, when the record names one. */
   signer?: string;
+  /** The vote the signature casts, as the record says (absent there = accept = `approve`). */
+  vote?: 'approve' | 'reject' | 'abstain';
 }
 
 /**

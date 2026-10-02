@@ -22,7 +22,7 @@ import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring, noKeyKeyring, MapKeyring } from '../src/signer/keyring.js';
 import { Orchestrator } from '../src/orchestrator.js';
 import { Poller } from '../src/poller.js';
-import { recordHumanSignature } from '../src/officer/landed.js';
+import { advanceAwaitingHuman } from '../src/officer/landed.js';
 import type { PageState } from '../src/ops/rotate.js';
 import type { Decision } from '../src/types.js';
 
@@ -221,53 +221,115 @@ describe('orchestrator: a human-only seat never signs', () => {
 /* the landed hook and a restart                                       */
 /* ------------------------------------------------------------------ */
 
-describe('a landed personal signature ends the request; all of it survives a restart', () => {
-  const landed = { txHash: TX, authority: SUMMIT_P1, page: SUMMIT_P1, delegators: [] as string[], keyHash: 'b2'.repeat(32), vote: 'approve' as const };
+describe('the people\u2019s signatures, counted from the chain, end the request; all of it survives a restart', () => {
+  const PEOPLE = ['b1', 'b2', 'b3'].map((x) => x.repeat(32));
+  /** SUMMIT_P1 as the chain has it: three people, accept threshold `accept`, reject threshold `reject`. */
+  const pageOf = (accept: number, reject = 0): PageState => ({
+    version: 2, threshold: accept, rejectThreshold: reject, keyHashes: PEOPLE, entries: PEOPLE.map((keyHash) => ({ keyHash, delegate: null })),
+  });
+  const sig = (keyHash: string, vote: 'approve' | 'reject' = 'approve', signer = SUMMIT_P1) => ({ type: 'ecdsaSha256', publicKeyHash: keyHash, delegators: [] as string[], signer, vote });
+  /** A seat whose chain reports `onChain` as the signature set (mutable), and `page` as the page. */
+  function chainSeat(o: { decision: 'approve' | 'deny'; page: PageState; store?: Store }) {
+    const onChain: ReturnType<typeof sig>[] = [];
+    const st = seat({ policy: new MockPolicyClient({ decision: o.decision, reason: 'FICTIONAL seat rule' }), readPage: async () => o.page, ...(o.store ? { store: o.store } : {}) });
+    (st.acc as unknown as { getTxSignatures: unknown }).getTxSignatures = async () => ({ status: 'pending', delivered: false, signatures: [...onChain] });
+    return { ...st, onChain, tally: () => advanceAwaitingHuman({ store: st.store, getTxSignatures: async () => ({ status: 'pending', delivered: false, signatures: [...onChain] }), readPage: async () => o.page }, TX, SUMMIT_P1) };
+  }
 
-  it('only an awaiting_human request for the page the signature satisfied is ended', async () => {
-    const s = seat({ policy: new MockPolicyClient({ decision: 'approve' }) });
-    await s.go();
-    expect(await recordHumanSignature(s.store, { ...landed, authority: 'acc://summit-inspection-tcl1.acme/book/2' })).toBe(false);
-    expect((await s.store.get(HID))?.status).toBe('awaiting_human');
-    expect(await recordHumanSignature(s.store, { ...landed, txHash: 'ff'.repeat(32) })).toBe(false);
-    expect(await recordHumanSignature(s.store, landed)).toBe(true);
-    expect((await s.store.get(HID))?.status).toBe('signed');
+  it('one signature on a 2-of-3 page does not end it; the partial signer is kept; the second ends it', async () => {
+    const s = chainSeat({ decision: 'approve', page: pageOf(2) });
+    expect((await s.go()).status).toBe('awaiting_human');
+    s.onChain.push(sig(PEOPLE[0]!));
+    const r1 = await s.tally();
+    expect(r1).toMatchObject({ status: 'awaiting_human', humanSignatures: [{ seat: `key:${PEOPLE[0]}`, vote: 'approve' }] });
+    // The same seat twice is still one seat.
+    s.onChain.push(sig(PEOPLE[0]!));
+    expect((await s.tally())?.status).toBe('awaiting_human');
+    s.onChain.push(sig(PEOPLE[1]!));
+    const r2 = await s.tally();
+    expect(r2).toMatchObject({ status: 'signed' });
+    expect(r2?.humanSignatures).toHaveLength(2);
+    expect(r2?.humanOverride).toBeUndefined();
     expect(await s.store.getReceipt(HID)).toMatchObject({
-      decision: 'approve', vote: 'approve',
-      signedBy: { page: SUMMIT_P1, signatureType: 'ecdsaSha256', publicKeyHash: landed.keyHash, delegators: [] },
+      decision: 'approve', vote: 'approve', signedBy: { page: SUMMIT_P1, publicKeyHash: PEOPLE[0] },
       policyEvidence: { awaitingHumanSignature: { page: SUMMIT_P1, vote: 'approve' } },
     });
-    // Finished: a second landing changes nothing.
-    expect(await recordHumanSignature(s.store, landed)).toBe(false);
+    expect(s.acc.submissions).toHaveLength(0);
   });
 
-  it('a reject vote ends it as rejected', async () => {
-    const s = seat({ policy: new MockPolicyClient({ decision: 'deny' }), submitRejectVote: true });
+  it('only signatures that are this page\u2019s count: another page, or a key not on the page, does not', async () => {
+    const s = chainSeat({ decision: 'approve', page: pageOf(1) });
     await s.go();
-    expect(await recordHumanSignature(s.store, { ...landed, vote: 'reject' })).toBe(true);
-    expect((await s.store.get(HID))?.status).toBe('rejected');
+    s.onChain.push(sig(PEOPLE[0]!, 'approve', 'acc://summit-inspection-tcl1.acme/book/2'), sig('ee'.repeat(32)));
+    const r = await s.tally();
+    expect(r?.status).toBe('awaiting_human');
+    expect(r?.humanSignatures ?? []).toEqual([]);
   });
 
-  it('FileStore: awaiting_human, the stored request and the receipt survive a restart; the engine is not asked again', async () => {
+  it('a late landing is picked up by the next poll: the orchestrator reads the chain (review #3)', async () => {
+    const s = chainSeat({ decision: 'approve', page: pageOf(1) });
+    await s.go();
+    s.onChain.push(sig(PEOPLE[2]!));        // landed after officer intake stopped watching
+    expect((await s.go()).status).toBe('signed');
+  });
+
+  it('nothing changes when the chain or the page cannot be read', async () => {
+    const s = seat({ policy: new MockPolicyClient({ decision: 'approve' }), readPage: async () => { throw new Error('FICTIONAL node down'); } });
+    await s.go();
+    (s.acc as unknown as { getTxSignatures: unknown }).getTxSignatures = async () => ({ status: 'pending', delivered: false, signatures: [sig(PEOPLE[0]!)] });
+    expect((await s.go()).status).toBe('awaiting_human');
+    expect(await advanceAwaitingHuman({ store: s.store, readPage: async () => pageOf(1), getTxSignatures: async () => ({ status: '', delivered: false, signatures: [], unavailable: 'FICTIONAL' }) }, TX, SUMMIT_P1))
+      .toMatchObject({ status: 'awaiting_human' });
+  });
+
+  it('rejections reaching the reject threshold end it as rejected (0 = the accept threshold)', async () => {
+    const s = chainSeat({ decision: 'deny', page: pageOf(2) });
+    expect((await s.go()).status).toBe('awaiting_human');
+    s.onChain.push(sig(PEOPLE[0]!, 'reject'));
+    expect((await s.tally())?.status).toBe('awaiting_human');
+    s.onChain.push(sig(PEOPLE[1]!, 'reject'));
+    expect((await s.tally())).toMatchObject({ status: 'rejected' });
+    expect((await s.store.getReceipt(HID))?.humanOverride).toBeUndefined();
+  });
+
+  it('a vote that contradicts the one owed is recorded as an override, not as fulfilling the decision (review #6)', async () => {
+    const s = chainSeat({ decision: 'approve', page: pageOf(1) });
+    await s.go();
+    s.onChain.push(sig(PEOPLE[0]!, 'reject'));
+    const r = await s.tally();
+    expect(r).toMatchObject({ status: 'rejected', humanOverride: { owed: 'approve', cast: 'reject' }, lastError: 'human_override: owed approve, cast reject' });
+    expect(await s.store.getReceipt(HID)).toMatchObject({ decision: 'approve', vote: 'reject', humanOverride: { owed: 'approve', cast: 'reject' } });
+
+    const d = chainSeat({ decision: 'deny', page: pageOf(1) });
+    await d.go();
+    d.onChain.push(sig(PEOPLE[0]!, 'approve'));
+    expect(await d.tally()).toMatchObject({ status: 'signed', humanOverride: { owed: 'reject', cast: 'approve' } });
+  });
+
+  it('FileStore: awaiting_human, the partial signers, the stored request and the receipt survive a restart; the engine is not asked again', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'g69-store-')), 'state.json');
-    const first = seat({ policy: new MockPolicyClient({ decision: 'approve', reason: 'FICTIONAL rule passed' }), store: new FileStore(path) });
+    const first = chainSeat({ decision: 'approve', page: pageOf(2), store: new FileStore(path) });
     expect((await first.go()).status).toBe('awaiting_human');
+    first.onChain.push(sig(PEOPLE[0]!));
+    await first.tally();
 
     const reopened = new FileStore(path);
-    expect((await reopened.get(HID))?.status).toBe('awaiting_human');
+    expect(await reopened.get(HID)).toMatchObject({ status: 'awaiting_human', humanSignatures: [{ seat: `key:${PEOPLE[0]}` }] });
     expect((await reopened.getPolicyRequest(TX))?.summaryHash).toMatch(/^[0-9a-f]{64}$/);
     expect((await reopened.getReceipt(HID))?.policyEvidence).toMatchObject({ awaitingHumanSignature: { page: SUMMIT_P1 } });
 
     const policy = new MockPolicyClient({ decision: 'deny' });
     const decide = vi.spyOn(policy, 'decide');
-    const second = seat({ policy, store: reopened });
-    expect((await second.go()).status).toBe('awaiting_human');
+    const second = chainSeat({ decision: 'deny', page: pageOf(2), store: reopened });
+    second.onChain.push(sig(PEOPLE[0]!), sig(PEOPLE[1]!));
+    (second.acc as unknown as { getTxSignatures: unknown }).getTxSignatures = async () => ({ status: 'pending', delivered: false, signatures: [...second.onChain] });
+    const st2 = seat({ policy, store: reopened, readPage: async () => pageOf(2) });
+    (st2.acc as unknown as { getTxSignatures: unknown }).getTxSignatures = async () => ({ status: 'pending', delivered: false, signatures: [...second.onChain] });
+    expect((await st2.go()).status).toBe('signed');
     expect(decide).not.toHaveBeenCalled();
-
-    expect(await recordHumanSignature(reopened, landed)).toBe(true);
     expect((await new FileStore(path).get(HID))?.status).toBe('signed');
     expect(first.acc.submissions).toHaveLength(0);
-    expect(second.acc.submissions).toHaveLength(0);
+    expect(st2.acc.submissions).toHaveLength(0);
   });
 });
 
