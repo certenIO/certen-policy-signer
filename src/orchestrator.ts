@@ -12,6 +12,9 @@ import { Notifier, NotifyEvent, NULL_NOTIFIER } from './notify.js';
 import { PendingRef, PolicyRequest, Receipt, ResolvedTx, SigningRequest } from './types.js';
 import { headerDeadlinePassed } from './accumulate/header.js';
 import { withDisplay } from './display.js';
+import type { PageState } from './ops/rotate.js';
+import { checkKeyPageChange, KeyPageRefusal } from './ops/keypage-guard.js';
+import { finaliseHold, recordHold } from './store/pending-hold.js';
 
 export interface OrchestratorOptions {
   submitRejectVote?: boolean;   // default false: deny => withhold signature (tx expires)
@@ -63,6 +66,13 @@ export interface OrchestratorDeps {
   configVersion?: string;
   /** `decoders.labels`, shown beside addresses in the Phase 7 display (`PolicyRequest.display`). */
   displayLabels?: Record<string, string>;
+  /**
+   * G-65: read a key page off the chain at decision time. Before this signer approves an `updateKeyPage`
+   * transaction it applies the body's operations to what this returns and refuses a change that would
+   * leave the page unsatisfiable. Absent (or failing) => an `updateKeyPage` is never approved: the page
+   * cannot be read, and the guard never assumes a page state.
+   */
+  readPage?: (page: string) => Promise<PageState>;
   options?: OrchestratorOptions;
   now?: () => number; // injectable clock (ms) for tests
 }
@@ -193,7 +203,8 @@ export class Orchestrator {
     if (r.kind === 'gone') {
       const status = r.reason === 'executed' ? 'signed' : 'expired';
       logger.info({ tx: ref.txHash, reason: r.reason }, 'tx gone before signing');
-      return store.update(ref.txHash, { status });
+      // G-64: a hold that ends because the transaction went away is still kept, with that as its outcome.
+      return store.update(ref.txHash, { status, ...finaliseHold(await store.get(ref.txHash), `gone:${r.reason}`, this.now()) });
     }
     const tx = r.tx;
     await store.update(ref.txHash, {
@@ -289,7 +300,15 @@ export class Orchestrator {
         { tx: ref.txHash, reason: decision.reason },
         'policy engine has not decided yet; withholding signature and will retry',
       );
-      return store.update(ref.txHash, { status: 'awaiting_policy', lastError: undefined });
+      // G-64: keep WHY, and under which versions, on the record -- updated on every re-evaluation.
+      const pending = recordHold(await store.get(ref.txHash), decision, this.now());
+      return store.update(ref.txHash, { status: 'awaiting_policy', lastError: undefined, pending });
+    }
+
+    // G-64: the engine has decided; the hold (if there was one) ends here and is kept as history.
+    {
+      const fin = finaliseHold(await store.get(ref.txHash), decision.decision, this.now());
+      if (fin.pendingFinal) await store.update(ref.txHash, fin);
     }
 
     // SR8 emergency pause — checked BEFORE the deny branch, because a Reject vote is still a SIGNATURE.
@@ -353,6 +372,10 @@ export class Orchestrator {
       });
       return store.update(ref.txHash, { status: 'rejected', lastError: 'local_guard_block' });
     }
+
+    // G-65: never approve an updateKeyPage that would brick the page it changes (see keyPageRefusal).
+    const brick = await this.keyPageRefusal(tx);
+    if (brick) return this.refuseKeyPage(tx, brick, decision);
 
     // 3. Sign + submit (approve). The deadline is re-read against the clock now: an approval that arrived
     // after the transaction died must not become a late signature (0031).
@@ -431,7 +454,61 @@ export class Orchestrator {
       },
     });
     const status = refusal.lastError === 'header_deadline_passed' ? 'expired' : 'rejected';
-    return this.d.store.update(tx.txHash, { status, lastError: refusal.lastError });
+    return this.d.store.update(tx.txHash, {
+      status, lastError: refusal.lastError,
+      // G-64: a refusal before any decision ends the hold too (after a decision it has already ended).
+      ...finaliseHold(await this.d.store.get(tx.txHash), refusal.lastError, this.now()),
+    });
+  }
+
+  /**
+   * G-65: why an approve vote on this transaction must be withheld because it would brick a key page, or
+   * undefined when it may proceed.
+   *
+   * Only an `updateKeyPage` body changes a page's entries or thresholds, and its principal IS the page it
+   * changes. The operations are the resolver's decoding of the on-chain body (`tx.governance`); the page
+   * is read NOW. A body whose operations could not be decoded, and a page that cannot be read, are both
+   * refusals -- never an assumed page state.
+   */
+  private async keyPageRefusal(tx: ResolvedTx): Promise<KeyPageRefusal | undefined> {
+    if (tx.bodyType !== 'updateKeyPage') return undefined;
+    const ops = tx.governance?.kind === 'updateKeyPage' ? tx.governance.operations : [{ type: 'unknown', unrecognized: true }];
+    const v = await checkKeyPageChange(this.d.readPage, tx.account, ops);
+    return v.ok ? undefined : v.refusal;
+  }
+
+  /**
+   * Withhold the approve vote the engine asked for. No signature of any kind is cast.
+   *
+   * WHY WITHHOLD, NOT REJECT. Both are fail-closed (neither can carry the change towards execution). The
+   * engine -- the party's own policy (P1) -- decided `approve`; this guard is the signer's safety
+   * interlock, not a second policy, so it refuses to sign rather than inventing a reject vote the policy
+   * never chose. That is the same posture as the SR4 local guard above. A party that wants the change
+   * actively killed still has its policy's `deny` (which casts a reject when configured) and its humans.
+   *
+   *   - The change would brick the page: terminal `rejected`, with a receipt that records the engine's
+   *     approve, `blockedBy: keypage_guard` and the structured refusal (reason, threshold, entries).
+   *   - The page could not be read: NOT terminal. Nothing is known about the change, so the request stays
+   *     `awaiting_policy` and is asked again next poll; still nothing is signed.
+   */
+  private async refuseKeyPage(
+    tx: ResolvedTx,
+    refusal: KeyPageRefusal,
+    decision: { decision: string; reason?: string; evidence?: Record<string, unknown> },
+  ): Promise<SigningRequest> {
+    const lastError = `keypage_guard: ${refusal.reason}`;
+    if (refusal.reason === 'page_unreadable') {
+      this.d.logger.warn({ tx: tx.txHash, page: tx.account, refusal }, 'key page unreadable; withholding the approve vote and will retry');
+      return this.d.store.update(tx.txHash, { status: 'awaiting_policy', lastError });
+    }
+    this.d.logger.warn({ tx: tx.txHash, page: tx.account, refusal }, 'REFUSING to approve an updateKeyPage that would brick the page; no signature cast');
+    await this.saveReceipt({
+      txHash: tx.txHash, operationId: tx.operationId, decision: 'approve',
+      reason: decision.reason,
+      ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
+      policyEvidence: { ...(decision.evidence ?? {}), blockedBy: 'keypage_guard', keyPageRefusal: refusal },
+    });
+    return this.d.store.update(tx.txHash, { status: 'rejected', lastError });
   }
 
   /**

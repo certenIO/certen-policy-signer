@@ -206,7 +206,7 @@ beforeEach(async () => {
   const relayClients = createRelayClientsHandler({
     clients: [{ name: 'harbor-console', key: CONSOLE_KEY, scopes: ['pending', 'tx', 'governance'] }], reservedKeys: [GOV_KEY],
     query: async () => { throw new Error('not found'); }, evm: [], getPolicyRequest: (h) => store.getPolicyRequest(h),
-    governanceKey: GOV_KEY, pages: () => [ISSUANCE_P1],
+    governanceKey: GOV_KEY, pages: () => [ISSUANCE_P1], readPage: chain.readPage,
     applyKeyPageOp: async (op) => {
       const st = await chain.readPage(ISSUANCE_P1);
       const r: KeyPageResult = { ok: true, op: op.op, submitted: ['ab'.repeat(32)], before: st, after: st, awaitingConsent: true };
@@ -441,6 +441,9 @@ describe('governance proposal origination', () => {
 
 describe('consent path: a governance tx awaiting a delegate signature', () => {
   it('POST /relay/governance add-delegate is recorded; the delegate-page human views, prepares and signs it as a transaction ref', async () => {
+    // Before the seat is added it is not on the page. (The shared fixture seats it for the delegated-signing
+    // tests; adding a seat the page already holds is a duplicate entry the network, and G-65, refuse.)
+    chain.pages.get(ISSUANCE_P1.toLowerCase())!.keys = [{ publicKeyHash: 'dd'.repeat(32) }];
     const g = await call(port, 'POST', '/relay/governance', { ...C, 'x-governance-key': GOV_KEY }, { page: ISSUANCE_P1, operations: [{ type: 'add-delegate', delegate: 'acc://fdb-treasury-tcl1.acme/book' }] });
     expect(g.json).toMatchObject({ status: 'awaiting_consent' });
     const hash = 'ab'.repeat(32);
@@ -651,5 +654,98 @@ describe('proposal intake: claim and signing-page threshold', () => {
     const r = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: p.json.prepareId, signature: await signPrepared(tess, p.json) });
     expect(r.status).toBe(200);
     expect(await store.getPolicyRequest(p.json.txHash)).toMatchObject({ account: ISSUANCE_P2, summaryHash: c.json.summaryHash });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* G-65: refuse a key-page change that would brick the page            */
+/* ------------------------------------------------------------------ */
+
+describe('G-65: proposals and officer signatures never carry a change that would brick a page', () => {
+  const H = { ...C, 'x-governance-key': GOV_KEY };
+  const propose = (page: string, operations: unknown[]) => call(port, 'POST', '/relay/governance/proposal', H, { page, operations, proposer: 'ada (FICTIONAL)' });
+  const GOV_TX = 'ab12'.repeat(16);
+  /** A pending updateKeyPage on HARBOR_P2 (one key, threshold one), viewable by officers. */
+  async function pendingGovernance(operation: unknown[], principal = HARBOR_P2) {
+    chain.pending.set(GOV_TX, { principal, body: { type: 'updateKeyPage', operation } });
+    await store.savePolicyRequest(withDisplay({
+      requestId: 'g1', txHash: GOV_TX, account: principal, actionSummary: 'FICTIONAL key-page change', expiresAt: '2026-12-31T00:00:00Z', bodyType: 'updateKeyPage',
+    }));
+  }
+
+  it('a proposal that would brick the page is refused with the structured reason; an unreadable page is 503', async () => {
+    const r = await propose(HARBOR_P2, [{ type: 'set-threshold', threshold: 2 }]);
+    expect(r.status).toBe(400);
+    expect(r.json).toMatchObject({ reason: 'threshold_exceeds_entries', refusal: { reason: 'threshold_exceeds_entries', threshold: 2, entries: 1, page: HARBOR_P2 } });
+    expect((await propose(HARBOR_P2, [{ type: 'remove-key', keyHash: 'cc'.repeat(32) }])).json).toMatchObject({ reason: 'no_entries' });
+    const unreadable = await propose('acc://harbor-mfg-tcl1.acme/book/3', [{ type: 'add-key', keyHash: 'ee'.repeat(32) }]);
+    expect(unreadable.status).toBe(503);
+    expect(unreadable.json).toMatchObject({ reason: 'page_unreadable' });
+    expect(intake.proposals()).toHaveLength(0);
+  });
+
+  it('a proposal is measured again at prepare: a page that changed since is refused', async () => {
+    const created = await propose(HARBOR_P2, [{ type: 'add-key', keyHash: 'ee'.repeat(32) }, { type: 'set-threshold', threshold: 2 }]);
+    expect(created.status).toBe(200);
+    chain.pages.get(HARBOR_P2.toLowerCase())!.keys.push({ publicKeyHash: 'ee'.repeat(32) });   // somebody else added it meanwhile
+    const prep = await prepare(alice, { ref: created.json.proposalId, page: HARBOR_P1, vote: 'approve' });
+    expect(prep.status).toBe(400);
+    expect(prep.json).toMatchObject({ error: 'duplicate_entry', refusal: { reason: 'duplicate_entry', page: HARBOR_P2 } });
+  });
+
+  it('a proposal is measured again at intake, right before submit: refused, nothing submitted, proposal reopened', async () => {
+    const created = await propose(HARBOR_P2, [{ type: 'add-key', keyHash: 'ee'.repeat(32) }, { type: 'set-threshold', threshold: 2 }]);
+    const prep = await prepare(alice, { ref: created.json.proposalId, page: HARBOR_P1, vote: 'approve' });
+    expect(prep.status).toBe(200);
+    chain.pages.get(HARBOR_P2.toLowerCase())!.keys = [];   // the page lost its key meanwhile
+    const r = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prep.json.prepareId, signature: await signPrepared(alice, prep.json) });
+    expect(r.status).toBe(400);
+    expect(r.json).toMatchObject({ error: 'threshold_exceeds_entries', refusal: { threshold: 2, entries: 1 } });
+    expect(chain.submitted).toHaveLength(0);
+    expect(intake.proposals()[0].status).toBe('proposed');
+  });
+
+  it('an approve on a pending updateKeyPage that would brick the page is refused at prepare; a reject is allowed', async () => {
+    await pendingGovernance([{ type: 'setThreshold', threshold: 3 }]);
+    const prep = await prepare(alice, { ref: GOV_TX, page: HARBOR_P1, vote: 'approve' });
+    expect(prep.status).toBe(400);
+    expect(prep.json).toMatchObject({ error: 'threshold_exceeds_entries', refusal: { threshold: 3, entries: 1, page: HARBOR_P2 } });
+
+    // Rejecting a bricking change is exactly what a human should be able to do.
+    const rej = await prepare(alice, { ref: GOV_TX, page: HARBOR_P1, vote: 'reject' });
+    expect(rej.status).toBe(200);
+    const r = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: rej.json.prepareId, signature: await signPrepared(alice, rej.json) });
+    expect(r.status).toBe(200);
+    expect(chain.submitted).toHaveLength(1);
+    expect(chain.submitted[0].signatures[0].vote).toBe('reject');
+  });
+
+  it('an approve is measured again at intake against the chain body and a fresh page read', async () => {
+    await pendingGovernance([{ type: 'add', entry: { keyHash: 'ee'.repeat(32) } }]);
+    const prep = await prepare(alice, { ref: GOV_TX, page: HARBOR_P1, vote: 'approve' });
+    expect(prep.status).toBe(200);
+    chain.pages.get(HARBOR_P2.toLowerCase())!.keys.push({ publicKeyHash: 'ee'.repeat(32) });
+    const r = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prep.json.prepareId, signature: await signPrepared(alice, prep.json) });
+    expect(r.status).toBe(400);
+    expect(r.json).toMatchObject({ error: 'duplicate_entry' });
+    expect(chain.submitted).toHaveLength(0);
+  });
+
+  it('an approve on a change to a page that cannot be read is refused 503 page_unreadable', async () => {
+    const P3 = 'acc://harbor-mfg-tcl1.acme/book/3';
+    await pendingGovernance([{ type: 'add', entry: { keyHash: 'ee'.repeat(32) } }], P3);
+    const prep = await prepare(alice, { ref: GOV_TX, page: HARBOR_P1, vote: 'approve', principal: P3 });
+    expect(prep.status).toBe(503);
+    expect(prep.json).toMatchObject({ error: 'page_unreadable' });
+    expect(chain.submitted).toHaveLength(0);
+  });
+
+  it('a valid change is still signed and submitted', async () => {
+    await pendingGovernance([{ type: 'add', entry: { keyHash: 'ee'.repeat(32) } }, { type: 'setThreshold', threshold: 2 }]);
+    const prep = await prepare(alice, { ref: GOV_TX, page: HARBOR_P1, vote: 'approve' });
+    expect(prep.status).toBe(200);
+    const r = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prep.json.prepareId, signature: await signPrepared(alice, prep.json) });
+    expect(r.status).toBe(200);
+    expect(chain.submitted).toHaveLength(1);
   });
 });

@@ -13,6 +13,26 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Added
 
+- **G-64: why a seat is holding is kept.** When the policy engine answers `pending`, the request record
+  now stores `pending: { reason, versions: { ruleSetVersion, providerConfigVersion, signerConfigVersion },
+  since, lastEvaluatedAt, evaluations, history[] }` (history: up to 20 distinct reasons, oldest dropped),
+  updated on each re-evaluation and moved to `pendingFinal` (with `endedAt`, `outcome`) when the request
+  is decided or goes away. Only the reason text (sanitised, length-capped, credential-shaped substrings
+  redacted) and the three version stamps are stored -- never the decision's evidence. Persisted by the
+  FileStore. Exposed on `GET /v1/requests` rows and at the top level of `GET /v1/requests/:tx`.
+
+### Changed
+
+- **G-65: a key-page change that would brick the page is refused everywhere the signer touches one.**
+  This changes the conditions under which a signature is withheld: the machine vote no longer approves a
+  pending `updateKeyPage` whose operations, applied to the page as it reads on chain, would leave no
+  entries or a threshold above the entries, or whose page cannot be read (the request stays
+  `awaiting_policy`). Officer intake refuses an approve on such a change at prepare and at submit, and
+  `POST /relay/governance`, `POST /relay/governance/proposal` and `POST /v1/admin/key-page` refuse it
+  before anything is signed. Migration: a deployment wiring `createRelayClientsHandler` or `Orchestrator`
+  itself must pass `readPage`; without it governance is refused as `page_unreadable` (fail closed).
+  `PageState` gains optional `rejectThreshold` / `responseThreshold`. See docs/OPERATIONS.md.
+
 - **Phase 8 key sources (FICTIONAL Business Transaction Controls lab).** `signer.provider: pkcs11` signs
   with a key in a PKCS#11 token: Ed25519 via `CKM_EDDSA`, P-256 via `CKM_ECDSA` with the output converted
   to DER. The key must be non-extractable and sensitive. The PIN is either process-held or released per

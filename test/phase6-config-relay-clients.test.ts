@@ -13,6 +13,7 @@ import { loadConfig, computeConfigVersion } from '../src/config.js';
 import { createRelayClientsHandler, RelayClientsDeps } from '../src/relay-clients.js';
 import { createServer } from '../src/server.js';
 import type { KeyPageOp, KeyPageResult } from '../src/ops/keypage.js';
+import { KeyPageGuardError } from '../src/ops/keypage-guard.js';
 import type { PolicyRequest } from '../src/types.js';
 
 const silent = pino({ level: 'silent' });
@@ -150,6 +151,9 @@ const rpc = http.createServer((req, res) => {
 
 
 const govCalls: Array<{ op: KeyPageOp; page: string }> = [];
+let pageReadFails = false;
+/** Replaces the applyKeyPageOp stub for one test (G-65: a per-operation refusal from inside it). */
+let applyOverride: ((op: KeyPageOp) => Promise<KeyPageResult>) | undefined;
 let port = 0;
 let server: http.Server;
 const PENDING: PolicyRequest = { requestId: 'r1', txHash: HASH, account: 'acc://fictional-customer-tcl1.acme/intents', actionSummary: 'FICTIONAL', expiresAt: '2026-09-14T00:00:00Z', bodyType: 'writeData' };
@@ -174,8 +178,14 @@ beforeAll(async () => {
     getPolicyRequest: async (h) => (h === HASH ? PENDING : undefined),
     governanceKey: GOV_KEY,
     pages: () => [OURS],
+    // G-65: the page as the chain reads it (one key, threshold one). Mutable so a test can change it.
+    readPage: async () => {
+      if (pageReadFails) throw new Error('FICTIONAL node unreachable');
+      return { version: 1, threshold: 1, keyHashes: ['aa'.repeat(32)], entries: [{ keyHash: 'aa'.repeat(32), delegate: null }] };
+    },
     applyKeyPageOp: async (op, page): Promise<KeyPageResult> => {
       govCalls.push({ op, page });
+      if (applyOverride) return applyOverride(op);
       const st = { version: 1, threshold: 1, keyHashes: [], entries: [] } as unknown as KeyPageResult['before'];
       return { ok: true, op: op.op, submitted: [`acc://${'cc'.repeat(32)}@fictional-bank-tcl1.acme/book/2`], before: st, after: st };
     },
@@ -188,7 +198,7 @@ beforeAll(async () => {
   port = await listen(server);
 });
 afterAll(() => { server?.close(); gw.close(); rpc.close(); });
-afterEach(() => { upstreamCalls.length = 0; govCalls.length = 0; });
+afterEach(() => { upstreamCalls.length = 0; govCalls.length = 0; pageReadFails = false; applyOverride = undefined; });
 
 const C = { 'x-relay-client': 'compliance-decision', 'x-api-key': COMPLIANCE_KEY };
 const T = { 'x-relay-client': 'treasury-decision', 'x-api-key': TREASURY_KEY };
@@ -319,5 +329,60 @@ describe('relay clients: governance', () => {
     expect(r.status).toBe(200);
     expect(r.json).toMatchObject({ txid: `acc://${'cc'.repeat(32)}@fictional-bank-tcl1.acme/book/2`, status: 'confirmed' });
     expect(govCalls).toEqual([{ op: { op: 'add-key', keyHash: 'dd'.repeat(32) }, page: OURS }, { op: { op: 'set-threshold', threshold: 2 }, page: OURS }]);
+  });
+});
+
+describe('relay clients: governance refuses a change that would brick the page (G-65)', () => {
+  const H = { 'x-relay-client': 'treasury-decision', 'x-api-key': TREASURY_KEY, 'x-governance-key': GOV_KEY };
+  const post = (operations: unknown) => call(port, 'POST', '/relay/governance', H, JSON.stringify({ page: OURS, operations }));
+
+  it('a threshold above the entries is refused before anything is applied, with the numbers', async () => {
+    const r = await post([{ type: 'set-threshold', threshold: 2 }]);
+    expect(r.status).toBe(400);
+    expect(r.json).toMatchObject({ status: 'refused', error: 'threshold_exceeds_entries', refusal: { reason: 'threshold_exceeds_entries', threshold: 2, entries: 1, page: OURS }, txids: [] });
+    expect(govCalls).toEqual([]);
+  });
+
+  it('the whole list is judged up front: a valid first op does not get submitted when a later one bricks the page', async () => {
+    const r = await post([{ type: 'add-key', keyHash: 'dd'.repeat(32) }, { type: 'set-threshold', threshold: 3 }]);
+    expect(r.status).toBe(400);
+    expect(r.json.refusal).toMatchObject({ reason: 'threshold_exceeds_entries', opIndex: 1, threshold: 3, entries: 2 });
+    expect(govCalls).toEqual([]);
+  });
+
+  it('removing the last key is refused (no_entries); removing a key not on the page is refused', async () => {
+    expect((await post([{ type: 'remove-key', keyHash: 'aa'.repeat(32) }])).json).toMatchObject({ status: 'refused', error: 'no_entries' });
+    expect((await post([{ type: 'remove-key', keyHash: 'ee'.repeat(32) }])).json).toMatchObject({ status: 'refused', error: 'entry_not_on_page' });
+    expect((await post([{ type: 'add-key', keyHash: 'aa'.repeat(32) }])).json).toMatchObject({ status: 'refused', error: 'duplicate_entry' });
+    expect(govCalls).toEqual([]);
+  });
+
+  it('an unreadable page is a 503 page_unreadable, and nothing is applied', async () => {
+    pageReadFails = true;
+    const r = await post([{ type: 'add-key', keyHash: 'dd'.repeat(32) }]);
+    expect(r.status).toBe(503);
+    expect(r.json).toMatchObject({ status: 'refused', error: 'page_unreadable' });
+    expect(govCalls).toEqual([]);
+  });
+
+  it('a refusal from the per-operation check (fresh read inside applyKeyPageOp) is reported, not swallowed', async () => {
+    applyOverride = async () => { throw new KeyPageGuardError({ reason: 'page_unreadable', page: OURS, message: 'FICTIONAL node down' }); };
+    const r = await post([{ type: 'add-key', keyHash: 'dd'.repeat(32) }]);
+    expect(r.status).toBe(503);
+    expect(r.json).toMatchObject({ status: 'refused', error: 'page_unreadable' });
+
+    applyOverride = async (op) => {
+      const st = { version: 1, threshold: 1, keyHashes: [], entries: [] } as unknown as KeyPageResult['before'];
+      return { ok: false, op: op.op, submitted: [], before: st, after: st, error: 'refused', refusal: { reason: 'threshold_exceeds_entries', threshold: 2, entries: 1, message: 'FICTIONAL' } };
+    };
+    const r2 = await post([{ type: 'add-key', keyHash: 'dd'.repeat(32) }]);
+    expect(r2.status).toBe(400);
+    expect(r2.json).toMatchObject({ status: 'refused', error: 'threshold_exceeds_entries' });
+  });
+
+  it('a valid change still passes', async () => {
+    const r = await post([{ type: 'add-key', keyHash: 'dd'.repeat(32) }, { type: 'set-threshold', threshold: 2 }]);
+    expect(r.status).toBe(200);
+    expect(govCalls).toHaveLength(2);
   });
 });

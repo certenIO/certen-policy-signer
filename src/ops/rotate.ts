@@ -34,6 +34,7 @@ import {
   buildPreimage, buildSigMetaHash, buildSignatureObject, buildSubmitEnvelope, bytesToHex, computeTimestamp, hexToBytes,
 } from '../accumulate/signing.js';
 import { Logger } from '../logger.js';
+import { KeyPageGuardError, simPageFrom, validateKeyPageChange } from './keypage-guard.js';
 
 export type RotateMode = 'updateKey' | 'update' | 'add-then-remove';
 
@@ -77,6 +78,12 @@ export interface PageState {
    * a page that needs nobody, which no page is.
    */
   threshold: number;
+  /**
+   * The raw reject and response thresholds (0 or absent = not set). Optional so a page state built before
+   * these were read still type-checks; the key-page guard (keypage-guard.ts, G-65) reads an absent one as 0.
+   */
+  rejectThreshold?: number;
+  responseThreshold?: number;
   /** The key hashes alone, lower-cased. What the rotation and governance paths compare against. */
   keyHashes: string[];
   /** Every seat, in page order, including the delegations that have no key hash of their own. */
@@ -110,6 +117,8 @@ export async function readPage(acc: RawAccumulateClient, page: string): Promise<
     version: Number(account?.version ?? 0),
     // See PageState.threshold: absent or zero MEANS one, and only the protocol says so.
     threshold: Number(account?.acceptThreshold ?? 0) || 1,
+    rejectThreshold: Number(account?.rejectThreshold ?? 0) || 0,
+    responseThreshold: Number(account?.responseThreshold ?? 0) || 0,
     keyHashes: entries.map((e) => e.keyHash).filter((h): h is string => Boolean(h)),
     entries,
   };
@@ -213,6 +222,11 @@ export async function rotateKey(d: RotateDeps, o: RotateOptions): Promise<Rotate
   if (before.keyHashes.includes(newKeyHash)) {
     throw new Error(`refusing to rotate: the new key (${newKeyHash}) is ALREADY on ${o.page}`);
   }
+  // G-65, against the page as it was just read: a rotation replaces one entry with another, so it cannot
+  // change the count -- but the guard is the one place that says so, and it also refuses a page that is
+  // already unsatisfiable rather than signing on it.
+  const guard = validateKeyPageChange(simPageFrom(before), [{ type: 'update', oldKeyHash, newKeyHash }]);
+  if (!guard.ok) throw new KeyPageGuardError({ ...guard.refusal, page: o.page });
 
   const submitted: string[] = [];
   const timeout = o.confirmTimeoutMs ?? 120_000;

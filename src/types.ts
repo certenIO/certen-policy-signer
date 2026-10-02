@@ -380,6 +380,50 @@ export interface SigningRequest {
   lastError?: string;
   createdAt: number;
   updatedAt: number;
+  /**
+   * G-64: WHY the seat is holding, while it is. Present only while the decision service's latest answer is
+   * `pending`; cleared (and kept as `pendingFinal`) once the request is decided. See src/store/pending-hold.ts.
+   */
+  pending?: PendingHold;
+  /** G-64: the last hold, as it stood when it ended, with when and how. History, never a current state. */
+  pendingFinal?: FinalisedHold;
+}
+
+/** The version stamps a decision service returned with a hold (A6). Each only when it was returned. */
+export interface HoldVersions {
+  ruleSetVersion?: string;
+  providerConfigVersion?: string;
+  signerConfigVersion?: string;
+}
+
+/** One distinct hold reason (reason text + versions), with when it was first and last given and how often. */
+export interface HoldReason {
+  reason: string;
+  versions: HoldVersions;
+  firstSeenAt: string;   // ISO
+  lastSeenAt: string;    // ISO
+  count: number;
+}
+
+/** The current hold on a request: the latest reason and versions, and the distinct reasons before it. */
+export interface PendingHold {
+  /** The decision service's latest stated reason (policy text, sanitised and length-capped). */
+  reason: string;
+  versions: HoldVersions;
+  /** When this hold began (the first `pending` answer since the request was last not held). ISO. */
+  since: string;
+  /** When the decision service last answered `pending`. ISO. */
+  lastEvaluatedAt: string;
+  /** How many `pending` answers this hold has had. */
+  evaluations: number;
+  /** Distinct reasons, oldest first, bounded (HOLD_HISTORY_MAX). The last entry is the current reason. */
+  history: HoldReason[];
+}
+
+/** A hold that ended: `outcome` is the engine's decision (`approve` / `deny`) or why the request went away. */
+export interface FinalisedHold extends PendingHold {
+  endedAt: string;       // ISO
+  outcome: string;
 }
 
 export interface Receipt {

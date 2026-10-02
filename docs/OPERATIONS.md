@@ -169,6 +169,22 @@ The signer **builds the transaction itself**, forces the principal to its own ke
 built, and confirms the change on chain before responding. It refuses to remove a page's last key or set a
 threshold that could never be met.
 
+**Key-page guard (G-65).** Every path that builds, proposes, signs or votes on an `updateKeyPage` -- this
+route, `POST /relay/governance`, `POST /relay/governance/proposal`, officer intake (prepare and, again,
+right before submit) and the machine vote on a pending `updateKeyPage` -- applies the operations, in order,
+to the page **as it reads on chain at that moment** (src/ops/keypage-guard.ts) and refuses a change that
+would leave the page unsatisfiable: no entries; an accept threshold below one or above the entries; a set
+reject or response threshold above the entries; a remove of an entry not on the page; an add or update
+that duplicates an entry. Delegate seats count as entries. The answer carries a structured `refusal`
+(`{reason, message, page, opIndex?, threshold?, entries?, entry?}`; reasons `no_entries`,
+`threshold_below_one`, `threshold_exceeds_entries`, `reject_threshold_exceeds_entries`,
+`response_threshold_exceeds_entries`, `entry_not_on_page`, `duplicate_entry`,
+`unrecognized_operation`) and HTTP 400. A page that cannot be read is refused with `page_unreadable`
+(HTTP 503); the signer never assumes a page state. The machine vote **withholds** its approve (no
+signature of any kind): a bricking change is recorded `rejected` with a receipt naming
+`blockedBy: keypage_guard` and the refusal; an unreadable page leaves the request `awaiting_policy` to be
+asked again. A `reject` vote (an officer's, or the engine's `deny`) is never blocked by the guard.
+
 ### Reading the authority that actually governs
 
 `GET /v1/admin/page` answers, per scope, what the **network** will enforce: the page's threshold, its
@@ -371,13 +387,14 @@ admin key does not open these routes and a client key does not open the admin ro
 | `GET /relay/tx/:hash/receipt` | tx | gateway `/v1/proof/tx/:hash/receipt` |
 | `POST /relay/evm/:chainId/call` `{to, data}` | tx | `{ result }` of `eth_call` on a `relay.evm` chain |
 | `GET /relay/pending/:hash` | pending | the PolicyRequest this signer built for the tx, or 404 |
-| `POST /relay/governance` `{page, operations}` | governance + `x-governance-key` | `{ txid, status, txids }` |
+| `POST /relay/governance` `{page, operations}` | governance + `x-governance-key` | `{ txid, status, txids }`; `status: refused` + `refusal` (400, or 503 `page_unreadable`) when the key-page guard refuses |
 
 The gateway is `relay.gateway`, else the top-level `gateway` block. Governance operations are the typed
 `add-key`, `remove-key`, `set-threshold`, `add-delegate`, `remove-delegate` (1–10 per call, applied in order
 through the same path as `POST /v1/admin/key-page`), and only for a page in this signer's keyring (else 403).
 `status` is `confirmed`, `awaiting_consent` (a delegate must still sign, or the page needs more than one
-signature) or `failed` (HTTP 400). A submitted transaction still awaiting a signature is stored with its
+signature) or `failed` (HTTP 400). The whole operation list is checked by the key-page guard against the page
+as it reads now before the first operation is signed, and each operation again inside the key-page path. A submitted transaction still awaiting a signature is stored with its
 governance display, so a human on the other page can sign it through officer intake as a transaction ref.
 
 `GET /v1/config/version` (admin) returns the `configVersion` stamped on every PolicyRequest and Receipt.

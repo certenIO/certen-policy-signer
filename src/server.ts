@@ -4,6 +4,7 @@ import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import { bytesToHex } from './accumulate/signing.js';
 import { KeyPageOp, KeyPageResult } from './ops/keypage.js';
 import { PageState } from './ops/rotate.js';
+import { KeyPageGuardError } from './ops/keypage-guard.js';
 import { Orchestrator } from './orchestrator.js';
 import { Store } from './store/store.js';
 import { Keyring } from './signer/keyring.js';
@@ -223,7 +224,9 @@ export function createServer(d: ServerDeps): http.Server {
         const reqRow = await d.store.get(m[1]);
         const receipt = await d.store.getReceipt(m[1]);
         if (!reqRow) return json(res, 404, { error: 'not found' });
-        return json(res, 200, { request: reqRow, receipt });
+        // G-64: WHY the seat is holding (`pending`, only while it is) and the last hold once it ended
+        // (`pendingFinal`). Also on `request`; repeated here so a reader need not know the row's shape.
+        return json(res, 200, { request: reqRow, receipt, pending: reqRow.pending ?? null, pendingFinal: reqRow.pendingFinal ?? null });
       }
       // POST /v1/requests/:tx/retry
       m = /^\/v1\/requests\/([a-f0-9]{64})\/retry$/.exec(path);
@@ -382,7 +385,15 @@ export function createServer(d: ServerDeps): http.Server {
           { audit: 'governance_operation', op, page: targetPage, key_hash: createHash('sha256').update(pub).digest('hex') },
           'GOVERNANCE OPERATION REQUESTED',
         );
-        const result = await d.keyPage(op, targetPage);
+        let result: KeyPageResult;
+        try {
+          result = await d.keyPage(op, targetPage);
+        } catch (e) {
+          // G-65: the page could not be read at decision time. Nothing was signed; say why, distinctly.
+          if (!(e instanceof KeyPageGuardError)) throw e;
+          d.logger.warn({ audit: 'governance_operation_refused', page: targetPage, refusal: e.refusal }, 'GOVERNANCE OPERATION REFUSED');
+          return json(res, e.refusal.reason === 'page_unreadable' ? 503 : 400, { ok: false, op: (op as { op?: unknown })?.op ?? null, submitted: [], error: e.refusal.reason, refusal: e.refusal });
+        }
         d.logger.warn({ audit: 'governance_operation_result', ok: result.ok, page: targetPage, submitted: result.submitted, keys: result.after?.keyHashes }, 'GOVERNANCE OPERATION COMPLETE');
         return json(res, result.ok ? 200 : 400, result);
       }

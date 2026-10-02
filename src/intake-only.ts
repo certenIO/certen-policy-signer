@@ -78,6 +78,7 @@ export async function startIntakeOnly(cfg: Config, logger: Logger, opts: { accum
       getPolicyRequest: (h) => store.getPolicyRequest(h),
       governanceKey: cfg.admin.governance_admin_key,
       pages: () => [],                 // no page is held: POST /relay/governance refuses every page
+      readPage: (page) => readPage(accumulate, page),
       propose: (page, ops, proposer) => intake.propose(page, ops, proposer),
       timeoutMs: cfg.relay.timeout_ms,
       logger,

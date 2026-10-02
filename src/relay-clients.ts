@@ -17,6 +17,8 @@ import { normalizeTxRecord } from './accumulate/raw-client.js';
 import { extractAcceptance } from './decode/facts.js';
 import { ACC_URL, DOT_SEGMENT, HEX64, UUID, accError, makeUpstream, readCapped, send } from './relay.js';
 import type { KeyPageOp, KeyPageResult } from './ops/keypage.js';
+import type { PageState } from './ops/rotate.js';
+import { checkKeyPageChange, KeyPageGuardError, KeyPageRefusal, operationsFromKeyPageOps } from './ops/keypage-guard.js';
 import type { PolicyRequest } from './types.js';
 import { Logger } from './logger.js';
 
@@ -36,6 +38,12 @@ export interface RelayClientsDeps {
   /** Pages this signer holds a key for (the keyring). Governance is refused for any other page. */
   pages: () => string[];
   applyKeyPageOp?: (op: KeyPageOp, page: string) => Promise<KeyPageResult>;
+  /**
+   * G-65: read a key page off the chain at decision time. `POST /relay/governance` validates the WHOLE
+   * operation list against what this returns before anything is signed, and refuses when it is absent or
+   * the page cannot be read (`page_unreadable`) -- it never assumes a page state.
+   */
+  readPage?: (page: string) => Promise<PageState>;
   /** Phase 7: record a governance tx this signer submitted that still awaits another signature (officer intake). */
   recordAwaiting?: (r: { txHash: string; page: string; op: KeyPageOp }) => Promise<void>;
   /** Phase 7: `POST /relay/governance/proposal` (officer intake). Absent => 404. */
@@ -52,6 +60,13 @@ const digest = (s: string) => createHash('sha256').update(s).digest();
 function keyMatches(given: unknown, expected: string): boolean {
   const ok = timingSafeEqual(digest(typeof given === 'string' ? given : ''), digest(expected));
   return ok && typeof given === 'string' && expected.length > 0;
+}
+
+/** A key-page guard refusal as an HTTP answer: 503 when the page could not be read (retryable), else 400. */
+function sendRefusal(res: http.ServerResponse, refusal: KeyPageRefusal, txids: string[] = []) {
+  return send(res, refusal.reason === 'page_unreadable' ? 503 : 400, {
+    txid: txids[txids.length - 1] ?? null, status: 'refused', error: refusal.reason, refusal, txids,
+  });
 }
 
 const GOV_TYPES = new Set(['add-key', 'remove-key', 'set-threshold', 'add-delegate', 'remove-delegate']);
@@ -242,10 +257,26 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
         ops.push(v);
       }
       d.logger.warn({ audit: 'relay_governance_operation', client: client.name, page, ops }, 'GOVERNANCE OPERATION REQUESTED (relay client)');
+      // G-65: the whole list, against the page as it reads now, before the first operation is signed --
+      // each operation is its own transaction, so refusing the third after submitting the first two would
+      // leave the page half-changed. Each operation is checked again, against a fresh read, inside
+      // applyKeyPageOp.
+      const check = await checkKeyPageChange(d.readPage, page, operationsFromKeyPageOps(ops));
+      if (!check.ok) {
+        d.logger.warn({ audit: 'relay_governance_refused', client: client.name, page, refusal: check.refusal }, 'GOVERNANCE OPERATION REFUSED: the change would brick the page or the page is unreadable');
+        return sendRefusal(res, check.refusal);
+      }
       const txids: string[] = [];
       let awaiting = false;
       for (const op of ops) {
-        const r = await d.applyKeyPageOp(op, page);
+        let r: KeyPageResult;
+        try {
+          r = await d.applyKeyPageOp(op, page);
+        } catch (e) {
+          if (!(e instanceof KeyPageGuardError)) throw e;
+          d.logger.warn({ audit: 'relay_governance_refused', client: client.name, page, refusal: e.refusal }, 'GOVERNANCE OPERATION REFUSED');
+          return sendRefusal(res, e.refusal, txids);
+        }
         txids.push(...r.submitted);
         // Phase 7: a submitted transaction still waiting for another signature (a delegate's consent, a
         // threshold above one) is recorded so a human on that page can sign it through officer intake.
@@ -254,6 +285,10 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
             const hash = /([0-9a-fA-F]{64})/.exec(t)?.[1]?.toLowerCase();
             if (hash) await d.recordAwaiting({ txHash: hash, page, op }).catch((e) => d.logger.error({ err: (e as Error).message, tx: hash }, 'could not record awaiting governance transaction'));
           }
+        }
+        if (!r.ok && r.refusal) {
+          d.logger.warn({ audit: 'relay_governance_refused', client: client.name, page, refusal: r.refusal }, 'GOVERNANCE OPERATION REFUSED');
+          return sendRefusal(res, r.refusal, txids);
         }
         if (!r.ok) {
           d.logger.warn({ audit: 'relay_governance_result', client: client.name, page, ok: false }, 'GOVERNANCE OPERATION FAILED');

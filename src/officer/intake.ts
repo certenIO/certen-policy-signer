@@ -30,6 +30,7 @@ import { ACC_URL, DOT_SEGMENT, readCapped, send } from '../relay.js';
 import { buildProposalDisplay, proposalOperations, tclSummaryV1, withDisplay, DisplayPair } from '../display.js';
 import { extractAcceptance, extractGovernance } from '../decode/facts.js';
 import type { ActionSummary } from '../types.js';
+import { checkKeyPageChange, KeyPageRefusal, operationsFromKeyPageOps } from '../ops/keypage-guard.js';
 import { createOfficerAuthenticator, OFFICER_AUTH_FAILED } from './auth.js';
 import { P256Key, hexBytes, parseP256Spki, toCanonicalDer, verifyP256Sha256 } from './crypto.js';
 
@@ -205,6 +206,29 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     return undefined;
   }
 
+  /**
+   * G-65: would approving this change brick the page it changes? Read the page NOW (never a cached copy);
+   * an unreadable page is a refusal (`page_unreadable`), never an assumption.
+   *
+   * Only an APPROVE can carry a change towards execution, so only an approve is checked. A reject vote on a
+   * change that would brick the page is exactly what a human should be able to cast, and refusing it would
+   * protect nothing.
+   */
+  async function proposalRefusal(p: Proposal): Promise<KeyPageRefusal | undefined> {
+    const v = await checkKeyPageChange(d.readPage, p.page, operationsFromKeyPageOps(p.operations));
+    return v.ok ? undefined : v.refusal;
+  }
+  async function bodyRefusal(body: { type: string; [k: string]: unknown } | undefined, principal: string): Promise<KeyPageRefusal | undefined> {
+    if (!body) {
+      return { reason: 'unrecognized_operation', page: principal, message: 'the transaction body could not be read, so whether it changes a key page cannot be shown' };
+    }
+    if (body.type !== 'updateKeyPage') return undefined;
+    const g = extractGovernance(body, principal);
+    const v = await checkKeyPageChange(d.readPage, principal, g?.operations ?? [{ type: 'unknown', unrecognized: true }]);
+    return v.ok ? undefined : v.refusal;
+  }
+  const refusalStatus = (r: KeyPageRefusal) => (r.reason === 'page_unreadable' ? 503 : 400);
+
   function sigParams(r: Pick<PrepareRecord, 'spki' | 'page' | 'signerVersion' | 'timestamp' | 'vote' | 'delegators'>): PreimageParams {
     return {
       publicKey: r.spki, signatureType: 'ecdsaSha256', signerUrl: r.page, signerVersion: r.signerVersion,
@@ -302,6 +326,12 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
       // The initiator signs through a page of the book that governs the proposal's page.
       const outermost = delegators.length ? delegators[delegators.length - 1] : page;
       if (!sameUrl(bookOf(outermost), bookOf(p.page))) return send(res, 403, { error: 'signing page is not in the book that governs the proposal page' });
+      // G-65: the page may have changed since the proposal was made; measure it again now.
+      const brick = await proposalRefusal(p);
+      if (brick) {
+        d.logger.warn({ audit: 'officer_prepare_refused', keyHash, page, ref: `proposal:${p.id}`, refusal: brick }, 'officer prepare refused: the proposal would brick the page');
+        return send(res, refusalStatus(brick), { error: brick.reason, refusal: brick });
+      }
       const tx = proposalTx(p, sigMdHash);
       kind = 'proposal'; refStr = `proposal:${p.id}`; principal = p.page; proposalId = p.id;
       txHash = bytesToHex(tx.hash()); display = p.display; summaryHash = p.summaryHash;
@@ -310,6 +340,16 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
       if (!pr || !pr.display || !pr.summaryHash) return send(res, 404, { error: 'not found' });
       const st = await txStatus(ref.hash, pr.account);
       if (st !== 'pending') return send(res, 409, { error: `transaction is ${st}` });
+      if (vote === 'approve') {
+        // G-65: decode the body the chain holds (not a stored summary) and refuse an approve that would brick the page.
+        const live = await d.chain.getPendingTx(ref.hash, pr.account).catch(() => ({ found: false, unavailable: true } as PendingTxResult));
+        if (live.unavailable || !live.found) return send(res, 503, { error: 'transaction state unreadable' });
+        const brick = await bodyRefusal(live.body, live.principal || pr.account);
+        if (brick) {
+          d.logger.warn({ audit: 'officer_prepare_refused', keyHash, page, ref: ref.hash, refusal: brick }, 'officer prepare refused: the transaction would brick the key page');
+          return send(res, refusalStatus(brick), { error: brick.reason, refusal: brick });
+        }
+      }
       kind = 'transaction'; refStr = ref.hash; principal = pr.account; txHash = ref.hash; display = pr.display; summaryHash = pr.summaryHash;
     }
 
@@ -405,6 +445,8 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
 
     // 5. A transaction ref must still be pending at its principal.
     let rawTransaction: unknown;
+    let pendingBody: { type: string; [k: string]: unknown } | undefined;
+    let pendingPrincipal: string | undefined;
     if (rec.kind === 'transaction') {
       const p = await d.chain.getPendingTx(rec.txHash, rec.principal);
       if (p.unavailable) return send(res, 503, { error: 'transaction state unreadable; nothing submitted' });
@@ -413,8 +455,22 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
         return send(res, 409, { error: 'transaction is no longer pending; nothing submitted' });
       }
       rawTransaction = p.rawTransaction;
+      pendingBody = p.body;
+      pendingPrincipal = p.principal;
     } else {
       rawTransaction = proposalTransaction.asObject();
+    }
+
+    // 5b. G-65, at the last moment and against a fresh read: an approve must not carry a change that would
+    // brick the key page it changes. Nothing is submitted on a refusal.
+    if (rec.vote === 'approve') {
+      const brick = proposal
+        ? await proposalRefusal(proposal)
+        : await bodyRefusal(pendingBody, pendingPrincipal || rec.principal);
+      if (brick) {
+        d.logger.warn({ audit: 'officer_signature_refused', prepareId: rec.prepareId, ref: rec.ref, keyHash: rec.keyHash, refusal: brick }, 'officer signature REFUSED: the change would brick the key page; nothing submitted');
+        return send(res, refusalStatus(brick), { error: brick.reason, refusal: brick });
+      }
     }
 
     // 6. Submit.
@@ -488,28 +544,18 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
       return { status: 403, body: { error: 'forbidden: page is not in a book whose human page this signer serves' } };
     }
     if (proposals.size >= MAX_OPEN_PROPOSALS) return { status: 429, body: { error: 'too many open proposals' } };
-    let st: PageState;
-    try { st = await d.readPage(page); }
-    catch { return { status: 503, body: { error: 'page unreadable' } }; }
-    // Simulate the operations against the page as it reads now; refuse what the network would, or what would lock the page.
-    const keys = new Set(st.keyHashes.map((h) => h.toLowerCase()));
-    const delegates = new Set(st.entries.map((e) => e.delegate?.toLowerCase()).filter((x): x is string => !!x));
-    let threshold = st.threshold;
+    // Simulate the operations against the page as it reads now (G-65, keypage-guard.ts): refuse what the
+    // network would, and anything that would leave the page unsatisfiable. The same check runs again at
+    // prepare and at intake, because the page can change in the 24 hours a proposal stays open.
     for (const o of operations) {
-      switch (o.op) {
-        case 'add-key': if (keys.has(o.keyHash)) return { status: 400, body: { error: `key ${o.keyHash} is already on ${page}` } }; keys.add(o.keyHash); break;
-        case 'remove-key': if (!keys.delete(o.keyHash)) return { status: 400, body: { error: `key ${o.keyHash} is not on ${page}` } }; break;
-        case 'add-delegate':
-          if (isPageUrl(o.delegate)) return { status: 400, body: { error: 'a delegate must be a key book, not a page' } };
-          if (delegates.has(o.delegate.toLowerCase())) return { status: 400, body: { error: `${o.delegate} already holds a seat on ${page}` } };
-          delegates.add(o.delegate.toLowerCase()); break;
-        case 'remove-delegate': if (!delegates.delete(o.delegate.toLowerCase())) return { status: 400, body: { error: `${o.delegate} is not on ${page}` } }; break;
-        case 'set-threshold': threshold = o.threshold; break;
-        default: return { status: 400, body: { error: 'operation cannot be proposed' } };
-      }
+      if (o.op === 'add-delegate' && isPageUrl(o.delegate)) return { status: 400, body: { error: 'a delegate must be a key book, not a page' } };
+      if (o.op === 'rotate-key') return { status: 400, body: { error: 'operation cannot be proposed' } };
     }
-    if (keys.size + delegates.size === 0) return { status: 400, body: { error: 'refusing a proposal that leaves the page with no entries' } };
-    if (threshold > keys.size + delegates.size) return { status: 400, body: { error: `threshold ${threshold} exceeds the page's ${keys.size + delegates.size} entries` } };
+    const check = await checkKeyPageChange(d.readPage, page, operationsFromKeyPageOps(operations));
+    if (!check.ok) {
+      d.logger.warn({ audit: 'governance_proposal_refused', page, operations, proposer, refusal: check.refusal }, 'GOVERNANCE PROPOSAL REFUSED: the change would brick the page, or the page is unreadable');
+      return { status: refusalStatus(check.refusal), body: { error: check.refusal.message, reason: check.refusal.reason, refusal: check.refusal } };
+    }
 
     const display = buildProposalDisplay(page, operations, { labels: d.labels });
     const p: Proposal = {

@@ -229,6 +229,8 @@ async function main() {
   const orchestrator = new Orchestrator({
     accumulate, keyring, policy, store, resolver, logger, votes,
     notifier, orgId: cfg.wallet.org_id, scopeRules, configVersion: cfg.configVersion, displayLabels: cfg.decoders.labels,
+    // G-65: an updateKeyPage is approved only after its operations are checked against the page as it reads now.
+    readPage: (page) => readPage(accumulate, page),
     options: {
       submitRejectVote: cfg.behavior.submit_reject_vote,
       maxBadVersionRetries: cfg.behavior.max_bad_version_retries,
@@ -342,6 +344,8 @@ async function main() {
       governanceKey: cfg.admin.governance_admin_key,
       pages: () => keyring.scopes().map((s) => s.page),
       applyKeyPageOp: governKeyPage,
+      // G-65: the whole operation list is checked against the page as it reads now, before anything is signed.
+      readPage: (page) => readPage(accumulate, page),
       // Phase 7: a governance tx still awaiting a signature is stored so a human on that page can sign it via officer intake.
       recordAwaiting: async ({ txHash, page, op }) => store.savePolicyRequest(awaitingGovernanceRequest(txHash, page, op, { labels: cfg.decoders.labels })),
       ...(officerIntake ? { propose: officerIntake.propose } : {}),
