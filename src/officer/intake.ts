@@ -26,6 +26,7 @@ import type { KeyPageOp } from '../ops/keypage.js';
 import type { PageState } from '../ops/rotate.js';
 import type { PolicyRequest } from '../types.js';
 import type { Logger } from '../logger.js';
+import type { Store } from '../store/store.js';
 import { ACC_URL, DOT_SEGMENT, readCapped, send } from '../relay.js';
 import { buildProposalDisplay, proposalOperations, tclSummaryV1, withDisplay, DisplayPair } from '../display.js';
 import { extractAcceptance, extractGovernance } from '../decode/facts.js';
@@ -71,6 +72,8 @@ export interface OfficerIntakeDeps {
    */
   onLanded?: (r: { txHash: string; authority: string; page: string; delegators: string[]; keyHash: string; vote: 'approve' | 'reject' }) => Promise<void>;
   pollIntervalMs?: number;
+  /** G-39: persistence for open prepares and proposals. Absent => in memory only (a restart drops them). */
+  state?: IntakeState;
   now?: () => number;
   logger: Logger;
 }
@@ -87,7 +90,16 @@ export interface Proposal {
   /** `submitting`: one intake holds it between its checks and its submit; nothing else may prepare or submit it. */
   status: 'proposed' | 'submitting' | 'submitted' | 'landed';
   txHash?: string;
+  /**
+   * G-39: the transaction hash being submitted while `submitting`. Recorded (and persisted) BEFORE the submit,
+   * so a submit that errors, or a restart in the middle of one, is settled by reading the chain for this hash
+   * rather than by assuming the proposal is still open.
+   */
+  pendingTxHash?: string;
 }
+
+/** G-39: where open prepares and proposals are kept so they survive a restart (the signer's Store). */
+export type IntakeState = Pick<Store, 'saveIntakeRecord' | 'deleteIntakeRecord' | 'listIntakeRecords'>;
 
 interface PrepareRecord {
   prepareId: string;
@@ -117,6 +129,11 @@ export interface OfficerIntake {
   propose(page: string, operations: KeyPageOp[], proposer: string): Promise<{ status: number; body: unknown }>;
   /** For tests and diagnostics. */
   proposals(): Proposal[];
+  /**
+   * G-39: load persisted prepares and proposals (dropping expired ones) and settle any proposal a restart
+   * caught mid-submit against the chain. Call once, before serving.
+   */
+  restore(): Promise<void>;
 }
 
 export const OFFICER_PATHS = (path: string): boolean =>
@@ -137,10 +154,67 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
   const proposals = new Map<string, Proposal>();
   const isHumanPage = (u: string) => d.humanPages.some((h) => sameUrl(h, u));
 
+  /** Proposals an intake in THIS process is between claim and submit on; a reconcile never touches them. */
+  const inFlight = new Set<string>();
+
+  // ── G-39 persistence. A prepare holds no secret (a public key, hashes, a display); its public key is stored
+  // as hex. Every write is awaited by the route that makes it, and a failed write refuses the operation. ──
+  const prepareToRecord = (r: PrepareRecord): Record<string, unknown> => ({ ...r, spki: bytesToHex(r.spki) });
+  function prepareFromRecord(o: Record<string, unknown>): PrepareRecord | undefined {
+    const spki = typeof o.spki === 'string' && /^[0-9a-f]+$/i.test(o.spki) ? hexToBytes(o.spki) : undefined;
+    if (!spki || typeof o.prepareId !== 'string' || typeof o.expiresAt !== 'number') return undefined;
+    return { ...(o as unknown as PrepareRecord), spki };
+  }
+  const savePrepare = (r: PrepareRecord) => d.state?.saveIntakeRecord('prepare', r.prepareId, prepareToRecord(r)) ?? Promise.resolve();
+  const dropPrepare = (id: string) => d.state?.deleteIntakeRecord('prepare', id) ?? Promise.resolve();
+  const saveProposal = (p: Proposal) => d.state?.saveIntakeRecord('proposal', p.id, { ...p } as unknown as Record<string, unknown>) ?? Promise.resolve();
+  const dropProposal = (id: string) => d.state?.deleteIntakeRecord('proposal', id) ?? Promise.resolve();
+  const logDrop = (kind: string, id: string) => (e: unknown) => d.logger.error({ kind, id, err: (e as Error).message }, 'officer intake: could not drop an expired record from the store');
+
   function sweep() {
     const t = now();
-    for (const [k, r] of prepares) if (r.expiresAt <= t) prepares.delete(k);
-    for (const [k, p] of proposals) if (p.expiresAt <= t) proposals.delete(k);
+    // Expired is refused whether or not the store has caught up: the map entry goes now, the record after.
+    for (const [k, r] of prepares) if (r.expiresAt <= t) { prepares.delete(k); dropPrepare(k).catch(logDrop('prepare', k)); }
+    for (const [k, p] of proposals) if (p.expiresAt <= t && !inFlight.has(k)) { proposals.delete(k); dropProposal(k).catch(logDrop('proposal', k)); }
+  }
+
+  /** Is the transaction on chain (pending or executed)? `unknown` when the chain could not be read. */
+  async function onChain(txHash: string, principal: string): Promise<'present' | 'absent' | 'unknown'> {
+    const p = await d.chain.getPendingTx(txHash, principal).catch(() => ({ found: false, unavailable: true } as PendingTxResult));
+    if (p.unavailable) return 'unknown';
+    return p.found ? 'present' : 'absent';
+  }
+
+  /**
+   * G-39: settle a proposal left `submitting` (a restart mid-submit, or an earlier unreadable chain). On chain
+   * => `submitted` with its txHash; definitively absent => `proposed` again; unreadable => left `submitting`
+   * (nothing may prepare or submit it) and asked again next time. Never `proposed` while it might be on chain.
+   */
+  async function reconcile(p: Proposal): Promise<void> {
+    if (p.status !== 'submitting' || inFlight.has(p.id)) return;
+    const seen = p.pendingTxHash ? await onChain(p.pendingTxHash, p.page) : 'absent';
+    if (seen === 'unknown') return;
+    if (seen === 'present') { p.status = 'submitted'; p.txHash = p.pendingTxHash; }
+    else { p.status = 'proposed'; delete p.pendingTxHash; }
+    d.logger.warn({ proposalId: p.id, status: p.status, txHash: p.txHash }, 'officer intake: proposal left mid-submit settled against the chain');
+    await saveProposal(p);
+  }
+
+  async function restore(): Promise<void> {
+    if (!d.state) return;
+    const t = now();
+    for (const o of await d.state.listIntakeRecords('prepare')) {
+      const r = prepareFromRecord(o);
+      if (!r || r.expiresAt <= t) { await dropPrepare(String(o.prepareId)); continue; }
+      prepares.set(r.prepareId, r);
+    }
+    for (const o of await d.state.listIntakeRecords('proposal')) {
+      const p = o as unknown as Proposal;
+      if (typeof p.id !== 'string' || typeof p.expiresAt !== 'number' || p.expiresAt <= t) { await dropProposal(String(o.id)); continue; }
+      proposals.set(p.id, p);
+      await reconcile(p);
+    }
+    d.logger.info({ prepares: prepares.size, proposals: proposals.size }, 'officer intake: open prepares and proposals restored');
   }
 
   /** Parse `ref` into a tx hash or a live proposal. */
@@ -328,6 +402,7 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     if (ref.kind === 'proposal') {
       const p = ref.proposal;
       if (!p) return send(res, 404, { error: 'not found' });
+      await reconcile(p);   // G-39: a proposal left mid-submit is settled against the chain first
       if (p.status !== 'proposed') return send(res, 409, { error: `proposal already ${p.status}` });
       if (vote !== 'approve') return send(res, 400, { error: 'a proposal is initiated by an approve signature; to reject it, do not sign' });
       // The initiator signs through a page of the book that governs the proposal's page.
@@ -365,6 +440,13 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
       ...(proposalId ? { proposalId } : {}), display, summaryHash, expiresAt: now() + PREPARE_TTL_MS,
     };
     prepares.set(rec.prepareId, rec);
+    // G-39: persisted before it is handed out, so a restart cannot lose (or resurrect) it. A failed write is a refusal.
+    try { await savePrepare(rec); }
+    catch (e) {
+      prepares.delete(rec.prepareId);
+      d.logger.error({ prepareId: rec.prepareId, err: (e as Error).message }, 'officer intake: prepare could not be recorded');
+      return send(res, 503, { error: 'prepare could not be recorded; try again' });
+    }
     d.logger.info({ audit: 'officer_prepare', prepareId: rec.prepareId, ref: refStr, keyHash, page, delegators, vote, txHash }, 'officer signature prepared');
     return send(res, 200, {
       prepareId: rec.prepareId, txHash, sigMdHash: rec.sigMdHash, signerVersion: rec.signerVersion, timestamp: rec.timestamp,
@@ -380,8 +462,16 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     if (typeof b.prepareId !== 'string') return send(res, 400, { error: 'prepareId required' });
     const rec = prepares.get(b.prepareId);
     if (!rec) return send(res, 404, { error: 'prepare not found or expired' });
-    // Single use, whatever the outcome below: a refused attempt must prepare again.
+    // Single use, whatever the outcome below: a refused attempt must prepare again. The map entry goes now
+    // (synchronously, so a concurrent intake cannot use it), and the persisted record before anything else:
+    // if it cannot be removed, nothing is verified or submitted, so a restart can never make it usable again.
     prepares.delete(rec.prepareId);
+    if (rec.expiresAt <= now()) return send(res, 404, { error: 'prepare not found or expired' });
+    try { await dropPrepare(rec.prepareId); }
+    catch (e) {
+      d.logger.error({ prepareId: rec.prepareId, err: (e as Error).message }, 'officer intake: could not record the prepare as used; nothing submitted');
+      return send(res, 503, { error: 'prepare state could not be recorded; nothing submitted' });
+    }
 
     const reject = (reason: string) => {
       d.logger.warn({ audit: 'officer_signature_rejected', prepareId: rec.prepareId, ref: rec.ref, keyHash: rec.keyHash, reason }, 'officer signature REJECTED; nothing submitted');
@@ -417,19 +507,39 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
       proposal = rec.proposalId ? proposals.get(rec.proposalId) : undefined;
       if (!proposal || proposal.status !== 'proposed') return reject('proposal_not_open');
       proposal.status = 'submitting';
+      proposal.pendingTxHash = rec.txHash;
+      inFlight.add(proposal.id);
     }
     let submitted = false;
+    let uncertain = false;
     try {
-      return await intakeClaimed(res, rec, der, proposal, reject, () => { submitted = true; });
+      if (proposal) {
+        // G-39: the claim (and the hash about to be submitted) is on disk before the submit.
+        try { await saveProposal(proposal); }
+        catch (e) {
+          d.logger.error({ proposalId: proposal.id, err: (e as Error).message }, 'officer intake: proposal claim could not be recorded; nothing submitted');
+          return send(res, 503, { error: 'proposal state could not be recorded; nothing submitted' });
+        }
+      }
+      return await intakeClaimed(res, rec, der, proposal, reject, () => { submitted = true; }, () => { uncertain = true; });
     } finally {
-      // Any refusal or failed submit gives the proposal back.
-      if (proposal && !submitted && proposal.status === 'submitting') proposal.status = 'proposed';
+      if (proposal) {
+        inFlight.delete(proposal.id);
+        // A refusal, or a submit the chain shows did NOT land, gives the proposal back. A submit whose fate
+        // could not be read leaves it submitting, to be settled against the chain (reconcile) -- never
+        // proposed while it might be on chain.
+        if (!submitted && !uncertain && proposal.status === 'submitting') {
+          proposal.status = 'proposed';
+          delete proposal.pendingTxHash;
+        }
+        await saveProposal(proposal).catch((e) => d.logger.error({ proposalId: proposal!.id, err: (e as Error).message }, 'officer intake: could not record the proposal state'));
+      }
     }
   }
 
   async function intakeClaimed(
     res: http.ServerResponse, rec: PrepareRecord, der: Uint8Array, proposal: Proposal | undefined,
-    reject: (reason: string) => void, markSubmitted: () => void,
+    reject: (reason: string) => void, markSubmitted: () => void, markUncertain: () => void = () => {},
   ) {
     // 2–3. Live authority, fresh reads.
     const refusal = await checkAuthority(rec.keyHash, rec.page, rec.delegators);
@@ -483,21 +593,37 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     // 6. Submit.
     const pre = buildPreimage(txHashBytes, params);
     const sigObj = rec.delegators.length ? buildDelegatedSignatureObject(pre, der, rec.txHash) : buildSignatureObject(pre, der, rec.txHash);
-    const sub = await d.chain.submit(buildSubmitEnvelope(rawTransaction, sigObj));
+    let sub: SubmitResult;
+    try {
+      sub = await d.chain.submit(buildSubmitEnvelope(rawTransaction, sigObj));
+    } catch (e) {
+      sub = { ok: false, error: (e as Error).message };
+    }
     if (!sub.ok) {
-      d.logger.warn({ audit: 'officer_signature_submit_failed', ref: rec.ref, keyHash: rec.keyHash, code: sub.code, err: sub.error }, 'officer signature refused by the network');
-      return send(res, 502, { error: 'submit_rejected', code: sub.code ?? 'error' });
+      // G-39: an error is not proof the network refused it. For a proposal (a transaction this signer
+      // originates) read the chain before deciding: on chain means submitted, whatever the error said.
+      const seen = proposal ? await onChain(rec.txHash, proposal.page) : 'absent';
+      if (seen !== 'present') {
+        if (seen === 'unknown') markUncertain();
+        d.logger.warn({ audit: 'officer_signature_submit_failed', ref: rec.ref, keyHash: rec.keyHash, code: sub.code, err: sub.error, onChain: seen }, 'officer signature refused by the network');
+        return send(res, 502, { error: 'submit_rejected', code: sub.code ?? 'error', ...(seen === 'unknown' ? { onChain: 'unknown' } : {}) });
+      }
+      d.logger.warn({ audit: 'officer_signature_submit_error_but_on_chain', ref: rec.ref, txHash: rec.txHash, err: sub.error }, 'submit reported an error, but the proposal transaction is on chain; treating it as submitted');
     }
     markSubmitted();
     if (proposal) {
-      proposal.status = 'submitted'; proposal.txHash = rec.txHash;
+      proposal.status = 'submitted'; proposal.txHash = rec.txHash; delete proposal.pendingTxHash;
+      await saveProposal(proposal).catch((e) => d.logger.error({ proposalId: proposal.id, err: (e as Error).message }, 'officer intake: could not record the submitted proposal'));
       await recordProposalAwaiting(proposal, rec);
     }
     d.logger.warn({ audit: 'officer_signature_submitted', ref: rec.ref, txHash: rec.txHash, keyHash: rec.keyHash, page: rec.page, delegators: rec.delegators, vote: rec.vote }, 'OFFICER SIGNATURE SUBMITTED');
 
     // 7. Poll until this key's signature is recorded.
     const status = await pollLanded(rec);
-    if (proposal && status === 'landed') proposal.status = 'landed';
+    if (proposal && status === 'landed') {
+      proposal.status = 'landed';
+      await saveProposal(proposal).catch((e) => d.logger.error({ proposalId: proposal.id, err: (e as Error).message }, 'officer intake: could not record the landed proposal'));
+    }
     if (!proposal && status === 'landed' && d.onLanded) {
       const authority = rec.delegators.length ? rec.delegators[rec.delegators.length - 1]! : rec.page;
       await d.onLanded({ txHash: rec.txHash, authority, page: rec.page, delegators: rec.delegators, keyHash: rec.keyHash, vote: rec.vote })
@@ -575,6 +701,12 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
       createdAt: now(), expiresAt: now() + PROPOSAL_TTL_MS, status: 'proposed',
     };
     proposals.set(p.id, p);
+    try { await saveProposal(p); }
+    catch (e) {
+      proposals.delete(p.id);
+      d.logger.error({ proposalId: p.id, err: (e as Error).message }, 'officer intake: proposal could not be recorded');
+      return { status: 503, body: { error: 'proposal could not be recorded; try again' } };
+    }
     d.logger.warn({ audit: 'governance_proposal', proposalId: p.id, page, operations, proposer }, 'GOVERNANCE PROPOSAL CREATED (nothing signed or submitted)');
     return { status: 200, body: { proposalId: `proposal:${p.id}`, display, summaryHash: p.summaryHash } };
   }
@@ -588,5 +720,5 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     return send(res, 404, { error: 'not found' });
   };
 
-  return { handle, propose, proposals: () => [...proposals.values()] };
+  return { handle, propose, proposals: () => [...proposals.values()], restore };
 }

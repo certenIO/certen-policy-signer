@@ -5,7 +5,7 @@
  * Every key here is generated inside the test by WebCrypto as NON-EXTRACTABLE and lives only in memory; no key
  * material is committed. Every party, page and credential string is FICTIONAL.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import http from 'node:http';
 import { createHash, verify as nodeVerify, createPublicKey, webcrypto } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -14,11 +14,11 @@ import { join } from 'node:path';
 import pino from 'pino';
 import { p256 } from '@noble/curves/nist.js';
 import { tclSummaryV1, buildDisplay, buildProposalDisplay, awaitingGovernanceRequest, withDisplay } from '../src/display.js';
-import { createOfficerIntake, OfficerIntake, IntakeChain } from '../src/officer/intake.js';
+import { createOfficerIntake, OfficerIntake, IntakeChain, PREPARE_TTL_MS } from '../src/officer/intake.js';
 import { officerAuthMessage } from '../src/officer/auth.js';
 import { createRelayClientsHandler } from '../src/relay-clients.js';
 import { createServer } from '../src/server.js';
-import { MemoryStore } from '../src/store/store.js';
+import { MemoryStore, FileStore } from '../src/store/store.js';
 import { buildSigMetaHash, concatBytes, bytesToHex, hexToBytes } from '../src/accumulate/signing.js';
 import { core } from '../src/accumulate/sdk.js';
 import { loadConfig, isIntakeOnly } from '../src/config.js';
@@ -824,5 +824,141 @@ describe('G-69: officer intake on a request stored by a human-only seat', () => 
     expect(prep.json).toMatchObject({ error: 'duplicate_entry' });
     expect(chain.submitted).toHaveLength(0);
     expect((await store.get(HTX))?.status).toBe('awaiting_human');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* G-39: prepares and proposals survive a restart                      */
+/* ------------------------------------------------------------------ */
+
+describe('G-39: open prepares and proposals are persisted and restored', () => {
+  const PREP = '/relay/officer-signature/prepare';
+  let open: http.Server[] = [];
+  afterEach(() => { for (const s of open) s.close(); open = []; });
+
+  /** One signer process: a FileStore at `path`, an intake restored from it, and its own listener. */
+  async function boot(path: string, o: { now?: () => number; chainOverride?: Partial<IntakeChain> } = {}) {
+    const st = new FileStore(path);
+    const c: IntakeChain = Object.assign(Object.create(Object.getPrototypeOf(chain)), chain, o.chainOverride ?? {});
+    const it = createOfficerIntake({
+      humanPages: [HARBOR_P1, TREASURY_P1, ISSUANCE_P1, BOARD_P1], chain: c, readPage: chain.readPage,
+      getPolicyRequest: (h) => store.getPolicyRequest(h), landedTimeoutMs: 150, pollIntervalMs: 10, logger: silent,
+      state: st, ...(o.now ? { now: o.now } : {}),
+    });
+    await it.restore();
+    const srv = createServer({ officerIntake: it.handle, orchestrator: {} as any, store: st, keyring: {} as any, accumulate: {} as any, pause: { paused: false }, logger: silent });
+    open.push(srv);
+    return { intake: it, store: st, port: await listen(srv) };
+  }
+  const prep = async (p: number, o: Officer, body: Record<string, unknown>) => call(p, 'POST', PREP, { 'x-officer-auth': await authHeader(o, 'POST', PREP) }, body);
+  const sign = async (p: number, o: Officer, pr: any) => call(p, 'POST', '/relay/officer-signature', {}, { prepareId: pr.prepareId, signature: await signPrepared(o, pr) });
+  const dir = () => join(mkdtempSync(join(tmpdir(), 'g39-')), 'state.json');
+
+  it('a proposal survives a restart and can still be prepared, signed and submitted', async () => {
+    const path = dir();
+    const a = await boot(path);
+    const c = await a.intake.propose(HARBOR_P2, [{ op: 'add-key', keyHash: 'e1'.repeat(32) }], 'ada (FICTIONAL)');
+    expect(c.status).toBe(200);
+    const id = (c.body as { proposalId: string }).proposalId;
+
+    const b = await boot(path);   // restart
+    expect(b.intake.proposals().map((x) => [`proposal:${x.id}`, x.status])).toEqual([[id, 'proposed']]);
+    const pr = await prep(b.port, alice, { ref: id, page: HARBOR_P1, vote: 'approve' });
+    expect(pr.status).toBe(200);
+    expect((await sign(b.port, alice, pr.json)).json).toMatchObject({ status: 'landed' });
+    expect(chain.submitted).toHaveLength(1);
+    // The landed state is persisted too.
+    expect((await boot(path)).intake.proposals()[0]).toMatchObject({ status: 'landed', txHash: pr.json.txHash });
+  });
+
+  it('a prepare survives a restart and is single use across restarts', async () => {
+    const path = dir();
+    const a = await boot(path);
+    const pr = await prep(a.port, alice, { ref: TX, page: HARBOR_P1, vote: 'approve' });
+    expect(pr.status).toBe(200);
+
+    const b = await boot(path);   // restart before the signature arrives
+    expect((await sign(b.port, alice, pr.json)).status).toBe(200);
+    expect(chain.submitted).toHaveLength(1);
+
+    const c2 = await boot(path);  // restart after it was used: still used
+    expect((await sign(c2.port, alice, pr.json)).status).toBe(404);
+    expect(chain.submitted).toHaveLength(1);
+  });
+
+  it('an expired prepare is refused after a restart, and dropped from the store', async () => {
+    const path = dir();
+    let t = Date.now();
+    const a = await boot(path, { now: () => t });
+    const pr = await prep(a.port, alice, { ref: TX, page: HARBOR_P1, vote: 'approve' });
+    expect(pr.status).toBe(200);
+    t += PREPARE_TTL_MS + 1;
+    const b = await boot(path, { now: () => t });
+    expect((await sign(b.port, alice, pr.json)).status).toBe(404);
+    expect(chain.submitted).toHaveLength(0);
+    expect(await b.store.listIntakeRecords('prepare')).toEqual([]);
+  });
+
+  it('a submit that throws after the network accepted the proposal leaves it submitted/landed, never proposed', async () => {
+    const path = dir();
+    const a = await boot(path, { chainOverride: { submit: async (env: unknown) => { await chain.submit(env); throw new Error('FICTIONAL socket hang up'); } } });
+    const c = await a.intake.propose(HARBOR_P2, [{ op: 'add-key', keyHash: 'e2'.repeat(32) }], 'ada (FICTIONAL)');
+    const id = (c.body as { proposalId: string }).proposalId;
+    const pr = await prep(a.port, alice, { ref: id, page: HARBOR_P1, vote: 'approve' });
+    const r = await sign(a.port, alice, pr.json);
+    expect(r.status).toBe(200);
+    expect(r.json.status).toBe('landed');
+    expect(a.intake.proposals()[0]).toMatchObject({ status: 'landed', txHash: pr.json.txHash });
+    expect((await boot(path)).intake.proposals()[0]!.status).toBe('landed');
+  });
+
+  it('a submit that throws and did NOT reach the chain gives the proposal back', async () => {
+    const path = dir();
+    const a = await boot(path, { chainOverride: { submit: async () => { throw new Error('FICTIONAL connection refused'); } } });
+    const c = await a.intake.propose(HARBOR_P2, [{ op: 'add-key', keyHash: 'e3'.repeat(32) }], 'ada (FICTIONAL)');
+    const pr = await prep(a.port, alice, { ref: (c.body as { proposalId: string }).proposalId, page: HARBOR_P1, vote: 'approve' });
+    expect((await sign(a.port, alice, pr.json)).status).toBe(502);
+    expect(a.intake.proposals()[0]!.status).toBe('proposed');
+    expect((await boot(path)).intake.proposals()[0]!.status).toBe('proposed');
+  });
+
+  it('a submit whose fate cannot be read stays submitting, and a restart settles it against the chain', async () => {
+    const path = dir();
+    let accepted: unknown;
+    const a = await boot(path, {
+      chainOverride: {
+        submit: async (env: unknown) => { accepted = env; throw new Error('FICTIONAL timeout'); },
+        getPendingTx: async () => ({ found: false, unavailable: true }),
+      },
+    });
+    const c = await a.intake.propose(HARBOR_P2, [{ op: 'add-key', keyHash: 'e4'.repeat(32) }], 'ada (FICTIONAL)');
+    const id = (c.body as { proposalId: string }).proposalId;
+    const pr = await prep(a.port, alice, { ref: id, page: HARBOR_P1, vote: 'approve' });
+    const r = await sign(a.port, alice, pr.json);
+    expect(r.status).toBe(502);
+    expect(r.json.onChain).toBe('unknown');
+    expect(a.intake.proposals()[0]).toMatchObject({ status: 'submitting', pendingTxHash: pr.json.txHash });
+    // Nothing may prepare it while its fate is unknown.
+    expect((await prep(a.port, bob, { ref: id, page: HARBOR_P1, vote: 'approve' })).status).toBe(409);
+
+    // The network had in fact accepted it.
+    await chain.submit(accepted);
+    const b = await boot(path);
+    expect(b.intake.proposals()[0]).toMatchObject({ status: 'submitted', txHash: pr.json.txHash });
+  });
+
+  it('nothing secret is persisted: a prepare holds a public key, hashes and a display', async () => {
+    const path = dir();
+    const a = await boot(path);
+    const pr = await prep(a.port, alice, { ref: TX, page: HARBOR_P1, vote: 'approve' });
+    const recs = await a.store.listIntakeRecords('prepare');
+    expect(recs).toHaveLength(1);
+    expect(Object.keys(recs[0]!).sort()).toEqual([
+      'delegators', 'display', 'expiresAt', 'keyHash', 'kind', 'page', 'prepareId', 'principal', 'ref', 'sigMdHash',
+      'signerVersion', 'spki', 'summaryHash', 'timestamp', 'txHash', 'vote',
+    ]);
+    expect(recs[0]!.spki).toBe(bytesToHex(alice.spki));   // the PUBLIC key
+    expect(readFileSync(path, 'utf8')).not.toContain('"signature"');
+    expect(pr.status).toBe(200);
   });
 });

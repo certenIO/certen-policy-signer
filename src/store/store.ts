@@ -28,15 +28,26 @@ export interface Store {
    * show an empty work list because the recent window is full of settled transactions.
    */
   listRecent(limit?: number, statuses?: RequestStatus[]): Promise<Array<{ request: SigningRequest; receipt?: Receipt }>>;
+  /**
+   * G-39: officer-intake state that must outlive a restart -- open prepares and governance proposals --
+   * keyed by kind and id. Records are plain JSON (binary fields hex-encoded by the caller) and hold no
+   * secret: a prepare is a public key, hashes and a display; a proposal is typed operations and a display.
+   */
+  saveIntakeRecord(kind: IntakeRecordKind, id: string, record: Record<string, unknown>): Promise<void>;
+  deleteIntakeRecord(kind: IntakeRecordKind, id: string): Promise<void>;
+  listIntakeRecords(kind: IntakeRecordKind): Promise<Array<Record<string, unknown>>>;
   /** Best-effort single-flight lock. Returns false if already locked. */
   tryLock(txHash: string): boolean;
   unlock(txHash: string): void;
 }
 
+export type IntakeRecordKind = 'prepare' | 'proposal';
+
 export class MemoryStore implements Store {
   protected reqs = new Map<string, SigningRequest>();
   protected receipts = new Map<string, Receipt>();
   protected policyRequests = new Map<string, PolicyRequest>();
+  protected intake = { prepare: new Map<string, Record<string, unknown>>(), proposal: new Map<string, Record<string, unknown>>() };
   private locks = new Set<string>();
 
   async get(txHash: string) { return this.reqs.get(txHash); }
@@ -57,6 +68,13 @@ export class MemoryStore implements Store {
   async getReceipt(txHash: string) { return this.receipts.get(txHash); }
   async savePolicyRequest(r: PolicyRequest) { this.policyRequests.set(r.txHash, structuredClone(r)); await this.persist(); }
   async getPolicyRequest(txHash: string) { return this.policyRequests.get(txHash); }
+  async saveIntakeRecord(kind: IntakeRecordKind, id: string, record: Record<string, unknown>) {
+    this.intake[kind].set(id, structuredClone(record)); await this.persist();
+  }
+  async deleteIntakeRecord(kind: IntakeRecordKind, id: string) {
+    if (this.intake[kind].delete(id)) await this.persist();
+  }
+  async listIntakeRecords(kind: IntakeRecordKind) { return [...this.intake[kind].values()].map((r) => structuredClone(r)); }
   async listNonTerminal() {
     return [...this.reqs.values()].filter((r) => !TERMINAL.includes(r.status));
   }
@@ -105,10 +123,13 @@ export class FileStore extends MemoryStore {
     try {
       const raw = JSON.parse(readFileSync(this.path, 'utf8')) as {
         requests?: SigningRequest[]; receipts?: Receipt[]; policyRequests?: PolicyRequest[];
+        intake?: { prepares?: Array<Record<string, unknown>>; proposals?: Array<Record<string, unknown>> };
       };
       for (const r of raw.requests ?? []) this.reqs.set(r.txHash, r);
       for (const r of raw.receipts ?? []) this.receipts.set(r.txHash, r);
       for (const r of raw.policyRequests ?? []) this.policyRequests.set(r.txHash, r);
+      for (const r of raw.intake?.prepares ?? []) this.intake.prepare.set(String(r.prepareId), r);
+      for (const r of raw.intake?.proposals ?? []) this.intake.proposal.set(String(r.id), r);
     } catch (e) {
       // A corrupt state file must not silently become an empty one: that would re-vote everything.
       throw new Error(`store: ${this.path} exists but is unreadable (${(e as Error).message}) — refusing to start with an empty history`);
@@ -120,6 +141,7 @@ export class FileStore extends MemoryStore {
       requests: [...this.reqs.values()],
       receipts: [...this.receipts.values()],
       policyRequests: [...this.policyRequests.values()],
+      intake: { prepares: [...this.intake.prepare.values()], proposals: [...this.intake.proposal.values()] },
     });
     this.queue = this.queue.then(() => this.writeAtomic(snapshot)).catch(() => this.writeAtomic(snapshot));
     return this.queue;

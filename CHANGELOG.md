@@ -38,6 +38,13 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Changed
 
+- **G-39 (signer half): officer-intake prepares and proposals survive a restart.** They are kept in the
+  store (MemoryStore / FileStore: new `saveIntakeRecord` / `deleteIntakeRecord` / `listIntakeRecords`) and
+  restored by `OfficerIntake.restore()` at startup, with expiry and single use intact (a prepare is deleted
+  from the store before its signature is checked; a failed write refuses). A submit that errors is checked
+  against the chain before a proposal is given back; a proposal transaction on chain stays `submitted` /
+  `landed`, and one whose fate cannot be read stays `submitting` until a later read settles it.
+
 - **G-47: the gateway vote backend signs only a preimage it built itself.** It rebuilds the Accumulate
   signing preimage (buildPreimage, as the direct backend) from the resolved transaction hash, its own key,
   key type, page and vote, plus the gateway's signer version and timestamp, and signs that. A gateway

@@ -45,6 +45,8 @@ export function buildOfficerIntake(cfg: Config, accumulate: RawAccumulateClient,
     landedTimeoutMs: cfg.officer_intake.landed_timeout_ms,
     // G-69: a landed personal signature ends a human-only seat's `awaiting_human` request.
     onLanded: async (r) => { await recordHumanSignature(store, r, logger); },
+    // G-39: open prepares and proposals live in the store, so a restart keeps them (and their expiry).
+    state: store,
     logger,
   });
 }
@@ -68,6 +70,7 @@ export async function startIntakeOnly(cfg: Config, logger: Logger, opts: { accum
   const store: Store = cfg.store.path ? new FileStore(cfg.store.path) : new MemoryStore();
   const decoders = await buildDecoders(cfg, logger);
   const intake = buildOfficerIntake(cfg, accumulate, store, decoders, logger);
+  await intake.restore();
 
   let relayClients: RelayClientsHandler | undefined;
   if (cfg.admin.relay_clients?.length) {

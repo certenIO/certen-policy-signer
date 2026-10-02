@@ -336,6 +336,7 @@ async function main() {
 
   // --- officer intake (Phase 7): personal signatures verified and submitted here; no human key in process ---
   const officerIntake = cfg.officer_intake.enabled ? buildOfficerIntake(cfg, accumulate, store, decoders, logger) : undefined;
+  await officerIntake?.restore();   // G-39: open prepares and proposals survive a restart
   if (officerIntake) logger.info({ humanPages: cfg.officer_intake.human_pages }, 'officer intake enabled on /relay/officer*');
 
   // --- decision-service relay (6.4): one credential + scope list per Console decision service ---

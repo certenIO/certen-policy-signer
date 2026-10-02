@@ -427,7 +427,12 @@ signing page (or the outermost delegator) must be a human page. A prepare is sin
 for a transaction ref confirms it is still pending; any mismatch or tampered echoed field is
 `400 {"error":"signature_invalid"}` and nothing is submitted. It then polls the transaction's signatures for
 this key up to `landed_timeout_ms`. A proposal submitted on a page whose threshold is above 1 is recorded by its transaction hash with the
-proposal's display and summaryHash, so further officers on that page sign it as a transaction ref. Prepares and proposals are held in memory: a restart discards them.
+proposal's display and summaryHash, so further officers on that page sign it as a transaction ref. Prepares and proposals are persisted in the signer's store (G-39; durable with `store.path`) and restored at
+startup: an expired one is dropped, a used prepare is removed before its signature is verified and so is never
+usable again, and a proposal a restart caught mid-submit is settled against the chain (on chain: `submitted`;
+definitively absent: `proposed`; unreadable: left `submitting`, which nothing may prepare, until it can be read).
+A submit that errors is likewise checked against the chain before the proposal is given back: a proposal
+transaction that is on chain is never `proposed` again.
 
 ### Human-only seats (G-69)
 
