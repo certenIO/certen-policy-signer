@@ -116,9 +116,20 @@ The code loads the package with a dynamic `import('pkcs11js')` rather than `crea
 
 ## `cloud-kms`: AWS KMS, Azure Key Vault, Google Cloud KMS
 
-P-256 only. Every vendor adapter refuses a key that is not a P-256 signing key **before** anything is
-signed. It normalises the signature to strict DER, where non-minimal encodings are refused, and verifies it
-locally.
+P-256 on every vendor; **Ed25519 on AWS** (`ECC_NIST_EDWARDS25519`). Every vendor adapter refuses a key
+type it does not support **before** anything is signed. A P-256 signature is normalised to strict DER, where
+non-minimal encodings are refused; every signature is verified locally against the key before it is used.
+
+**Why Ed25519 on AWS.** A custody Mode 2 machine seat signs with a key in the party's own cloud KMS. A P-256
+key signs as `ecdsaSha256`, which the CERTEN validators' G1 governance proof refuses (gap G-42, validator-owned),
+so a Mode 2 payment on a P-256 key can never settle. An `ECC_NIST_EDWARDS25519` key signs as `ed25519`. The
+type is taken from the key's own `KeySpec` (GetPublicKey), not from config: `ECC_NIST_P256` -> `ecdsaSha256`,
+`ECC_NIST_EDWARDS25519` -> `ed25519`, anything else refused. For Ed25519 the signer asks for pure EdDSA over the
+32-byte preimage as the message (`ED25519_SHA_512`, `MessageType: RAW`, the only message type AWS accepts with
+it), never HashEdDSA (`ED25519_PH_SHA_512` / `DIGEST`, a different signature). The public key is the raw 32
+bytes from the SPKI, and the page entry is `sha256` of those, as for every other Ed25519 source. LocalStack
+has no Ed25519, so `test/cloud-kms-aws-ed25519.test.ts` drives the real SDK against a recorded AWS JSON 1.1
+exchange with a key generated in the test.
 
 ```yaml
 signer:
@@ -133,6 +144,7 @@ signer:
 | Vendor | Public key | Refused unless | Sign | Returns |
 |---|---|---|---|---|
 | **AWS** (`@aws-sdk/client-kms`) | `GetPublicKey`, SPKI DER | `KeySpec = ECC_NIST_P256`, `KeyUsage = SIGN_VERIFY`, offers `ECDSA_SHA_256` | `Sign`, `MessageType: DIGEST`, `ECDSA_SHA_256` | DER |
+| **AWS**, Ed25519 | `GetPublicKey`, SPKI DER (44 bytes) -> raw 32 bytes | `KeySpec = ECC_NIST_EDWARDS25519`, `KeyUsage = SIGN_VERIFY`, offers `ED25519_SHA_512` | `Sign`, `MessageType: RAW`, `ED25519_SHA_512` | raw 64 bytes (`SigningAlgorithm` must echo `ED25519_SHA_512`) |
 | **Azure** (REST, `fetch`) | `GET /keys/{name}/{version}`, JWK → SPKI | `kty` EC/EC-HSM, `crv` P-256, `key_ops` has `sign`, enabled, `kid` is the pinned version | `POST …/sign` with `alg: ES256`, value = digest | raw `r ‖ s` → DER |
 | **GCP** (REST, `fetch`) | `GET {version}/publicKey`, PEM | `algorithm = EC_SIGN_P256_SHA256`, `pemCrc32c` holds, `name` is the configured version | `POST {version}:asymmetricSign` with `digest.sha256` and `digestCrc32c` | DER; `verifiedDigestCrc32c` and `signatureCrc32c` must hold |
 

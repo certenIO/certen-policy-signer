@@ -95,7 +95,8 @@ const SignerSpecSchema = z.object({
       timeout_ms: z.number().int().positive().max(60_000).optional(),
     }).strict().optional(),
   }).strict().optional(),
-  // cloud-kms (contract §1.2). P-256 only. AWS credentials come from the SDK's default chain; Azure and GCP
+  // cloud-kms (contract §1.2). P-256 on every vendor; Ed25519 on AWS (ECC_NIST_EDWARDS25519), the type read off
+  // the key's own KeySpec. AWS credentials come from the SDK's default chain; Azure and GCP
   // take an `env:` bearer token or, absent one, the platform's managed/metadata identity.
   cloud_kms: z.object({
     vendor: z.enum(['aws', 'azure', 'gcp']),
