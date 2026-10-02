@@ -17,8 +17,9 @@ Anything in that list appears here with a migration note before it ships in a re
   signs as `ed25519` (pure EdDSA over the preimage: `ED25519_SHA_512`, `MessageType: RAW`), with the raw
   32-byte public key (key hash = sha256 of it) and a local verification of every signature. The algorithm
   is read from the key's own `KeySpec`; any spec other than `ECC_NIST_P256` / `ECC_NIST_EDWARDS25519` is
-  refused. The P-256 path is unchanged. `CloudKmsSigner.signatureType` reflects the key once it has been read (the startup self-check
-  reads every key; every signing path reads the key before the type).
+  refused. The P-256 path is unchanged. `CloudKmsSigner.signatureType` is the key's own type once it has been read; for an AWS key it
+  throws until then (as the Windows certificate-store signer does), so a guessed type can never reach signature
+  metadata. Azure and GCP hold P-256 only and report `ecdsaSha256` from the start.
 
 - **G-64: why a seat is holding is kept.** When the policy engine answers `pending`, the request record
   now stores `pending: { reason, versions: { ruleSetVersion, providerConfigVersion, signerConfigVersion },

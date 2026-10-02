@@ -122,8 +122,8 @@ function preimage(publicKey: Uint8Array, signatureType: AccumulateSignatureType,
 describe('AWS KMS Ed25519 (ECC_NIST_EDWARDS25519): contract', () => {
   it('reads the key, declares ed25519 with the raw 32-byte key, and signs the preimage as a RAW message', async () => {
     const s = signer();
-    // The type comes from the key once it is read (before that, the legacy declared default).
-    expect(s.signatureType).toBe('ecdsaSha256');
+    // The type comes from the key once it is read; before that it is not known, and is never guessed.
+    expect(() => s.signatureType).toThrow(/not known until the key has been read/);
     const pub = await s.publicKey();
     expect(s.signatureType).toBe('ed25519');
     expect(pub.length).toBe(32);

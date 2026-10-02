@@ -326,7 +326,9 @@ describe('pkcs11 and cloud-kms configuration', () => {
   it('cloud-kms: the vendor must have its block and only its block', () => {
     process.env.K3_TEST_TOKEN = 'fictional-token';
     const aws = loadConfig(write('{ provider: "cloud-kms", cloud_kms: { vendor: "aws", aws: { region: "us-east-1", key_id: "alias/orchid-fictional", endpoint: "http://kms-orchid:4566" } } }'));
-    expect(buildSignerFromSpec(aws.signer!, silent, 't').signatureType).toBe('ecdsaSha256');
+    // AWS keys may be P-256 or Ed25519; the type is read off the key's own KeySpec, so it is not known (and
+    // never guessed) before the key is read.
+    expect(() => buildSignerFromSpec(aws.signer!, silent, 't').signatureType).toThrow(/not known until the key has been read/);
     const az = loadConfig(write('{ provider: "cloud-kms", cloud_kms: { vendor: "azure", azure: { vault_url: "https://orchid-fictional.vault.azure.net", key_name: "machine", key_version: "0123abcd", access_token: "env:K3_TEST_TOKEN" } } }'));
     expect(buildSignerFromSpec(az.signer!, silent, 't').signatureType).toBe('ecdsaSha256');
     const gcp = loadConfig(write('{ provider: "cloud-kms", cloud_kms: { vendor: "gcp", gcp: { key_version_name: "projects/orchid-fictional/locations/europe-west1/keyRings/tcl/cryptoKeys/machine/cryptoKeyVersions/1" } } }'));

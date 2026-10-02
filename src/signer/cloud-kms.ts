@@ -81,16 +81,18 @@ export class CloudKmsSigner implements KeySigner {
   constructor(private readonly adapter: KmsAdapter) {}
 
   /**
-   * The signature type, from the key itself once it has been read (AWS reads it off the key's KeySpec).
+   * The signature type, from the key itself.
    *
-   * Before the first read it is `ecdsaSha256`, which is what this source declared before it supported
-   * Ed25519 (a config-time check still reads it). No signing path uses that value: every one of them --
-   * the direct and gateway vote backends and the governance submitter -- awaits `publicKey()` before it
-   * reads the type, the startup self-check reads every scope's key before anything is signed, and `sign()`
-   * itself signs with the algorithm of the key it read.
+   * An adapter that holds P-256 only (Azure, GCP: no `getKeyInfo`) can only ever sign `ecdsaSha256`, so that is
+   * known before the key is read. An adapter whose keys may be either type (AWS) says which from the key's own
+   * KeySpec, so until the key has been read the type is NOT known and this throws, exactly as the Windows
+   * certificate-store signer does: a caller must never read a guessed type into signature metadata, where it
+   * becomes part of the preimage. Await `publicKey()` (the startup self-check does, for every scope) first.
    */
   get signatureType(): AccumulateSignatureType {
-    return this.#type ?? 'ecdsaSha256';
+    if (this.#type) return this.#type;
+    if (!this.adapter.getKeyInfo) return 'ecdsaSha256';
+    throw new Error(`cloud-kms ${this.adapter.vendor}: signatureType is not known until the key has been read; await publicKey() first`);
   }
 
   #read(): Promise<ReadKey> {
