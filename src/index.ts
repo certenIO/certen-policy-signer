@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { parseArgs, helpText, VERSION, BIN } from './cli.js';
 import { loadConfig, parseBind, effectiveScopeRules, isIntakeOnly, Config } from './config.js';
 import { logger as baseLogger } from './logger.js';
-import { MapKeyring, buildSignerFromSpec, bookOf, SigningScope } from './signer/keyring.js';
+import { MapKeyring, buildSignerFromSpec, bookOf, noKeyKeyring, SigningScope } from './signer/keyring.js';
 import { RawAccumulateClient } from './accumulate/raw-client.js';
 import { HttpPolicyClient, loadPolicyAdapter } from './policy/policy.js';
 import { MemoryStore, FileStore } from './store/store.js';
@@ -85,12 +85,21 @@ async function main() {
             }
           : {}),
       }))
-    : [{
-        page: cfg.wallet.signer_url!,
-        book: bookOf(cfg.wallet.signer_url!),
-        signer: buildSignerFromSpec(cfg.signer!, logger, cfg.wallet.signer_url!),
-      }];
-  const keyring = new MapKeyring(scopes);
+    : cfg.wallet.signer_url
+      ? [{
+          page: cfg.wallet.signer_url,
+          book: bookOf(cfg.wallet.signer_url),
+          signer: buildSignerFromSpec(cfg.signer!, logger, cfg.wallet.signer_url),
+        }]
+      : [];
+  // G-69: human-only seats. Watched and decided like keyed scopes, but never in the keyring: no key exists
+  // for them in this process, so every signing lookup for their pages refuses (MapKeyring is strict, and a
+  // process with no keyed scope at all gets a keyring that holds nothing).
+  const humanScopes = (cfg.wallet.human_scopes ?? []).map((s) => ({ page: s.page, book: s.book ?? bookOf(s.page) }));
+  if (humanScopes.length) {
+    logger.info({ humanScopes: humanScopes.map((s) => s.page) }, 'human-only seats: decided here, signed by their people through officer intake; this signer holds no key for them');
+  }
+  const keyring = scopes.length ? new MapKeyring(scopes) : noKeyKeyring('human-only signer');
   const endpoint = cfg.wallet.accumulate_endpoints[0];
   logger.info(
     { network: cfg.wallet.network ?? hostOf(endpoint), endpoint, scopes: scopes.map((s) => s.page) },
@@ -175,7 +184,7 @@ async function main() {
   // Only scopes that actually differ get an entry; the map is consulted per transaction, and an absent
   // key means "use the defaults" without allocating a duplicate client per page.
   const scopeRules = new Map<string, ScopeRules>();
-  for (const s of cfg.wallet.scopes ?? []) {
+  for (const s of [...(cfg.wallet.scopes ?? []), ...(cfg.wallet.human_scopes ?? [])]) {
     const eff = effectiveScopeRules(cfg, s);
     if (!eff.overridden) continue;
     const rules: ScopeRules = {};
@@ -231,6 +240,7 @@ async function main() {
     notifier, orgId: cfg.wallet.org_id, scopeRules, configVersion: cfg.configVersion, displayLabels: cfg.decoders.labels,
     // G-65: an updateKeyPage is approved only after its operations are checked against the page as it reads now.
     readPage: (page) => readPage(accumulate, page),
+    humanOnlyPages: humanScopes.map((s) => s.page),
     options: {
       submitRejectVote: cfg.behavior.submit_reject_vote,
       maxBadVersionRetries: cfg.behavior.max_bad_version_retries,
@@ -284,8 +294,10 @@ async function main() {
 
   // --- pollers: ONE PER SCOPE, all feeding the shared orchestrator (built before the server so /healthz
   //     can report on them). Each watches its own page + book, on its own backoff. ---
+  // Human-only seats are polled exactly as keyed ones: account authority (the page's Pending index) and header
+  // authority (the book's signature chain, F25).
   const pollers = cfg.trigger.poller.enabled
-    ? scopes.map((scope) => new Poller(
+    ? [...scopes, ...humanScopes].map((scope) => new Poller(
         accumulate, orchestrator, scope.page, cfg.trigger.poller.interval_seconds * 1000,
         logger.child({ scope: scope.page }), Date.now,
         gatewayClient ? () => gatewayClient!.listPending() : undefined,   // supplement, never a replacement
@@ -368,7 +380,7 @@ async function main() {
     // The set of governable pages is bound HERE, from our own config: `keyring.forPage` throws for any page
     // we do not hold a key for, so a caller can never point governance at an arbitrary page. Default: scope 0.
     keyPage: (op, page) => {
-      const target = page ?? scopes[0].page;
+      const target = page ?? scopes[0]?.page ?? '';   // a human-only signer has no scope 0: forPage refuses ''
       return applyKeyPageOp({ accumulate, signer: keyring.forPage(target), logger, page: target }, op);
     },
     // Reading a page is a READ, so it is bound with no credential of its own beyond the admin key -- unlike

@@ -26,6 +26,12 @@ import { startIntakeOnly } from '../src/intake-only.js';
 import type { PageState } from '../src/ops/rotate.js';
 import type { KeyPageResult } from '../src/ops/keypage.js';
 import type { PolicyRequest } from '../src/types.js';
+import { recordHumanSignature } from '../src/officer/landed.js';
+import { Orchestrator } from '../src/orchestrator.js';
+import { Resolver } from '../src/resolver.js';
+import { MockPolicyClient } from '../src/policy/policy.js';
+import { noKeyKeyring } from '../src/signer/keyring.js';
+import type { AccumulateClient } from '../src/accumulate/client.js';
 
 const silent = pino({ level: 'silent' });
 const subtle = webcrypto.subtle;
@@ -201,6 +207,7 @@ beforeEach(async () => {
   intake = createOfficerIntake({
     humanPages: [HARBOR_P1, TREASURY_P1, ISSUANCE_P1, BOARD_P1], chain, readPage: chain.readPage,
     getPolicyRequest: (h) => store.getPolicyRequest(h), saveAwaiting: (pr) => store.savePolicyRequest(pr), landedTimeoutMs: 150, pollIntervalMs: 10, logger: silent,
+    onLanded: async (r) => { await recordHumanSignature(store, r); },
   });
   awaitingOps.length = 0;
   const relayClients = createRelayClientsHandler({
@@ -747,5 +754,75 @@ describe('G-65: proposals and officer signatures never carry a change that would
     const r = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prep.json.prepareId, signature: await signPrepared(alice, prep.json) });
     expect(r.status).toBe(200);
     expect(chain.submitted).toHaveLength(1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* G-69: a human-only seat, signed by its people through officer intake */
+/* ------------------------------------------------------------------ */
+
+describe('G-69: officer intake on a request stored by a human-only seat', () => {
+  const HTX = '7e'.repeat(32);
+  /** The orchestrator's view of the fake chain: it asks by signer page, the fake answers by principal. */
+  const orchChain = (): AccumulateClient => ({
+    getPendingTx: async (h: string) => { const t = chain.pending.get(h); return t ? chain.getPendingTx(h, t.principal) : { found: false }; },
+    getSignerInfo: (page: string) => chain.getSignerInfo(page),
+    listPendingForSigner: async () => [],
+    listPendingViaSignatureChain: async () => [],
+    submit: (env: unknown) => chain.submit(env),
+  }) as unknown as AccumulateClient;
+  /** HARBOR_P1 as a HUMAN-ONLY seat: no key anywhere in this process. */
+  async function decide(decision: 'approve' | 'deny', body: unknown = { type: 'writeData', entry: { type: 'doubleHash', data: ['00'] } }, principal = PRINCIPAL) {
+    chain.pending.set(HTX, { principal, body });
+    const acc = orchChain();
+    const o = new Orchestrator({
+      accumulate: acc, keyring: noKeyKeyring('human-only signer'), policy: new MockPolicyClient({ decision, reason: 'FICTIONAL seat rule' }),
+      store, resolver: new Resolver(acc), logger: silent, humanOnlyPages: [HARBOR_P1], readPage: chain.readPage, options: { submitRejectVote: true },
+    });
+    return o.handle({ txHash: HTX, signerUrl: HARBOR_P1 });
+  }
+
+  it('approve: awaiting_human; the person prepares and signs the stored request; the landing ends it as signed', async () => {
+    expect((await decide('approve')).status).toBe('awaiting_human');
+    expect(chain.submitted).toHaveLength(0);
+    const stored = await store.getPolicyRequest(HTX);
+    const prep = await prepare(alice, { ref: HTX, page: HARBOR_P1, vote: 'approve' });
+    expect(prep.status).toBe(200);
+    expect(prep.json).toMatchObject({ txHash: HTX, principal: PRINCIPAL, summaryHash: stored!.summaryHash });
+    const r = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prep.json.prepareId, signature: await signPrepared(alice, prep.json) });
+    expect(r.json).toMatchObject({ txHash: HTX, status: 'landed', page: HARBOR_P1, keyHash: alice.keyHash });
+    expect(chain.submitted).toHaveLength(1);   // the person's signature, and nothing from this signer
+    expect(chain.submitted[0].signatures[0]).toMatchObject({ type: 'ecdsaSha256', signer: HARBOR_P1 });
+    expect((await store.get(HTX))?.status).toBe('signed');
+    expect(await store.getReceipt(HTX)).toMatchObject({ decision: 'approve', vote: 'approve', signedBy: { page: HARBOR_P1, publicKeyHash: alice.keyHash } });
+  });
+
+  it('deny: the person casts the reject; the landing ends it as rejected', async () => {
+    expect((await decide('deny')).status).toBe('awaiting_human');
+    const prep = await prepare(bob, { ref: HTX, page: HARBOR_P1, vote: 'reject' });
+    expect(prep.status).toBe(200);
+    await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prep.json.prepareId, signature: await signPrepared(bob, prep.json) });
+    expect(chain.submitted[0].signatures[0].vote).toBe('reject');
+    expect((await store.get(HTX))?.status).toBe('rejected');
+  });
+
+  it('a signature that does not land leaves the request awaiting_human', async () => {
+    chain.land = false;
+    await decide('approve');
+    const prep = await prepare(alice, { ref: HTX, page: HARBOR_P1, vote: 'approve' });
+    const r = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prep.json.prepareId, signature: await signPrepared(alice, prep.json) });
+    expect(r.json.status).toBe('submitted');
+    expect((await store.get(HTX))?.status).toBe('awaiting_human');
+  });
+
+  it('G-65 on this path: an approved key-page change that has since become a brick is refused at the prepare of the person', async () => {
+    const body = { type: 'updateKeyPage', operation: [{ type: 'add', entry: { keyHash: 'e9'.repeat(32) } }] };
+    expect((await decide('approve', body, HARBOR_P2)).status).toBe('awaiting_human');
+    chain.pages.get(HARBOR_P2.toLowerCase())!.keys.push({ publicKeyHash: 'e9'.repeat(32) });   // added meanwhile
+    const prep = await prepare(alice, { ref: HTX, page: HARBOR_P1, vote: 'approve' });
+    expect(prep.status).toBe(400);
+    expect(prep.json).toMatchObject({ error: 'duplicate_entry' });
+    expect(chain.submitted).toHaveLength(0);
+    expect((await store.get(HTX))?.status).toBe('awaiting_human');
   });
 });

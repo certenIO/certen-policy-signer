@@ -13,6 +13,13 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Added
 
+- **G-69: human-only seats.** `wallet.human_scopes[]` runs a seat for a page with NO machine key: polled
+  (account and header authority), resolved, stored and decided like a keyed scope, but never signed by this
+  process. A decision that needs a signature is recorded with the new status `awaiting_human` (receipt and
+  evidence kept); a person signs it through officer intake, and the landed signature ends the request
+  (`signed` / `rejected`, with `signedBy`). The page must be in `officer_intake.human_pages` and may not also
+  be a keyed scope. New request status `awaiting_human` (non-terminal).
+
 - **AWS KMS Ed25519 in the `cloud-kms` key source.** An AWS key with `KeySpec: ECC_NIST_EDWARDS25519` now
   signs as `ed25519` (pure EdDSA over the preimage: `ED25519_SHA_512`, `MessageType: RAW`), with the raw
   32-byte public key (key hash = sha256 of it) and a local verification of every signature. The algorithm

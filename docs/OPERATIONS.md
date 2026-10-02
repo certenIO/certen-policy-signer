@@ -429,5 +429,42 @@ for a transaction ref confirms it is still pending; any mismatch or tampered ech
 this key up to `landed_timeout_ms`. A proposal submitted on a page whose threshold is above 1 is recorded by its transaction hash with the
 proposal's display and summaryHash, so further officers on that page sign it as a transaction ref. Prepares and proposals are held in memory: a restart discards them.
 
-A signer with `officer_intake` and no `wallet.scopes`, `wallet.signer_url` or `signer` runs **intake-only**:
+### Human-only seats (G-69)
+
+A party with no machine page -- legal and board books (runbook A5), or a firm with only book/1 and its
+people -- runs its seat with `wallet.human_scopes`. Each entry is a key page with **no key**:
+
+- **Discovery** is the same as for a keyed scope: the page's Pending index (account authority) and the
+  book's signature chain (header authority, F25), one poller per page.
+- **Decision** is the same: the orchestrator resolves the transaction, stores the PolicyRequest (display,
+  summaryHash, header, acceptance, decoded legs; `GET /relay/pending/:hash`) and asks the engine. `pending`
+  is held with the G-64 hold record. SR4, G-65 and the on-chain deadline apply as for a keyed scope.
+- **No signature, ever.** An approve, or a deny with `submit_reject_vote`, is recorded as
+  **`awaiting_human`** with the receipt (decision, reason, evidence, and
+  `policyEvidence.awaitingHumanSignature: {page, vote}`). A deny without `submit_reject_vote` is
+  `rejected`, as for a keyed scope. The page has no entry in the keyring, so every signing lookup for it
+  refuses; a process whose every seat is human-only holds a keyring with no key at all.
+- **A person signs** the stored request through officer intake (prepare with `ref` = the transaction
+  hash, `page` = the human page, `vote` as the receipt says). When their signature **lands**, the request
+  ends: `signed` for an approve, `rejected` for a reject, with `signedBy` (page, `ecdsaSha256`, key hash,
+  delegators) on the receipt. While `awaiting_human`, later polls do not ask the engine again; the
+  transaction executing or expiring also ends it.
+
+A human-only page must be listed in `officer_intake.human_pages` (with intake enabled) and must not also be
+a keyed scope or `wallet.signer_url`; any key field on the entry refuses the boot. A `policy` block is
+required. FICTIONAL example: `summit-inspection-tcl1` book/1, people on sign-link:
+
+```yaml
+wallet:
+  org_id: "summit-inspection-tcl1 (FICTIONAL)"
+  accumulate_endpoints: ["http://accumulate:26660/v3"]
+  human_scopes:
+    - page: "acc://summit-inspection-tcl1.acme/book/1"
+policy: { url: "http://summit-console-decision:8080/decide", auth: "hmac", hmac_secret: "env:SUMMIT_POLICY_HMAC" }
+officer_intake:
+  enabled: true
+  human_pages: ["acc://summit-inspection-tcl1.acme/book/1"]
+```
+
+A signer with `officer_intake` and no `wallet.scopes`, `wallet.signer_url`, `signer` or `wallet.human_scopes` runs **intake-only**:
 no keys, no poller, no policy engine (the `policy` block may be omitted), only the relay and officer routes.

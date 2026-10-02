@@ -73,6 +73,12 @@ export interface OrchestratorDeps {
    * cannot be read, and the guard never assumes a page state.
    */
   readPage?: (page: string) => Promise<PageState>;
+  /**
+   * G-69: pages that are HUMAN-ONLY seats (`wallet.human_scopes`). Work found for them is resolved, stored
+   * and decided like any other, but this signer never signs for them -- approve or reject: a decision that
+   * needs a signature is recorded as `awaiting_human`, and a person signs through officer intake.
+   */
+  humanOnlyPages?: string[];
   options?: OrchestratorOptions;
   now?: () => number; // injectable clock (ms) for tests
 }
@@ -82,8 +88,10 @@ export class Orchestrator {
   private readonly now: () => number;
   private readonly votes: VoteBackend;
   private readonly notifier: Notifier;
+  private readonly humanOnly: Set<string>;
 
   constructor(private readonly d: OrchestratorDeps) {
+    this.humanOnly = new Set((d.humanOnlyPages ?? []).map((p) => p.toLowerCase().replace(/\/+$/, '')));
     this.opt = {
       submitRejectVote: d.options?.submitRejectVote ?? false,
       maxBadVersionRetries: d.options?.maxBadVersionRetries ?? 3,
@@ -207,6 +215,13 @@ export class Orchestrator {
       return store.update(ref.txHash, { status, ...finaliseHold(await store.get(ref.txHash), `gone:${r.reason}`, this.now()) });
     }
     const tx = r.tx;
+    // G-69: the engine has already decided and a person owes the signature. Asking again on every poll
+    // would rewrite the decision under them; the request ends when their signature lands (officer intake)
+    // or when the transaction goes away (handled just above).
+    if (priorStatus === 'awaiting_human') {
+      logger.debug({ tx: ref.txHash }, 'awaiting a human signature through officer intake');
+      return (await store.get(ref.txHash))!;
+    }
     await store.update(ref.txHash, {
       status: 'awaiting_policy', account: tx.account, signerVersion: tx.signerVersion,
       actionSummary: tx.summary.action, operationId: tx.operationId,
@@ -331,6 +346,8 @@ export class Orchestrator {
       if (rules.submitRejectVote) {
         const lateReject = this.deadlineRefusal(tx);
         if (lateReject) return this.refuseDeadline(tx, lateReject, decision);
+        // G-69: a human-only seat holds no key; the reject the engine asked for is a person's to cast.
+        if (this.isHumanOnly(tx.signerUrl)) return this.awaitHuman(tx, 'reject', decision);
         const res = await this.signAndSubmit(tx, 'reject');
         if (!res.ok) {
           logger.error({ tx: ref.txHash, err: res.error }, 'reject vote submission failed');
@@ -381,6 +398,10 @@ export class Orchestrator {
     // after the transaction died must not become a late signature (0031).
     const lateApprove = this.deadlineRefusal(tx);
     if (lateApprove) return this.refuseDeadline(tx, lateApprove, decision);
+
+    // G-69: a human-only seat holds no key. Every check above (pause, SR4 ceiling, G-65 key-page guard,
+    // deadline) has run exactly as for a keyed seat; the approve signature is a person's to make.
+    if (this.isHumanOnly(tx.signerUrl)) return this.awaitHuman(tx, 'approve', decision);
 
     await store.update(ref.txHash, { status: 'approved', decision: 'approve', assertionRef: decision.assertion ? sha256Hex(decision.assertion) : undefined });
     // Whose key signs. T29: when the policy engine names the approver, THEIR key signs — so the
@@ -461,6 +482,37 @@ export class Orchestrator {
     });
   }
 
+  /** G-69: is `page` a human-only seat (no key here, ever)? */
+  private isHumanOnly(page: string): boolean {
+    return this.humanOnly.has(page.toLowerCase().replace(/\/+$/, ''));
+  }
+
+  /**
+   * G-69: record a decision that needs a signature this signer cannot make, because the seat's page holds
+   * no key. No signature of any kind is cast. The PolicyRequest (display, summaryHash, header, facts) is
+   * already stored, so a person on the page signs through officer intake against it; the receipt keeps the
+   * engine's decision, reason and evidence, and says whose signature is owed and which vote.
+   */
+  private async awaitHuman(
+    tx: ResolvedTx,
+    vote: 'approve' | 'reject',
+    decision: { decision: string; reason?: string; evidence?: Record<string, unknown> },
+  ): Promise<SigningRequest> {
+    this.d.logger.info({ tx: tx.txHash, page: tx.signerUrl, decision: decision.decision, vote }, 'human-only seat: decision recorded; a person on the page signs through officer intake');
+    await this.saveReceipt({
+      txHash: tx.txHash, operationId: tx.operationId,
+      ...(decision.decision === 'approve' || decision.decision === 'deny' ? { decision: decision.decision } : {}),
+      reason: decision.reason,
+      ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
+      policyEvidence: { ...(decision.evidence ?? {}), awaitingHumanSignature: { page: tx.signerUrl, vote } },
+    });
+    return this.d.store.update(tx.txHash, {
+      status: 'awaiting_human',
+      ...(decision.decision === 'approve' || decision.decision === 'deny' ? { decision: decision.decision } : {}),
+      lastError: undefined,
+    });
+  }
+
   /**
    * G-65: why an approve vote on this transaction must be withheld because it would brick a key page, or
    * undefined when it may proceed.
@@ -517,6 +569,9 @@ export class Orchestrator {
    * decision above this line is identical either way: the policy engine gates both.
    */
   private async signAndSubmit(tx: ResolvedTx, vote: 'approve' | 'reject', keyRef?: string): Promise<VoteResult> {
+    // G-69 defence in depth: nothing above reaches here for a human-only seat, and if anything ever did,
+    // the answer is no signature -- never a key found for the page by some other route.
+    if (this.isHumanOnly(tx.signerUrl)) return { ok: false, error: 'human-only scope: this signer holds no key for this page' };
     await this.d.store.update(tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
     return this.votes.cast(tx, vote, keyRef === undefined ? {} : { keyRef });
   }
@@ -545,6 +600,7 @@ export class Orchestrator {
     vote: 'approve' | 'reject',
     refs: string[],
   ): Promise<VoteResult> {
+    if (this.isHumanOnly(tx.signerUrl)) return { ok: false, error: 'human-only scope: this signer holds no key for this page' };
     // Nobody named: one vote, the organisation's own key, exactly as before T29.
     if (refs.length === 0) return this.signAndSubmit(tx, vote);
 

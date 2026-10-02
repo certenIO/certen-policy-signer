@@ -12,6 +12,7 @@ import { Logger } from './logger.js';
 import { RawAccumulateClient } from './accumulate/raw-client.js';
 import { readPage } from './ops/rotate.js';
 import { createOfficerIntake, OfficerIntake } from './officer/intake.js';
+import { recordHumanSignature } from './officer/landed.js';
 import { createRelayClientsHandler, RelayClientsHandler } from './relay-clients.js';
 import { createServer } from './server.js';
 import { MemoryStore, FileStore, Store } from './store/store.js';
@@ -42,6 +43,8 @@ export function buildOfficerIntake(cfg: Config, accumulate: RawAccumulateClient,
     decode: (body, principal) => decoders.decode(body as TxBody, { principal }),
     labels: cfg.decoders.labels,
     landedTimeoutMs: cfg.officer_intake.landed_timeout_ms,
+    // G-69: a landed personal signature ends a human-only seat's `awaiting_human` request.
+    onLanded: async (r) => { await recordHumanSignature(store, r, logger); },
     logger,
   });
 }

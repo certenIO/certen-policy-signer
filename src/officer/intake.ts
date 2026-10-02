@@ -63,6 +63,13 @@ export interface OfficerIntakeDeps {
   decode?: (body: { type: string; [k: string]: unknown }, principal: string) => { summary: ActionSummary; operationId?: string };
   labels?: Record<string, string>;
   landedTimeoutMs: number;
+  /**
+   * G-69: told when a person's signature on a TRANSACTION ref has landed on chain, so the request a
+   * human-only seat recorded as `awaiting_human` can end. `authority` is the page whose seat the
+   * signature satisfies (the outermost delegator, else the signing page). Best-effort: a failure is
+   * logged and never changes the answer, because the signature is already on chain.
+   */
+  onLanded?: (r: { txHash: string; authority: string; page: string; delegators: string[]; keyHash: string; vote: 'approve' | 'reject' }) => Promise<void>;
   pollIntervalMs?: number;
   now?: () => number;
   logger: Logger;
@@ -491,6 +498,11 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     // 7. Poll until this key's signature is recorded.
     const status = await pollLanded(rec);
     if (proposal && status === 'landed') proposal.status = 'landed';
+    if (!proposal && status === 'landed' && d.onLanded) {
+      const authority = rec.delegators.length ? rec.delegators[rec.delegators.length - 1]! : rec.page;
+      await d.onLanded({ txHash: rec.txHash, authority, page: rec.page, delegators: rec.delegators, keyHash: rec.keyHash, vote: rec.vote })
+        .catch((e) => d.logger.error({ tx: rec.txHash, err: (e as Error).message }, 'could not record the landed officer signature on the request'));
+    }
     return send(res, 200, { txHash: rec.txHash, status, page: rec.page, keyHash: rec.keyHash });
   }
 

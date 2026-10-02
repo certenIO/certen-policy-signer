@@ -353,6 +353,10 @@ export interface Decision {
 export const REQUEST_STATUSES = [
   'discovered',
   'awaiting_policy',
+  // G-69: a human-only scope (no key on its page) has the engine's decision, and the signature it needs
+  // must come from a person through officer intake. Not terminal: it ends when that signature lands, or
+  // when the transaction executes or expires.
+  'awaiting_human',
   'approved',
   'denied',
   'signing',
