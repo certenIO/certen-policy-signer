@@ -5,7 +5,7 @@
  * Every key here is generated inside the test by WebCrypto as NON-EXTRACTABLE and lives only in memory; no key
  * material is committed. Every party, page and credential string is FICTIONAL.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import http from 'node:http';
 import { createHash, verify as nodeVerify, createPublicKey, webcrypto } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import pino from 'pino';
 import { p256 } from '@noble/curves/nist.js';
 import { tclSummaryV1, buildDisplay, buildProposalDisplay, awaitingGovernanceRequest, withDisplay } from '../src/display.js';
-import { createOfficerIntake, OfficerIntake, IntakeChain, PREPARE_TTL_MS } from '../src/officer/intake.js';
+import { createOfficerIntake, OfficerIntake, IntakeChain, PREPARE_TTL_MS, PROPOSAL_TTL_MS } from '../src/officer/intake.js';
 import { officerAuthMessage } from '../src/officer/auth.js';
 import { createRelayClientsHandler } from '../src/relay-clients.js';
 import { createServer } from '../src/server.js';
@@ -843,7 +843,7 @@ describe('G-39: open prepares and proposals are persisted and restored', () => {
     const c: IntakeChain = Object.assign(Object.create(Object.getPrototypeOf(chain)), chain, o.chainOverride ?? {});
     const it = createOfficerIntake({
       humanPages: [HARBOR_P1, TREASURY_P1, ISSUANCE_P1, BOARD_P1], chain: c, readPage: chain.readPage,
-      getPolicyRequest: (h) => store.getPolicyRequest(h), landedTimeoutMs: 150, pollIntervalMs: 10, logger: silent,
+      getPolicyRequest: (h) => store.getPolicyRequest(h), saveAwaiting: (pr) => store.savePolicyRequest(pr), landedTimeoutMs: 150, pollIntervalMs: 10, logger: silent,
       state: st, ...(o.now ? { now: o.now } : {}),
     });
     await it.restore();
@@ -961,6 +961,87 @@ describe('G-39: open prepares and proposals are persisted and restored', () => {
     expect(recs[0]!.spki).toBe(bytesToHex(alice.spki));   // the PUBLIC key
     expect(readFileSync(path, 'utf8')).not.toContain('"signature"');
     expect(pr.status).toBe(200);
+  });
+
+  /** A chain whose submit is accepted by the network but answers with an error, and whose reads fail. */
+  const lostSubmit = (accepted: { env?: unknown }): Partial<IntakeChain> => ({
+    submit: async (env: unknown) => { accepted.env = env; throw new Error('FICTIONAL timeout'); },
+    getPendingTx: async () => ({ found: false, unavailable: true }),
+  });
+
+  it('review #4: a proposal settled to submitted by a restart gets its awaiting record, so a co-signer can sign it', async () => {
+    const path = dir();
+    const accepted: { env?: unknown } = {};
+    const a = await boot(path, { chainOverride: lostSubmit(accepted) });
+    const c = await a.intake.propose(BOARD_P1, [{ op: 'add-key', keyHash: 'e5'.repeat(32) }], 'ada (FICTIONAL)');
+    const id = (c.body as { proposalId: string }).proposalId;
+    const pr = await prep(a.port, alice, { ref: id, page: BOARD_P1, vote: 'approve' });
+    expect((await sign(a.port, alice, pr.json)).status).toBe(502);
+    expect(await store.getPolicyRequest(pr.json.txHash)).toBeUndefined();
+
+    await chain.submit(accepted.env);   // it had reached the network
+    const b = await boot(path);
+    expect(b.intake.proposals()[0]).toMatchObject({ status: 'submitted', txHash: pr.json.txHash });
+    expect(await store.getPolicyRequest(pr.json.txHash)).toMatchObject({ requestId: id, account: BOARD_P1, bodyType: 'updateKeyPage' });
+    // bob, the co-signer, can now prepare it by transaction ref.
+    expect((await prep(b.port, bob, { ref: pr.json.txHash, page: BOARD_P1, vote: 'approve' })).status).toBe(200);
+  });
+
+  it('review #7: sweep never drops an expired proposal whose submit fate is unknown; it settles it first', async () => {
+    const path = dir();
+    let t = Date.now();
+    const accepted: { env?: unknown } = {};
+    let readable = false;
+    const a = await boot(path, {
+      now: () => t,
+      chainOverride: {
+        submit: async (env: unknown) => { accepted.env = env; throw new Error('FICTIONAL timeout'); },
+        getPendingTx: async (h: string, pp: string) => (readable ? chain.getPendingTx(h, pp) : { found: false, unavailable: true }),
+      },
+    });
+    const c = await a.intake.propose(HARBOR_P2, [{ op: 'add-key', keyHash: 'e6'.repeat(32) }], 'ada (FICTIONAL)');
+    const pr = await prep(a.port, alice, { ref: (c.body as { proposalId: string }).proposalId, page: HARBOR_P1, vote: 'approve' });
+    expect((await sign(a.port, alice, pr.json)).status).toBe(502);
+    await chain.submit(accepted.env);
+
+    t += PROPOSAL_TTL_MS + 1;   // expired, fate still unreadable
+    await call(a.port, 'POST', '/relay/officer-signature', {}, { prepareId: 'none' });   // the (unauthenticated) intake route sweeps first
+    expect(a.intake.proposals()).toHaveLength(1);
+    expect(a.intake.proposals()[0]!.status).toBe('submitting');
+    expect(await a.store.listIntakeRecords('proposal')).toHaveLength(1);
+
+    readable = true;                    // the chain answers: it is on chain
+    await call(a.port, 'POST', '/relay/officer-signature', {}, { prepareId: 'none' });
+    await vi.waitFor(() => expect(a.intake.proposals()[0]?.status).toBe('submitted'));
+    await call(a.port, 'POST', '/relay/officer-signature', {}, { prepareId: 'none' });   // now its fate is known: dropped
+    expect(a.intake.proposals()).toHaveLength(0);
+  });
+
+  it('review #8: a prepare found expired at submit is dropped from the store', async () => {
+    const path = dir();
+    const T = Date.now();
+    let jump = false;
+    let n = 0;
+    // sweep() sees T (not expired); the expiry check right after sees T + TTL (expired).
+    const a = await boot(path, { now: () => (jump && ++n > 1 ? T + PREPARE_TTL_MS + 1 : T) });
+    const pr = await prep(a.port, alice, { ref: TX, page: HARBOR_P1, vote: 'approve' });
+    expect(await a.store.listIntakeRecords('prepare')).toHaveLength(1);
+    jump = true;
+    expect((await sign(a.port, alice, pr.json)).status).toBe(404);
+    expect(await a.store.listIntakeRecords('prepare')).toEqual([]);
+    expect(chain.submitted).toHaveLength(0);
+  });
+
+  it('review #9: prepare reads the transaction once; a flaky second read cannot turn a valid approve into a 503', async () => {
+    let reads = 0;
+    const a = await boot(dir(), {
+      chainOverride: {
+        getPendingTx: async (h: string, pp: string) => (++reads === 1 ? chain.getPendingTx(h, pp) : { found: false, unavailable: true }),
+      },
+    });
+    const pr = await prep(a.port, alice, { ref: TX, page: HARBOR_P1, vote: 'approve' });
+    expect(pr.status).toBe(200);
+    expect(reads).toBe(1);
   });
 });
 

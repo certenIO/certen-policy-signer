@@ -96,6 +96,11 @@ export interface Proposal {
    * rather than by assuming the proposal is still open.
    */
   pendingTxHash?: string;
+  /**
+   * The page (and delegators) whose signature initiated the submit, recorded with the claim. A reconcile
+   * that finds the transaction on chain needs it to record the awaiting request co-signers sign by (review #4).
+   */
+  submittedVia?: { page: string; delegators: string[] };
 }
 
 /** G-39: where open prepares and proposals are kept so they survive a restart (the signer's Store). */
@@ -175,7 +180,13 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     const t = now();
     // Expired is refused whether or not the store has caught up: the map entry goes now, the record after.
     for (const [k, r] of prepares) if (r.expiresAt <= t) { prepares.delete(k); dropPrepare(k).catch(logDrop('prepare', k)); }
-    for (const [k, p] of proposals) if (p.expiresAt <= t && !inFlight.has(k)) { proposals.delete(k); dropProposal(k).catch(logDrop('proposal', k)); }
+    for (const [k, p] of proposals) {
+      if (p.expiresAt > t || inFlight.has(k)) continue;
+      // Review #7: a proposal left `submitting` may be on chain. Settle it against the chain first (which also
+      // records its awaiting request); it is dropped by a later sweep only once its fate is known.
+      if (p.status === 'submitting') { reconcile(p).catch((e) => d.logger.error({ proposalId: k, err: (e as Error).message }, 'officer intake: could not settle an expired submitting proposal')); continue; }
+      proposals.delete(k); dropProposal(k).catch(logDrop('proposal', k));
+    }
   }
 
   /** Is the transaction on chain (pending or executed)? `unknown` when the chain could not be read. */
@@ -195,9 +206,14 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     const seen = p.pendingTxHash ? await onChain(p.pendingTxHash, p.page) : 'absent';
     if (seen === 'unknown') return;
     if (seen === 'present') { p.status = 'submitted'; p.txHash = p.pendingTxHash; }
-    else { p.status = 'proposed'; delete p.pendingTxHash; }
+    else { p.status = 'proposed'; delete p.pendingTxHash; delete p.submittedVia; }
     d.logger.warn({ proposalId: p.id, status: p.status, txHash: p.txHash }, 'officer intake: proposal left mid-submit settled against the chain');
     await saveProposal(p);
+    // Review #4: exactly as the normal submit path does, so a co-signer on a threshold > 1 page finds it by tx ref.
+    if (p.status === 'submitted' && p.txHash) {
+      if (p.submittedVia) await recordProposalAwaiting(p, { txHash: p.txHash, ...p.submittedVia });
+      else d.logger.error({ proposalId: p.id, txHash: p.txHash }, 'officer intake: settled proposal has no recorded signing page; co-signers cannot be routed to it');
+    }
   }
 
   async function restore(): Promise<void> {
@@ -210,9 +226,11 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     }
     for (const o of await d.state.listIntakeRecords('proposal')) {
       const p = o as unknown as Proposal;
-      if (typeof p.id !== 'string' || typeof p.expiresAt !== 'number' || p.expiresAt <= t) { await dropProposal(String(o.id)); continue; }
+      if (typeof p.id !== 'string' || typeof p.expiresAt !== 'number') { await dropProposal(String(o.id)); continue; }
       proposals.set(p.id, p);
       await reconcile(p);
+      // Expired: dropped -- unless it is still `submitting` with an unknown fate (review #7), which is kept.
+      if (p.expiresAt <= t && p.status !== 'submitting') { proposals.delete(p.id); await dropProposal(p.id); }
     }
     d.logger.info({ prepares: prepares.size, proposals: proposals.size }, 'officer intake: open prepares and proposals restored');
   }
@@ -255,7 +273,9 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
   }
 
   async function txStatus(hash: string, principal: string): Promise<string> {
-    const p = await d.chain.getPendingTx(hash, principal).catch(() => ({ found: false, unavailable: true } as PendingTxResult));
+    return statusOf(await d.chain.getPendingTx(hash, principal).catch(() => ({ found: false, unavailable: true } as PendingTxResult)));
+  }
+  function statusOf(p: PendingTxResult): string {
     if (p.unavailable) return 'unknown';
     if (!p.found) return 'not_found';
     if (p.executed) return 'executed';
@@ -420,12 +440,13 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     } else {
       const pr = await txView(ref.hash, b.principal as string | undefined);
       if (!pr || !pr.display || !pr.summaryHash) return send(res, 404, { error: 'not found' });
-      const st = await txStatus(ref.hash, pr.account);
+      // ONE chain read for both the status and the body (review #9): a second read that failed could turn a
+      // valid approve into a 503, and a body read separately from the status is not the one checked.
+      const live = await d.chain.getPendingTx(ref.hash, pr.account).catch(() => ({ found: false, unavailable: true } as PendingTxResult));
+      const st = statusOf(live);
       if (st !== 'pending') return send(res, 409, { error: `transaction is ${st}` });
       if (vote === 'approve') {
         // G-65: decode the body the chain holds (not a stored summary) and refuse an approve that would brick the page.
-        const live = await d.chain.getPendingTx(ref.hash, pr.account).catch(() => ({ found: false, unavailable: true } as PendingTxResult));
-        if (live.unavailable || !live.found) return send(res, 503, { error: 'transaction state unreadable' });
         const brick = await bodyRefusal(live.body, live.principal || pr.account);
         if (brick) {
           d.logger.warn({ audit: 'officer_prepare_refused', keyHash, page, ref: ref.hash, refusal: brick }, 'officer prepare refused: the transaction would brick the key page');
@@ -466,7 +487,11 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     // (synchronously, so a concurrent intake cannot use it), and the persisted record before anything else:
     // if it cannot be removed, nothing is verified or submitted, so a restart can never make it usable again.
     prepares.delete(rec.prepareId);
-    if (rec.expiresAt <= now()) return send(res, 404, { error: 'prepare not found or expired' });
+    if (rec.expiresAt <= now()) {
+      // Review #8: expired is gone from the store too, not only from memory.
+      await dropPrepare(rec.prepareId).catch(logDrop('prepare', rec.prepareId));
+      return send(res, 404, { error: 'prepare not found or expired' });
+    }
     try { await dropPrepare(rec.prepareId); }
     catch (e) {
       d.logger.error({ prepareId: rec.prepareId, err: (e as Error).message }, 'officer intake: could not record the prepare as used; nothing submitted');
@@ -508,6 +533,7 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
       if (!proposal || proposal.status !== 'proposed') return reject('proposal_not_open');
       proposal.status = 'submitting';
       proposal.pendingTxHash = rec.txHash;
+      proposal.submittedVia = { page: rec.page, delegators: [...rec.delegators] };
       inFlight.add(proposal.id);
     }
     let submitted = false;
@@ -637,7 +663,7 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
    * it by tx hash with the proposal's own display and summaryHash (so a link carrying that hash stays valid),
    * so the next officer signs it as a transaction ref.
    */
-  async function recordProposalAwaiting(p: Proposal, rec: PrepareRecord): Promise<void> {
+  async function recordProposalAwaiting(p: Proposal, rec: { txHash: string; page: string; delegators: string[] }): Promise<void> {
     const txHash = rec.txHash;
     if (!d.saveAwaiting) return;
     try {
