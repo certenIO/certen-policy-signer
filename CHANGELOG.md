@@ -38,6 +38,10 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Changed
 
+- **G-65 review #5.** A reject/response threshold already above the entries (a v1 executor never lowers
+  them) no longer blocks every key-page change: only a change that creates or worsens one is refused, so a
+  rotation or a repair on such a page passes. The accept-threshold rule is unchanged.
+
 - **G-69 review fixes.** A human-only seat's request is keyed by transaction AND page, so it never
   pre-empts a keyed seat acting on the same transaction (`GET /v1/requests/:tx` lists all as `seats`), and
   human-only pollers no longer take the gateway pending list. `awaiting_human` ends only when the page's

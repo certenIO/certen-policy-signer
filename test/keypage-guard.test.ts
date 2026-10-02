@@ -370,3 +370,35 @@ describe('machine vote on a pending updateKeyPage', () => {
     expect(read).not.toHaveBeenCalled();
   });
 });
+
+describe('a stale reject/response threshold (review #5)', () => {
+  // Two keys, reject threshold 3: left stale by a v1 executor. The page still ACCEPTS; rejection is unreachable.
+  const stale = (field: 'reject' | 'response') => page([A, B], 1, field === 'reject' ? 3 : 0, field === 'response' ? 3 : 0);
+
+  for (const field of ['reject', 'response'] as const) {
+    const reason = `${field}_threshold_exceeds_entries`;
+    const op = field === 'reject' ? 'setRejectThreshold' : 'setResponseThreshold';
+    it(`${field}: an emergency rotation and unrelated changes pass`, () => {
+      expect(validateKeyPageChange(stale(field), [{ type: 'update', oldKeyHash: A, newKeyHash: C }]).ok).toBe(true);
+      expect(validateKeyPageChange(stale(field), [{ type: 'updateAllowed', allow: [], deny: [] }]).ok).toBe(true);
+      expect(validateKeyPageChange(stale(field), [{ type: 'setThreshold', threshold: 2 }]).ok).toBe(true);
+    });
+    it(`${field}: a change that improves it passes; one that repairs it passes`, () => {
+      expect(validateKeyPageChange(stale(field), [{ type: 'add', keyHash: C }]).ok).toBe(true);           // 3 over 3: repaired
+      expect(validateKeyPageChange(page([A, B], 1, field === 'reject' ? 4 : 0, field === 'response' ? 4 : 0), [{ type: op, threshold: 3 }]).ok).toBe(true);   // 4 -> 3 over 2: better
+      expect(validateKeyPageChange(stale(field), [{ type: op, threshold: 3 }]).ok).toBe(true);           // unchanged
+      expect(validateKeyPageChange(stale(field), [{ type: op, threshold: 2 }]).ok).toBe(true);           // repaired
+    });
+    it(`${field}: a change that worsens it is refused`, () => {
+      expect(validateKeyPageChange(stale(field), [{ type: 'remove', keyHash: B }])).toMatchObject({ ok: false, refusal: { reason, threshold: 3, entries: 1 } });
+      expect(validateKeyPageChange(stale(field), [{ type: op, threshold: 4 }])).toMatchObject({ ok: false, refusal: { reason } });
+    });
+    it(`${field}: creating one is still refused`, () => {
+      expect(validateKeyPageChange(page([A, B]), [{ type: op, threshold: 3 }])).toMatchObject({ ok: false, refusal: { reason } });
+    });
+  }
+
+  it('the accept rule is unchanged: a page already over its accept threshold stays refused', () => {
+    expect(validateKeyPageChange(page([A, B], 3), [{ type: 'update', oldKeyHash: A, newKeyHash: C }])).toMatchObject({ ok: false, refusal: { reason: 'threshold_exceeds_entries' } });
+  });
+});

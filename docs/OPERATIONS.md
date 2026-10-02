@@ -173,8 +173,10 @@ threshold that could never be met.
 route, `POST /relay/governance`, `POST /relay/governance/proposal`, officer intake (prepare and, again,
 right before submit) and the machine vote on a pending `updateKeyPage` -- applies the operations, in order,
 to the page **as it reads on chain at that moment** (src/ops/keypage-guard.ts) and refuses a change that
-would leave the page unsatisfiable: no entries; an accept threshold below one or above the entries; a set
-reject or response threshold above the entries; a remove of an entry not on the page; an add or update
+would leave the page unsatisfiable: no entries; an accept threshold below one or above the entries; a
+reject or response threshold above the entries that the change CREATES or WORSENS (one a v1 executor left
+stale is not a brick -- the page still accepts -- so a change that keeps or improves it, such as an
+emergency rotation, passes); a remove of an entry not on the page; an add or update
 that duplicates an entry. Delegate seats count as entries. The answer carries a structured `refusal`
 (`{reason, message, page, opIndex?, threshold?, entries?, entry?}`; reasons `no_entries`,
 `threshold_below_one`, `threshold_exceeds_entries`, `reject_threshold_exceeds_entries`,

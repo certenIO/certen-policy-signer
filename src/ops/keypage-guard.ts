@@ -27,6 +27,15 @@
  *       updateAllowed        changes no entry and no threshold
  *     A delegate entry is an entry: it holds a seat and counts toward the threshold like a key does.
  *
+ *   - REJECT / RESPONSE THRESHOLDS ARE JUDGED BY WHAT THE CHANGE DOES TO THEM (review #5). A reject or response
+ *     threshold above the entries does not stop the page ACCEPTING anything -- it makes rejection (or the
+ *     response count) unreachable -- and a v1 executor can leave one stale, since it never lowers them on a
+ *     remove. Refusing every change on such a page would refuse the very changes that repair it, and an
+ *     emergency key rotation with it. So only a change that CREATES an unsatisfiable reject/response
+ *     threshold, or WORSENS one (leaves it further above the entries than it was), is refused; a change that
+ *     leaves an existing stale one as it was, or improves it, passes. The accept threshold rule is unchanged:
+ *     an accept threshold above the entries is refused whatever it was before, because that IS the brick.
+ *
  *   - `validateKeyPageChange` runs the simulation and then checks the RESULT: no entries, an accept
  *     threshold below one or above the entries, or a set (non-zero) reject/response threshold above the
  *     entries is refused. The accept threshold is judged as the protocol enforces it: a stored 0 (which a
@@ -216,7 +225,10 @@ export function simulateKeyPageOps(page: SimPage, ops: KeyPageOperation[]): SimO
       case 'setRejectThreshold':
       case 'setResponseThreshold': {
         if (!isCount(o.threshold)) return refuse({ reason: 'unrecognized_operation', opIndex: i, message: `operation ${i} (${o.type}) has no readable threshold` });
-        if (o.threshold > entries.length) {
+        const current = o.type === 'setRejectThreshold' ? reject : response;
+        // Unsatisfiable after this op, and not merely keeping (or lowering) one that already was (review #5).
+        const alreadyStale = current > entries.length;
+        if (o.threshold > entries.length && !(alreadyStale && o.threshold <= current)) {
           const reason = o.type === 'setRejectThreshold' ? 'reject_threshold_exceeds_entries' : 'response_threshold_exceeds_entries';
           return refuse({ reason, opIndex: i, threshold: o.threshold, entries: entries.length, message: `operation ${i} sets the ${o.type === 'setRejectThreshold' ? 'reject' : 'response'} threshold to ${o.threshold} on a page with ${entries.length} entries; it could never be met` });
         }
@@ -249,11 +261,14 @@ export function validateKeyPageChange(page: SimPage, ops: KeyPageOperation[]): K
   if (accept > n) {
     return { ok: false, refusal: { reason: 'threshold_exceeds_entries', threshold: accept, entries: n, message: `the change leaves an accept threshold of ${accept} over ${n} entries; it could never be met` } };
   }
-  if (r.rejectThreshold > n) {
-    return { ok: false, refusal: { reason: 'reject_threshold_exceeds_entries', threshold: r.rejectThreshold, entries: n, message: `the change leaves a reject threshold of ${r.rejectThreshold} over ${n} entries` } };
+  // Review #5: refused only when the change creates or worsens it. "Gap" = how far above the entries it is.
+  const before = page.entries.length;
+  const worsens = (was: number, now: number) => now > n && (was <= before || now - n > was - before);
+  if (worsens(page.rejectThreshold, r.rejectThreshold)) {
+    return { ok: false, refusal: { reason: 'reject_threshold_exceeds_entries', threshold: r.rejectThreshold, entries: n, message: `the change leaves a reject threshold of ${r.rejectThreshold} over ${n} entries${page.rejectThreshold > before ? ` (worse than the ${page.rejectThreshold} over ${before} it had)` : ''}` } };
   }
-  if (r.responseThreshold > n) {
-    return { ok: false, refusal: { reason: 'response_threshold_exceeds_entries', threshold: r.responseThreshold, entries: n, message: `the change leaves a response threshold of ${r.responseThreshold} over ${n} entries` } };
+  if (worsens(page.responseThreshold, r.responseThreshold)) {
+    return { ok: false, refusal: { reason: 'response_threshold_exceeds_entries', threshold: r.responseThreshold, entries: n, message: `the change leaves a response threshold of ${r.responseThreshold} over ${n} entries${page.responseThreshold > before ? ` (worse than the ${page.responseThreshold} over ${before} it had)` : ''}` } };
   }
   return { ok: true, before: page, after: r };
 }
