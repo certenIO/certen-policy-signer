@@ -18,7 +18,7 @@ import { createOfficerIntake, OfficerIntake, IntakeChain, PREPARE_TTL_MS } from 
 import { officerAuthMessage } from '../src/officer/auth.js';
 import { createRelayClientsHandler } from '../src/relay-clients.js';
 import { createServer } from '../src/server.js';
-import { MemoryStore, FileStore } from '../src/store/store.js';
+import { MemoryStore, FileStore, humanRecordId } from '../src/store/store.js';
 import { buildSigMetaHash, concatBytes, bytesToHex, hexToBytes } from '../src/accumulate/signing.js';
 import { core } from '../src/accumulate/sdk.js';
 import { loadConfig, isIntakeOnly } from '../src/config.js';
@@ -793,8 +793,8 @@ describe('G-69: officer intake on a request stored by a human-only seat', () => 
     expect(r.json).toMatchObject({ txHash: HTX, status: 'landed', page: HARBOR_P1, keyHash: alice.keyHash });
     expect(chain.submitted).toHaveLength(1);   // the person's signature, and nothing from this signer
     expect(chain.submitted[0].signatures[0]).toMatchObject({ type: 'ecdsaSha256', signer: HARBOR_P1 });
-    expect((await store.get(HTX))?.status).toBe('signed');
-    expect(await store.getReceipt(HTX)).toMatchObject({ decision: 'approve', vote: 'approve', signedBy: { page: HARBOR_P1, publicKeyHash: alice.keyHash } });
+    expect((await store.get(humanRecordId(HTX, HARBOR_P1)))?.status).toBe('signed');
+    expect(await store.getReceipt(humanRecordId(HTX, HARBOR_P1))).toMatchObject({ decision: 'approve', vote: 'approve', signedBy: { page: HARBOR_P1, publicKeyHash: alice.keyHash } });
   });
 
   it('deny: the person casts the reject; the landing ends it as rejected', async () => {
@@ -803,7 +803,7 @@ describe('G-69: officer intake on a request stored by a human-only seat', () => 
     expect(prep.status).toBe(200);
     await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prep.json.prepareId, signature: await signPrepared(bob, prep.json) });
     expect(chain.submitted[0].signatures[0].vote).toBe('reject');
-    expect((await store.get(HTX))?.status).toBe('rejected');
+    expect((await store.get(humanRecordId(HTX, HARBOR_P1)))?.status).toBe('rejected');
   });
 
   it('a signature that does not land leaves the request awaiting_human', async () => {
@@ -812,7 +812,7 @@ describe('G-69: officer intake on a request stored by a human-only seat', () => 
     const prep = await prepare(alice, { ref: HTX, page: HARBOR_P1, vote: 'approve' });
     const r = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prep.json.prepareId, signature: await signPrepared(alice, prep.json) });
     expect(r.json.status).toBe('submitted');
-    expect((await store.get(HTX))?.status).toBe('awaiting_human');
+    expect((await store.get(humanRecordId(HTX, HARBOR_P1)))?.status).toBe('awaiting_human');
   });
 
   it('G-65 on this path: an approved key-page change that has since become a brick is refused at the prepare of the person', async () => {
@@ -823,7 +823,7 @@ describe('G-69: officer intake on a request stored by a human-only seat', () => 
     expect(prep.status).toBe(400);
     expect(prep.json).toMatchObject({ error: 'duplicate_entry' });
     expect(chain.submitted).toHaveLength(0);
-    expect((await store.get(HTX))?.status).toBe('awaiting_human');
+    expect((await store.get(humanRecordId(HTX, HARBOR_P1)))?.status).toBe('awaiting_human');
   });
 });
 

@@ -15,6 +15,7 @@ import { withDisplay } from './display.js';
 import type { PageState } from './ops/rotate.js';
 import { checkKeyPageChange, KeyPageRefusal } from './ops/keypage-guard.js';
 import { finaliseHold, recordHold } from './store/pending-hold.js';
+import { humanRecordId } from './store/store.js';
 
 export interface OrchestratorOptions {
   submitRejectVote?: boolean;   // default false: deny => withhold signature (tx expires)
@@ -127,9 +128,19 @@ export class Orchestrator {
     };
   }
 
-  /** Every receipt carries the signer-config version (A6). */
-  private saveReceipt(r: Receipt): Promise<void> {
-    return this.d.store.saveReceipt({ ...r, ...(this.d.configVersion ? { configVersion: this.d.configVersion } : {}) });
+  /** Every receipt carries the signer-config version (A6), and is filed under its request's record key. */
+  private saveReceipt(page: string, r: Receipt): Promise<void> {
+    const recordId = this.isHumanOnly(page) ? humanRecordId(r.txHash, page) : undefined;
+    return this.d.store.saveReceipt({ ...r, ...(recordId ? { recordId } : {}), ...(this.d.configVersion ? { configVersion: this.d.configVersion } : {}) });
+  }
+
+  /**
+   * The record key for this transaction ON THIS PAGE (review #1). A keyed seat keeps the tx hash (every
+   * existing record); a human-only seat gets its own `<txHash>@<page>` record, so its handling of a
+   * transaction can never pre-empt (or freeze) a keyed seat that must vote on the same transaction.
+   */
+  private rid(r: { txHash: string; signerUrl: string }): string {
+    return this.isHumanOnly(r.signerUrl) ? humanRecordId(r.txHash, r.signerUrl) : r.txHash;
   }
 
   /**
@@ -161,27 +172,27 @@ export class Orchestrator {
   /** Handle one pending-tx reference. Idempotent + single-flight per txHash. */
   async handle(ref: PendingRef): Promise<SigningRequest> {
     const { store, logger } = this.d;
-    const existing = await store.get(ref.txHash);
+    const existing = await store.get(this.rid(ref));
     if (existing && ['signed', 'rejected', 'expired'].includes(existing.status)) {
       logger.debug({ tx: ref.txHash, status: existing.status }, 'idempotent skip');
       return existing;
     }
-    if (!store.tryLock(ref.txHash)) {
+    if (!store.tryLock(this.rid(ref))) {
       logger.debug({ tx: ref.txHash }, 'already in-flight');
       return existing ?? (await this.ensure(ref));
     }
     try {
       return await this.run(ref);
     } finally {
-      store.unlock(ref.txHash);
+      store.unlock(this.rid(ref));
     }
   }
 
   private async ensure(ref: PendingRef): Promise<SigningRequest> {
-    const s = await this.d.store.get(ref.txHash);
+    const s = await this.d.store.get(this.rid(ref));
     if (s) return s;
     const req: SigningRequest = {
-      txHash: ref.txHash, signerUrl: ref.signerUrl, status: 'discovered',
+      txHash: ref.txHash, ...(this.isHumanOnly(ref.signerUrl) ? { recordId: this.rid(ref) } : {}), signerUrl: ref.signerUrl, status: 'discovered',
       attempts: 0, createdAt: this.now(), updatedAt: this.now(),
     };
     try {
@@ -189,7 +200,7 @@ export class Orchestrator {
       return req;
     } catch {
       // lost a create race — return the row the winner created
-      return (await this.d.store.get(ref.txHash))!;
+      return (await this.d.store.get(this.rid(ref)))!;
     }
   }
 
@@ -197,7 +208,7 @@ export class Orchestrator {
     const { store, resolver, logger } = this.d;
     // Which page this work belongs to decides which engine answers for it and under which ceiling.
     const rules = this.rulesFor(ref.signerUrl);
-    const priorStatus = (await store.get(ref.txHash))?.status; // was this tx already known? (gates the discovery log)
+    const priorStatus = (await store.get(this.rid(ref)))?.status; // was this tx already known? (gates the discovery log)
     await this.ensure(ref);
 
     // 1. Resolve
@@ -206,13 +217,13 @@ export class Orchestrator {
     // retryable so the next poll asks again once the node is back.
     if (r.kind === 'unavailable') {
       logger.warn({ tx: ref.txHash, err: r.error }, 'could not resolve pending tx; leaving it for the next poll');
-      return store.update(ref.txHash, { lastError: `resolve: ${r.error}` });
+      return store.update(this.rid(ref), { lastError: `resolve: ${r.error}` });
     }
     if (r.kind === 'gone') {
       const status = r.reason === 'executed' ? 'signed' : 'expired';
       logger.info({ tx: ref.txHash, reason: r.reason }, 'tx gone before signing');
       // G-64: a hold that ends because the transaction went away is still kept, with that as its outcome.
-      return store.update(ref.txHash, { status, ...finaliseHold(await store.get(ref.txHash), `gone:${r.reason}`, this.now()) });
+      return store.update(this.rid(ref), { status, ...finaliseHold(await store.get(this.rid(ref)), `gone:${r.reason}`, this.now()) });
     }
     const tx = r.tx;
     // G-69: the engine has already decided and a person owes the signature. Asking again on every poll
@@ -220,9 +231,9 @@ export class Orchestrator {
     // or when the transaction goes away (handled just above).
     if (priorStatus === 'awaiting_human') {
       logger.debug({ tx: ref.txHash }, 'awaiting a human signature through officer intake');
-      return (await store.get(ref.txHash))!;
+      return (await store.get(this.rid(ref)))!;
     }
-    await store.update(ref.txHash, {
+    await store.update(this.rid(ref), {
       status: 'awaiting_policy', account: tx.account, signerVersion: tx.signerVersion,
       actionSummary: tx.summary.action, operationId: tx.operationId,
     });
@@ -286,9 +297,9 @@ export class Orchestrator {
       // Policy TTL for THIS request. Not the on-chain deadline, which is `header.expiresAt`.
       expiresAt: new Date(this.now() + this.opt.policyTtlSeconds * 1000).toISOString(),
     }, { labels: this.d.displayLabels });
-    await store.update(ref.txHash, { policyRequestId: policyReq.requestId });
+    await store.update(this.rid(ref), { policyRequestId: policyReq.requestId });
     // Kept so a decision service can read back exactly what it was asked (`/relay/pending/:hash`, 6.4).
-    await store.savePolicyRequest(policyReq);
+    await store.savePolicyRequest(policyReq, this.rid(ref));
 
     // The decision request, carried off chain to the operator's own policy engine. It holds the decoded
     // action plus every gate-relevant amount; the reply drives accept / reject / withhold.
@@ -299,9 +310,9 @@ export class Orchestrator {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logger.warn({ tx: ref.txHash, err: msg }, 'policy decision failed');
-      return store.update(ref.txHash, {
+      return store.update(this.rid(ref), {
         status: 'awaiting_policy', lastError: `policy: ${msg}`,
-        attempts: (await store.get(ref.txHash))!.attempts + 1,
+        attempts: (await store.get(this.rid(ref)))!.attempts + 1,
       });
     }
 
@@ -316,14 +327,14 @@ export class Orchestrator {
         'policy engine has not decided yet; withholding signature and will retry',
       );
       // G-64: keep WHY, and under which versions, on the record -- updated on every re-evaluation.
-      const pending = recordHold(await store.get(ref.txHash), decision, this.now());
-      return store.update(ref.txHash, { status: 'awaiting_policy', lastError: undefined, pending });
+      const pending = recordHold(await store.get(this.rid(ref)), decision, this.now());
+      return store.update(this.rid(ref), { status: 'awaiting_policy', lastError: undefined, pending });
     }
 
     // G-64: the engine has decided; the hold (if there was one) ends here and is kept as history.
     {
-      const fin = finaliseHold(await store.get(ref.txHash), decision.decision, this.now());
-      if (fin.pendingFinal) await store.update(ref.txHash, fin);
+      const fin = finaliseHold(await store.get(this.rid(ref)), decision.decision, this.now());
+      if (fin.pendingFinal) await store.update(this.rid(ref), fin);
     }
 
     // SR8 emergency pause — checked BEFORE the deny branch, because a Reject vote is still a SIGNATURE.
@@ -331,12 +342,12 @@ export class Orchestrator {
     // meant a "paused" wallet went on signing and submitting rejections. Pause means sign NOTHING.
     if (this.opt.isPaused?.()) {
       logger.warn({ tx: ref.txHash, decision: decision.decision }, 'signing paused; withholding signature');
-      return store.update(ref.txHash, { status: 'awaiting_policy', lastError: 'paused' });
+      return store.update(this.rid(ref), { status: 'awaiting_policy', lastError: 'paused' });
     }
 
     if (decision.decision === 'deny') {
       logger.info({ tx: ref.txHash, reason: decision.reason }, 'policy denied');
-      await store.update(ref.txHash, { status: 'denied', decision: 'deny' });
+      await store.update(this.rid(ref), { status: 'denied', decision: 'deny' });
       // A reject vote that could not be submitted is a FAILURE, exactly as an approve vote is — the
       // result was being discarded here. That mattered: `rejected` is terminal, so the tx was never
       // retried, while the receipt below recorded `vote: reject` for a vote that never reached the
@@ -352,12 +363,12 @@ export class Orchestrator {
         if (!res.ok) {
           logger.error({ tx: ref.txHash, err: res.error }, 'reject vote submission failed');
           this.notify('signature.failed', tx, { reason: decision.reason, error: res.error });
-          return store.update(ref.txHash, { status: 'error', lastError: res.error });
+          return store.update(this.rid(ref), { status: 'error', lastError: res.error });
         }
         rejectVote = res;
       }
-      const final = await store.update(ref.txHash, { status: 'rejected' });
-      await this.saveReceipt({
+      const final = await store.update(this.rid(ref), { status: 'rejected' });
+      await this.saveReceipt(tx.signerUrl, {
         txHash: tx.txHash, operationId: tx.operationId, decision: 'deny',
         vote: rules.submitRejectVote ? 'reject' : undefined,
         reason: decision.reason,
@@ -381,13 +392,13 @@ export class Orchestrator {
       logger.warn({ tx: ref.txHash, values: tx.summary.values, unpricedLegs: tx.summary.unpricedLegs }, 'local guard blocked an approved tx');
       // Keep the engine's reason and evidence on the record: the receipt must show that the engine
       // approved and WE refused, not merely that something was blocked.
-      await this.saveReceipt({
+      await this.saveReceipt(tx.signerUrl, {
         txHash: tx.txHash, operationId: tx.operationId, decision: 'approve',
         reason: decision.reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
         policyEvidence: { ...(decision.evidence ?? {}), blockedBy: 'local_guard', values: tx.summary.values },
       });
-      return store.update(ref.txHash, { status: 'rejected', lastError: 'local_guard_block' });
+      return store.update(this.rid(ref), { status: 'rejected', lastError: 'local_guard_block' });
     }
 
     // G-65: never approve an updateKeyPage that would brick the page it changes (see keyPageRefusal).
@@ -403,13 +414,13 @@ export class Orchestrator {
     // deadline) has run exactly as for a keyed seat; the approve signature is a person's to make.
     if (this.isHumanOnly(tx.signerUrl)) return this.awaitHuman(tx, 'approve', decision);
 
-    await store.update(ref.txHash, { status: 'approved', decision: 'approve', assertionRef: decision.assertion ? sha256Hex(decision.assertion) : undefined });
+    await store.update(this.rid(ref), { status: 'approved', decision: 'approve', assertionRef: decision.assertion ? sha256Hex(decision.assertion) : undefined });
     // Whose key signs. T29: when the policy engine names the approver, THEIR key signs — so the
     // signature on chain is the person's rather than the organisation's cast in their name. Absent,
     // the organisation signs as itself, exactly as before.
     const res = await this.castForApprovers(tx, 'approve', approverKeyRefs(decision.evidence));
     if (res.ok) {
-      await this.saveReceipt({
+      await this.saveReceipt(tx.signerUrl, {
         txHash: tx.txHash, operationId: tx.operationId, decision: 'approve', vote: 'approve',
         signatureHash: res.signatureHash, submittedAt: this.now(), accumulateResult: 'ok',
         reason: decision.reason,
@@ -419,13 +430,13 @@ export class Orchestrator {
         ...(res.signedBy ? { signedBy: res.signedBy } : {}),
       });
       this.notify('decision.approved', tx, { reason: decision.reason });
-      return store.update(ref.txHash, { status: 'signed', timestampMicros: res.timestamp });
+      return store.update(this.rid(ref), { status: 'signed', timestampMicros: res.timestamp });
     }
     // A vote we decided to cast but could not is a real failure — say so. It used to be recorded in the
     // store and nowhere else, so an operator watching the logs saw the policy decision and then silence.
     logger.error({ tx: ref.txHash, err: res.error }, 'vote submission failed');
     this.notify('signature.failed', tx, { reason: decision.reason, error: res.error });
-    return store.update(ref.txHash, { status: 'error', lastError: res.error });
+    return store.update(this.rid(ref), { status: 'error', lastError: res.error });
   }
 
   /**
@@ -462,7 +473,7 @@ export class Orchestrator {
       { tx: tx.txHash, headerExpiresAt: tx.header.expiresAt, decision: decision?.decision, err: refusal.lastError },
       refusal.reason,
     );
-    await this.saveReceipt({
+    await this.saveReceipt(tx.signerUrl, {
       txHash: tx.txHash, operationId: tx.operationId,
       ...(decision && (decision.decision === 'approve' || decision.decision === 'deny') ? { decision: decision.decision } : {}),
       reason: refusal.reason,
@@ -475,10 +486,10 @@ export class Orchestrator {
       },
     });
     const status = refusal.lastError === 'header_deadline_passed' ? 'expired' : 'rejected';
-    return this.d.store.update(tx.txHash, {
+    return this.d.store.update(this.rid(tx), {
       status, lastError: refusal.lastError,
       // G-64: a refusal before any decision ends the hold too (after a decision it has already ended).
-      ...finaliseHold(await this.d.store.get(tx.txHash), refusal.lastError, this.now()),
+      ...finaliseHold(await this.d.store.get(this.rid(tx)), refusal.lastError, this.now()),
     });
   }
 
@@ -499,14 +510,14 @@ export class Orchestrator {
     decision: { decision: string; reason?: string; evidence?: Record<string, unknown> },
   ): Promise<SigningRequest> {
     this.d.logger.info({ tx: tx.txHash, page: tx.signerUrl, decision: decision.decision, vote }, 'human-only seat: decision recorded; a person on the page signs through officer intake');
-    await this.saveReceipt({
+    await this.saveReceipt(tx.signerUrl, {
       txHash: tx.txHash, operationId: tx.operationId,
       ...(decision.decision === 'approve' || decision.decision === 'deny' ? { decision: decision.decision } : {}),
       reason: decision.reason,
       ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
       policyEvidence: { ...(decision.evidence ?? {}), awaitingHumanSignature: { page: tx.signerUrl, vote } },
     });
-    return this.d.store.update(tx.txHash, {
+    return this.d.store.update(this.rid(tx), {
       status: 'awaiting_human',
       ...(decision.decision === 'approve' || decision.decision === 'deny' ? { decision: decision.decision } : {}),
       lastError: undefined,
@@ -551,16 +562,16 @@ export class Orchestrator {
     const lastError = `keypage_guard: ${refusal.reason}`;
     if (refusal.reason === 'page_unreadable') {
       this.d.logger.warn({ tx: tx.txHash, page: tx.account, refusal }, 'key page unreadable; withholding the approve vote and will retry');
-      return this.d.store.update(tx.txHash, { status: 'awaiting_policy', lastError });
+      return this.d.store.update(this.rid(tx), { status: 'awaiting_policy', lastError });
     }
     this.d.logger.warn({ tx: tx.txHash, page: tx.account, refusal }, 'REFUSING to approve an updateKeyPage that would brick the page; no signature cast');
-    await this.saveReceipt({
+    await this.saveReceipt(tx.signerUrl, {
       txHash: tx.txHash, operationId: tx.operationId, decision: 'approve',
       reason: decision.reason,
       ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
       policyEvidence: { ...(decision.evidence ?? {}), blockedBy: 'keypage_guard', keyPageRefusal: refusal },
     });
-    return this.d.store.update(tx.txHash, { status: 'rejected', lastError });
+    return this.d.store.update(this.rid(tx), { status: 'rejected', lastError });
   }
 
   /**
@@ -572,7 +583,7 @@ export class Orchestrator {
     // G-69 defence in depth: nothing above reaches here for a human-only seat, and if anything ever did,
     // the answer is no signature -- never a key found for the page by some other route.
     if (this.isHumanOnly(tx.signerUrl)) return { ok: false, error: 'human-only scope: this signer holds no key for this page' };
-    await this.d.store.update(tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
+    await this.d.store.update(this.rid(tx), { status: 'signing', signerVersion: tx.signerVersion });
     return this.votes.cast(tx, vote, keyRef === undefined ? {} : { keyRef });
   }
 
@@ -609,7 +620,7 @@ export class Orchestrator {
     // failing the same way is the point: a misconfigured ref is an operational fact about one
     // transaction, not an exception for the poll loop to cope with.
 
-    await this.d.store.update(tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
+    await this.d.store.update(this.rid(tx), { status: 'signing', signerVersion: tx.signerVersion });
     let first: VoteResult | undefined;
     let firstError: string | undefined;
 

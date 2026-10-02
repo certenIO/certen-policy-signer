@@ -370,6 +370,11 @@ export type RequestStatus = (typeof REQUEST_STATUSES)[number];
 
 export interface SigningRequest {
   txHash: string;
+  /**
+   * The record key, when it is not the tx hash: a human-only seat's `humanRecordId(txHash, page)` (review #1).
+   * Absent for a keyed seat, whose record is keyed by the tx hash as it always was.
+   */
+  recordId?: string;
   operationId?: string;
   account?: string;
   signerUrl: string;
@@ -432,6 +437,8 @@ export interface FinalisedHold extends PendingHold {
 
 export interface Receipt {
   txHash: string;
+  /** The record key of the request this receipt belongs to, when it is not the tx hash (see SigningRequest). */
+  recordId?: string;
   operationId?: string;
   decision?: 'approve' | 'deny';
   /**

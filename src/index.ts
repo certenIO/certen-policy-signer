@@ -297,10 +297,12 @@ async function main() {
   // Human-only seats are polled exactly as keyed ones: account authority (the page's Pending index) and header
   // authority (the book's signature chain, F25).
   const pollers = cfg.trigger.poller.enabled
-    ? [...scopes, ...humanScopes].map((scope) => new Poller(
+    ? [...scopes.map((s) => ({ ...s, human: false })), ...humanScopes.map((s) => ({ ...s, human: true }))].map((scope) => new Poller(
         accumulate, orchestrator, scope.page, cfg.trigger.poller.interval_seconds * 1000,
         logger.child({ scope: scope.page }), Date.now,
-        gatewayClient ? () => gatewayClient!.listPending() : undefined,   // supplement, never a replacement
+        // Supplement, never a replacement -- and only for a keyed scope: the gateway lists work for the keyed
+        // identity, and a human-only page must not be handed (and so record) another seat's transactions.
+        gatewayClient && !scope.human ? () => gatewayClient!.listPending() : undefined,
         scope.book,
       ))
     : [];

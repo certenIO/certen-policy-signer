@@ -16,7 +16,7 @@ import pino from 'pino';
 import { loadConfig, isIntakeOnly } from '../src/config.js';
 import { MockAccumulateClient, type AccumulateClient } from '../src/accumulate/client.js';
 import { MockPolicyClient, type PolicyClient } from '../src/policy/policy.js';
-import { FileStore, MemoryStore, type Store } from '../src/store/store.js';
+import { FileStore, MemoryStore, humanRecordId, type Store } from '../src/store/store.js';
 import { Resolver } from '../src/resolver.js';
 import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring, noKeyKeyring, MapKeyring } from '../src/signer/keyring.js';
@@ -31,6 +31,8 @@ const SUMMIT_P1 = 'acc://summit-inspection-tcl1.acme/book/1';
 const SUMMIT_BOOK = 'acc://summit-inspection-tcl1.acme/book';
 const TX = '5a'.repeat(32);
 const KEY_A = 'a1'.repeat(32);
+/** A human-only seat's record key for TX (review #1: its own record, never the keyed seat's). */
+const HID = humanRecordId(TX, SUMMIT_P1);
 
 /* ------------------------------------------------------------------ */
 /* config                                                              */
@@ -151,7 +153,7 @@ describe('orchestrator: a human-only seat never signs', () => {
     expect(pr).toMatchObject({ txHash: TX, signerUrl: SUMMIT_P1, header: { authorities: [SUMMIT_BOOK] } });
     expect(pr?.display?.length).toBeGreaterThan(0);
     expect(pr?.summaryHash).toMatch(/^[0-9a-f]{64}$/);
-    const receipt = await s.store.getReceipt(TX);
+    const receipt = await s.store.getReceipt(HID);
     expect(receipt).toMatchObject({ decision: 'approve', reason: 'FICTIONAL rule: inspection accepted', policyEvidence: { ruleSetVersion: 'summit-rules-1', awaitingHumanSignature: { page: SUMMIT_P1, vote: 'approve' } } });
     expect(receipt?.vote).toBeUndefined();
     expect(receipt?.signedBy).toBeUndefined();
@@ -160,7 +162,7 @@ describe('orchestrator: a human-only seat never signs', () => {
   it('deny with submit_reject_vote -> awaiting_human (a person casts the reject); without it -> rejected; never a signature', async () => {
     const s1 = seat({ policy: new MockPolicyClient({ decision: 'deny', reason: 'FICTIONAL' }), submitRejectVote: true });
     expect(await s1.go()).toMatchObject({ status: 'awaiting_human', decision: 'deny' });
-    expect((await s1.store.getReceipt(TX))?.policyEvidence).toMatchObject({ awaitingHumanSignature: { vote: 'reject' } });
+    expect((await s1.store.getReceipt(HID))?.policyEvidence).toMatchObject({ awaitingHumanSignature: { vote: 'reject' } });
     expect(s1.acc.submissions).toHaveLength(0);
 
     const s2 = seat({ policy: new MockPolicyClient({ decision: 'deny', reason: 'FICTIONAL' }), submitRejectVote: false });
@@ -226,11 +228,11 @@ describe('a landed personal signature ends the request; all of it survives a res
     const s = seat({ policy: new MockPolicyClient({ decision: 'approve' }) });
     await s.go();
     expect(await recordHumanSignature(s.store, { ...landed, authority: 'acc://summit-inspection-tcl1.acme/book/2' })).toBe(false);
-    expect((await s.store.get(TX))?.status).toBe('awaiting_human');
+    expect((await s.store.get(HID))?.status).toBe('awaiting_human');
     expect(await recordHumanSignature(s.store, { ...landed, txHash: 'ff'.repeat(32) })).toBe(false);
     expect(await recordHumanSignature(s.store, landed)).toBe(true);
-    expect((await s.store.get(TX))?.status).toBe('signed');
-    expect(await s.store.getReceipt(TX)).toMatchObject({
+    expect((await s.store.get(HID))?.status).toBe('signed');
+    expect(await s.store.getReceipt(HID)).toMatchObject({
       decision: 'approve', vote: 'approve',
       signedBy: { page: SUMMIT_P1, signatureType: 'ecdsaSha256', publicKeyHash: landed.keyHash, delegators: [] },
       policyEvidence: { awaitingHumanSignature: { page: SUMMIT_P1, vote: 'approve' } },
@@ -243,7 +245,7 @@ describe('a landed personal signature ends the request; all of it survives a res
     const s = seat({ policy: new MockPolicyClient({ decision: 'deny' }), submitRejectVote: true });
     await s.go();
     expect(await recordHumanSignature(s.store, { ...landed, vote: 'reject' })).toBe(true);
-    expect((await s.store.get(TX))?.status).toBe('rejected');
+    expect((await s.store.get(HID))?.status).toBe('rejected');
   });
 
   it('FileStore: awaiting_human, the stored request and the receipt survive a restart; the engine is not asked again', async () => {
@@ -252,9 +254,9 @@ describe('a landed personal signature ends the request; all of it survives a res
     expect((await first.go()).status).toBe('awaiting_human');
 
     const reopened = new FileStore(path);
-    expect((await reopened.get(TX))?.status).toBe('awaiting_human');
+    expect((await reopened.get(HID))?.status).toBe('awaiting_human');
     expect((await reopened.getPolicyRequest(TX))?.summaryHash).toMatch(/^[0-9a-f]{64}$/);
-    expect((await reopened.getReceipt(TX))?.policyEvidence).toMatchObject({ awaitingHumanSignature: { page: SUMMIT_P1 } });
+    expect((await reopened.getReceipt(HID))?.policyEvidence).toMatchObject({ awaitingHumanSignature: { page: SUMMIT_P1 } });
 
     const policy = new MockPolicyClient({ decision: 'deny' });
     const decide = vi.spyOn(policy, 'decide');
@@ -263,8 +265,59 @@ describe('a landed personal signature ends the request; all of it survives a res
     expect(decide).not.toHaveBeenCalled();
 
     expect(await recordHumanSignature(reopened, landed)).toBe(true);
-    expect((await new FileStore(path).get(TX))?.status).toBe('signed');
+    expect((await new FileStore(path).get(HID))?.status).toBe('signed');
     expect(first.acc.submissions).toHaveLength(0);
     expect(second.acc.submissions).toHaveLength(0);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* review #1: a human-only page never pre-empts a keyed seat           */
+/* ------------------------------------------------------------------ */
+
+describe('one transaction, a keyed page and a human-only page in the same book (review #1)', () => {
+  const KEYED = 'acc://summit-inspection-tcl1.acme/book/2';
+
+  function both(order: 'human-first' | 'keyed-first') {
+    const acc = new MockAccumulateClient();
+    acc.addPending(TX, { body: PAYMENT, principal: 'acc://fictional-payer-tcl1.acme/tokens' });
+    const store = new MemoryStore();
+    const o = new Orchestrator({
+      accumulate: acc, keyring: new MapKeyring([{ page: KEYED, book: SUMMIT_BOOK, signer: new LocalSigner(new Uint8Array(32).fill(6)) }]),
+      policy: new MockPolicyClient({ decision: 'approve', reason: 'FICTIONAL rule passed' }), store, resolver: new Resolver(acc), logger: silent,
+      humanOnlyPages: [SUMMIT_P1],
+    });
+    const pages = order === 'human-first' ? [SUMMIT_P1, KEYED] : [KEYED, SUMMIT_P1];
+    return { acc, store, run: async () => { for (const p of pages) await o.handle({ txHash: TX, signerUrl: p }); for (const p of pages) await o.handle({ txHash: TX, signerUrl: p }); } };
+  }
+
+  for (const order of ['human-first', 'keyed-first'] as const) {
+    it(`each page keeps and decides its own record; the keyed seat still votes (${order})`, async () => {
+      const s = both(order);
+      await s.run();
+      expect((await s.store.get(TX))).toMatchObject({ status: 'signed', signerUrl: KEYED });
+      expect((await s.store.get(HID))).toMatchObject({ status: 'awaiting_human', signerUrl: SUMMIT_P1, recordId: HID });
+      expect(s.acc.submissions).toHaveLength(1);   // the keyed seat's vote; nothing for the human-only page
+      expect((await s.store.getReceipt(TX))?.vote).toBe('approve');
+      expect((await s.store.getReceipt(HID))?.policyEvidence).toMatchObject({ awaitingHumanSignature: { page: SUMMIT_P1 } });
+      expect((await s.store.listForTx(TX)).map((r) => r.signerUrl).sort()).toEqual([SUMMIT_P1, KEYED].sort());
+    });
+  }
+
+  it('a FileStore keeps both records apart across a restart, including their stored PolicyRequests', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'g69-two-')), 'state.json');
+    const acc = new MockAccumulateClient();
+    acc.addPending(TX, { body: PAYMENT, principal: 'acc://fictional-payer-tcl1.acme/tokens' });
+    const o = new Orchestrator({
+      accumulate: acc, keyring: new MapKeyring([{ page: KEYED, book: SUMMIT_BOOK, signer: new LocalSigner(new Uint8Array(32).fill(6)) }]),
+      policy: new MockPolicyClient({ decision: 'approve' }), store: new FileStore(path), resolver: new Resolver(acc), logger: silent, humanOnlyPages: [SUMMIT_P1],
+    });
+    await o.handle({ txHash: TX, signerUrl: SUMMIT_P1 });
+    await o.handle({ txHash: TX, signerUrl: KEYED });
+    const re = new FileStore(path);
+    expect((await re.get(TX))?.status).toBe('signed');
+    expect((await re.get(HID))?.status).toBe('awaiting_human');
+    expect((await re.getPolicyRequest(HID))?.signerUrl).toBe(SUMMIT_P1);
+    expect((await re.getPolicyRequest(TX))?.signerUrl).toBe(KEYED);
   });
 });

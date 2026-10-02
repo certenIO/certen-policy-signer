@@ -221,19 +221,23 @@ export function createServer(d: ServerDeps): http.Server {
       // GET /v1/requests/:tx
       let m = /^\/v1\/requests\/([a-f0-9]{64})$/.exec(path);
       if (method === 'GET' && m) {
-        const reqRow = await d.store.get(m[1]);
-        const receipt = await d.store.getReceipt(m[1]);
+        // Every page's record for this transaction (review #1: a keyed seat and a human-only seat each keep
+        // their own). `request` is the keyed seat's when there is one, else the first; `seats` lists them all.
+        const rows = await d.store.listForTx(m[1]);
+        const reqRow = rows.find((r) => !r.recordId) ?? rows[0];
         if (!reqRow) return json(res, 404, { error: 'not found' });
+        const receipt = await d.store.getReceipt(reqRow.recordId ?? reqRow.txHash);
+        const seats = await Promise.all(rows.map(async (r) => ({ page: r.signerUrl, request: r, receipt: await d.store.getReceipt(r.recordId ?? r.txHash) })));
         // G-64: WHY the seat is holding (`pending`, only while it is) and the last hold once it ended
         // (`pendingFinal`). Also on `request`; repeated here so a reader need not know the row's shape.
-        return json(res, 200, { request: reqRow, receipt, pending: reqRow.pending ?? null, pendingFinal: reqRow.pendingFinal ?? null });
+        return json(res, 200, { request: reqRow, receipt, pending: reqRow.pending ?? null, pendingFinal: reqRow.pendingFinal ?? null, seats });
       }
       // POST /v1/requests/:tx/retry
       m = /^\/v1\/requests\/([a-f0-9]{64})\/retry$/.exec(path);
       if (method === 'POST' && m) {
-        const reqRow = await d.store.get(m[1]);
-        if (!reqRow) return json(res, 404, { error: 'not found' });
-        d.orchestrator.handle({ txHash: m[1], signerUrl: reqRow.signerUrl }).catch(() => {});
+        const rows = await d.store.listForTx(m[1]);
+        if (!rows.length) return json(res, 404, { error: 'not found' });
+        for (const r of rows) d.orchestrator.handle({ txHash: m[1], signerUrl: r.signerUrl }).catch(() => {});
         return json(res, 202, { retrying: m[1] });
       }
       // GET /v1/config/version — the signer-config version stamped on every PolicyRequest and Receipt (6.3).

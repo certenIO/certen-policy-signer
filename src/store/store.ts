@@ -6,14 +6,24 @@ import { PolicyRequest, Receipt, RequestStatus, SigningRequest } from '../types.
 export const TERMINAL: RequestStatus[] = ['signed', 'rejected', 'expired'];
 
 export interface Store {
-  get(txHash: string): Promise<SigningRequest | undefined>;
+  /**
+   * A request by its RECORD KEY: the tx hash for a keyed seat (the key every existing record has), or
+   * `humanRecordId(txHash, page)` for a human-only seat (review #1). A transaction several pages must act on
+   * therefore has one record per acting page, and no page's record can pre-empt another's.
+   */
+  get(key: string): Promise<SigningRequest | undefined>;
+  /** Every record for one transaction, whichever page it belongs to. */
+  listForTx(txHash: string): Promise<SigningRequest[]>;
   create(req: SigningRequest): Promise<void>;
   update(txHash: string, patch: Partial<SigningRequest>): Promise<SigningRequest>;
+  /** Keyed by `r.recordId ?? r.txHash`, as the request it belongs to. */
   saveReceipt(r: Receipt): Promise<void>;
   getReceipt(txHash: string): Promise<Receipt | undefined>;
   /** The latest PolicyRequest built for a transaction (Phase 6.4 `/relay/pending/:hash`). */
-  savePolicyRequest(r: PolicyRequest): Promise<void>;
-  getPolicyRequest(txHash: string): Promise<PolicyRequest | undefined>;
+  /** `key` defaults to the tx hash; a human-only seat stores its request under its record key. */
+  savePolicyRequest(r: PolicyRequest, key?: string): Promise<void>;
+  /** By key; a bare tx hash falls back to any page's record for that transaction (officer intake, relay). */
+  getPolicyRequest(key: string): Promise<PolicyRequest | undefined>;
   listNonTerminal(): Promise<SigningRequest[]>;
   /**
    * Most-recently-updated requests, with their receipts — the operator's audit view.
@@ -43,6 +53,15 @@ export interface Store {
 
 export type IntakeRecordKind = 'prepare' | 'proposal';
 
+/**
+ * The record key of a HUMAN-ONLY seat's request for a transaction (review #1): `<txHash>@<page>`, page
+ * lower-cased without a trailing slash. Distinct from the bare tx hash a keyed seat's record uses, so a
+ * human-only page and a keyed page that both act on one transaction each keep, and decide, their own record.
+ */
+export function humanRecordId(txHash: string, page: string): string {
+  return `${txHash.toLowerCase()}@${page.toLowerCase().replace(/\/+$/, '')}`;
+}
+
 export class MemoryStore implements Store {
   protected reqs = new Map<string, SigningRequest>();
   protected receipts = new Map<string, Receipt>();
@@ -50,10 +69,12 @@ export class MemoryStore implements Store {
   protected intake = { prepare: new Map<string, Record<string, unknown>>(), proposal: new Map<string, Record<string, unknown>>() };
   private locks = new Set<string>();
 
-  async get(txHash: string) { return this.reqs.get(txHash); }
+  async get(key: string) { return this.reqs.get(key); }
+  async listForTx(txHash: string) { return [...this.reqs.values()].filter((r) => r.txHash === txHash); }
   async create(req: SigningRequest) {
-    if (this.reqs.has(req.txHash)) throw new Error(`duplicate signing_request ${req.txHash}`);
-    this.reqs.set(req.txHash, { ...req });
+    const key = req.recordId ?? req.txHash;
+    if (this.reqs.has(key)) throw new Error(`duplicate signing_request ${key}`);
+    this.reqs.set(key, { ...req });
     await this.persist();
   }
   async update(txHash: string, patch: Partial<SigningRequest>) {
@@ -64,10 +85,15 @@ export class MemoryStore implements Store {
     await this.persist();
     return next;
   }
-  async saveReceipt(r: Receipt) { this.receipts.set(r.txHash, { ...r }); await this.persist(); }
-  async getReceipt(txHash: string) { return this.receipts.get(txHash); }
-  async savePolicyRequest(r: PolicyRequest) { this.policyRequests.set(r.txHash, structuredClone(r)); await this.persist(); }
-  async getPolicyRequest(txHash: string) { return this.policyRequests.get(txHash); }
+  async saveReceipt(r: Receipt) { this.receipts.set(r.recordId ?? r.txHash, { ...r }); await this.persist(); }
+  async getReceipt(key: string) { return this.receipts.get(key); }
+  async savePolicyRequest(r: PolicyRequest, key?: string) { this.policyRequests.set(key ?? r.txHash, structuredClone(r)); await this.persist(); }
+  async getPolicyRequest(key: string) {
+    const exact = this.policyRequests.get(key);
+    if (exact || key.includes('@')) return exact;
+    for (const [k, v] of this.policyRequests) if (k.startsWith(`${key}@`)) return v;
+    return undefined;
+  }
   async saveIntakeRecord(kind: IntakeRecordKind, id: string, record: Record<string, unknown>) {
     this.intake[kind].set(id, structuredClone(record)); await this.persist();
   }
@@ -84,7 +110,7 @@ export class MemoryStore implements Store {
       .filter((r) => !wanted || wanted.has(r.status))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, Math.max(0, limit))
-      .map((request) => ({ request, receipt: this.receipts.get(request.txHash) }));
+      .map((request) => ({ request, receipt: this.receipts.get(request.recordId ?? request.txHash) }));
   }
   tryLock(txHash: string) {
     if (this.locks.has(txHash)) return false;
@@ -122,12 +148,13 @@ export class FileStore extends MemoryStore {
   private load() {
     try {
       const raw = JSON.parse(readFileSync(this.path, 'utf8')) as {
-        requests?: SigningRequest[]; receipts?: Receipt[]; policyRequests?: PolicyRequest[];
+        requests?: SigningRequest[]; receipts?: Receipt[]; policyRequests?: PolicyRequest[]; policyRequestKeys?: string[];
         intake?: { prepares?: Array<Record<string, unknown>>; proposals?: Array<Record<string, unknown>> };
       };
-      for (const r of raw.requests ?? []) this.reqs.set(r.txHash, r);
-      for (const r of raw.receipts ?? []) this.receipts.set(r.txHash, r);
-      for (const r of raw.policyRequests ?? []) this.policyRequests.set(r.txHash, r);
+      for (const r of raw.requests ?? []) this.reqs.set(r.recordId ?? r.txHash, r);
+      for (const r of raw.receipts ?? []) this.receipts.set(r.recordId ?? r.txHash, r);
+      // A file written before per-page keys has no policyRequestKeys: every request was keyed by its tx hash.
+      (raw.policyRequests ?? []).forEach((r, i) => this.policyRequests.set(raw.policyRequestKeys?.[i] ?? r.txHash, r));
       for (const r of raw.intake?.prepares ?? []) this.intake.prepare.set(String(r.prepareId), r);
       for (const r of raw.intake?.proposals ?? []) this.intake.proposal.set(String(r.id), r);
     } catch (e) {
@@ -141,6 +168,7 @@ export class FileStore extends MemoryStore {
       requests: [...this.reqs.values()],
       receipts: [...this.receipts.values()],
       policyRequests: [...this.policyRequests.values()],
+      policyRequestKeys: [...this.policyRequests.keys()],
       intake: { prepares: [...this.intake.prepare.values()], proposals: [...this.intake.proposal.values()] },
     });
     this.queue = this.queue.then(() => this.writeAtomic(snapshot)).catch(() => this.writeAtomic(snapshot));
