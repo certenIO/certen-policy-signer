@@ -624,12 +624,19 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     try {
       sub = await d.chain.submit(buildSubmitEnvelope(rawTransaction, sigObj));
     } catch (e) {
-      sub = { ok: false, error: (e as Error).message };
+      // A submit that threw got no answer from the node: its outcome is unknown, not refused.
+      sub = { ok: false, error: (e as Error).message, uncertain: true };
+    }
+    if (!sub.ok && !sub.uncertain) {
+      // The node ANSWERED with a refusal (security review 2026-10-02): that is the outcome, whatever else the
+      // transaction carries -- an earlier signature by this officer is not this one. No chain read.
+      d.logger.warn({ audit: 'officer_signature_submit_failed', ref: rec.ref, keyHash: rec.keyHash, vote: rec.vote, code: sub.code, err: sub.error, onChain: 'not-read' }, 'officer signature refused by the network');
+      return send(res, 502, { error: 'submit_rejected', code: sub.code ?? 'error' });
     }
     if (!sub.ok) {
-      // An error is not proof the network refused it (SP-10: a 15 s timeout on a signature that landed and
+      // No answer is not proof the network refused it (SP-10: a 15 s timeout on a signature that landed and
       // a payment that was delivered). For a transaction ref AND a proposal, the chain decides: is THIS
-      // key's signature (through these delegators) in the transaction's signature set?
+      // key's signature (through these delegators, with this vote) in the transaction's signature set?
       const seen = await submitFate(rec, proposal);
       if (seen === 'unknown') {
         markUncertain();
@@ -697,7 +704,7 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
   function ownSignature(rec: PrepareRecord): Promise<SubmitOutcome> {
     return awaitOwnSignature({
       ...(d.chain.getTxSignatures ? { getTxSignatures: d.chain.getTxSignatures.bind(d.chain) } : {}),
-      txHash: rec.txHash, principal: rec.principal, keyHash: rec.keyHash, delegators: rec.delegators,
+      txHash: rec.txHash, principal: rec.principal, keyHash: rec.keyHash, delegators: rec.delegators, vote: rec.vote,
       timeoutMs: d.landedTimeoutMs, pollMs, now,
     });
   }

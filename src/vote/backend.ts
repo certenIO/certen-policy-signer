@@ -172,7 +172,7 @@ export class DirectVoteBackend implements VoteBackend {
         const outcome = await awaitOwnSignature({
           getTxSignatures: this.accumulate.getTxSignatures?.bind(this.accumulate),
           txHash: tx.txHash, principal: tx.account, keyHash: createHash('sha256').update(publicKey).digest('hex'),
-          delegators: delegators ?? [], timeoutMs: this.opts.submitOutcomeTimeoutMs ?? 30_000,
+          delegators: delegators ?? [], vote, timeoutMs: this.opts.submitOutcomeTimeoutMs ?? 30_000,
           ...(this.opts.submitOutcomePollMs ? { pollMs: this.opts.submitOutcomePollMs } : {}), now: this.now,
         });
         if (outcome === 'landed') {

@@ -181,7 +181,7 @@ export async function signAndSubmit(d: RotateDeps, page: string, body: unknown, 
     // No answer is not a refusal: read the chain for this signature before deciding.
     const outcome = await awaitOwnSignature({
       getTxSignatures: accumulate.getTxSignatures?.bind(accumulate),
-      txHash: txHashHex, principal: page, keyHash: createHash('sha256').update(params.publicKey).digest('hex'), delegators: [],
+      txHash: txHashHex, principal: page, keyHash: createHash('sha256').update(params.publicKey).digest('hex'), delegators: [], vote: params.vote,
       timeoutMs: d.submitOutcomeTimeoutMs ?? 30_000, ...(d.submitOutcomePollMs ? { pollMs: d.submitOutcomePollMs } : {}),
     });
     if (outcome !== 'landed') throw new SubmitOutcomeUnknownError(txHashHex, outcome, label, res.error ?? 'no answer');

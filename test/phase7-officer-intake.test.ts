@@ -1087,10 +1087,14 @@ describe('a submit error is decided from the chain, for a transaction ref and fo
   afterEach(() => { for (const s of open) s.close(); open = []; });
 
   /** An intake whose submit THROWS (a 15 s timeout), after the network did or did not accept the envelope. */
-  async function boot(o: { accepts: boolean; readable: boolean; dropOnSubmit?: boolean }) {
+  async function boot(o: { accepts: boolean; readable: boolean; dropOnSubmit?: boolean; refuses?: boolean; reads?: number }) {
     const c: IntakeChain = Object.assign(Object.create(Object.getPrototypeOf(chain)), chain, {
-      submit: async (env: unknown) => { if (o.accepts) await chain.submit(env); if (o.dropOnSubmit) o.readable = false; throw new Error('timeout of 15000ms exceeded'); },
-      getTxSignatures: async (h: string) => (o.readable ? chain.getTxSignatures(h) : { status: '', delivered: false, signatures: [], unavailable: 'FICTIONAL node down' }),
+      submit: async (env: unknown) => {
+        // A definite refusal: the node ANSWERS (a JSON-RPC error), so the call resolves, not throws.
+        if (o.refuses) return { ok: false, code: 'error', error: 'FICTIONAL: the node refused the envelope' };
+        if (o.accepts) await chain.submit(env); if (o.dropOnSubmit) o.readable = false; throw new Error('timeout of 15000ms exceeded');
+      },
+      getTxSignatures: async (h: string) => { o.reads = (o.reads ?? 0) + 1; return o.readable ? chain.getTxSignatures(h) : { status: '', delivered: false, signatures: [], unavailable: 'FICTIONAL node down' }; },
       getPendingTx: async (h: string, pp: string) => (o.readable ? chain.getPendingTx(h, pp) : { found: false, unavailable: true }),
     });
     const landed: unknown[] = [];
@@ -1144,4 +1148,29 @@ describe('a submit error is decided from the chain, for a transaction ref and fo
       if (kind === 'proposal') expect(b.intake.proposals()[0]!.status).toBe('submitting');
     });
   }
+
+  it('security review 2026-10-02: an earlier REJECT by the officer on chain is never reported as a refused APPROVE landing', async () => {
+    const b = await boot({ accepts: true, readable: true });
+    const rj = await prep(b.port, alice, { ref: TX, page: HARBOR_P1, vote: 'reject' });
+    expect(rj.status).toBe(200);
+    expect((await sign(b.port, alice, rj.json)).json).toMatchObject({ status: 'landed' });
+
+    // (a) The node ANSWERS with a refusal: refused, from the answer alone -- the chain is not read.
+    b.chainState.refuses = true;
+    const ap = await prep(b.port, alice, { ref: TX, page: HARBOR_P1, vote: 'approve' });
+    expect(ap.status).toBe(200);
+    const before = b.chainState.reads ?? 0;
+    const r = await sign(b.port, alice, ap.json);
+    expect(r.status).toBe(502);
+    expect(r.json).toMatchObject({ error: 'submit_rejected', code: 'error' });
+    expect(b.chainState.reads ?? 0).toBe(before);
+
+    // (b) No answer, and the approve did not land: the reject already there is not it -- absent, not landed.
+    b.chainState.refuses = false;
+    b.chainState.accepts = false;
+    const ap2 = await prep(b.port, alice, { ref: TX, page: HARBOR_P1, vote: 'approve' });
+    const r2 = await sign(b.port, alice, ap2.json);
+    expect(r2.status).toBe(502);
+    expect(r2.json).toMatchObject({ error: 'submit_rejected', onChain: 'absent' });
+  });
 });

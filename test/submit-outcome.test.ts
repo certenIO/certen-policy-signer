@@ -38,7 +38,7 @@ const sigs = (list: Array<{ publicKeyHash: string; delegators?: string[] }>): Tx
 const UNREADABLE: TxSignatures = { status: '', delivered: false, signatures: [], unavailable: 'FICTIONAL node down' };
 
 describe('awaitOwnSignature', () => {
-  const base = { txHash: TX, principal: PAGE, keyHash: 'aa'.repeat(32), delegators: [] as string[], timeoutMs: 40, pollMs: 10 };
+  const base = { txHash: TX, principal: PAGE, keyHash: 'aa'.repeat(32), delegators: [] as string[], vote: 'approve' as const, timeoutMs: 40, pollMs: 10 };
   it('landed / absent / unknown', async () => {
     expect(await awaitOwnSignature({ ...base, getTxSignatures: async () => sigs([{ publicKeyHash: 'aa'.repeat(32) }]) })).toBe('landed');
     expect(await awaitOwnSignature({ ...base, getTxSignatures: async () => sigs([{ publicKeyHash: 'bb'.repeat(32) }]) })).toBe('absent');
@@ -51,6 +51,15 @@ describe('awaitOwnSignature', () => {
     const get = async () => sigs(++n < 3 ? [] : [{ publicKeyHash: 'aa'.repeat(32), delegators: ['acc://B.acme/book/1', 'acc://a.acme/book/1'] }]);
     expect(await awaitOwnSignature({ ...base, timeoutMs: 1000, delegators: ['acc://a.acme/book/1', 'acc://b.acme/book/1'], getTxSignatures: get })).toBe('landed');
     expect(await awaitOwnSignature({ ...base, delegators: ['acc://c.acme/book/1'], getTxSignatures: async () => sigs([{ publicKeyHash: 'aa'.repeat(32) }]) })).toBe('absent');
+  });
+  it('matches the vote: an earlier REJECT by the same key is not this APPROVE (security review 2026-10-02)', async () => {
+    const withVote = (vote?: 'approve' | 'reject'): TxSignatures =>
+      ({ status: 'pending', delivered: false, signatures: [{ type: 'ed25519', publicKeyHash: 'aa'.repeat(32), delegators: [], ...(vote ? { vote } : {}) }] });
+    expect(await awaitOwnSignature({ ...base, getTxSignatures: async () => withVote('reject') })).toBe('absent');
+    expect(await awaitOwnSignature({ ...base, vote: 'reject', getTxSignatures: async () => withVote('reject') })).toBe('landed');
+    // The chain omits an accept vote: an absent vote is an approve.
+    expect(await awaitOwnSignature({ ...base, getTxSignatures: async () => withVote() })).toBe('landed');
+    expect(await awaitOwnSignature({ ...base, vote: 'reject', getTxSignatures: async () => withVote() })).toBe('absent');
   });
   it('a clock that never advances cannot make it loop forever', async () => {
     const get = vi.fn(async () => sigs([]));
@@ -94,10 +103,14 @@ describe('the machine vote: a submit with no answer is decided from the chain', 
   }
   it('landed -> the vote counts as cast', async () => {
     const kh = await keyHashOf(SIGNER);
-    const { b } = backend(() => sigs([{ publicKeyHash: kh }]));
+    const onChain = (vote?: 'reject'): TxSignatures => ({ status: 'pending', delivered: false, signatures: [{ type: 'ed25519', publicKeyHash: kh, delegators: [], ...(vote ? { vote } : {}) }] });
+    const { b } = backend(() => onChain('reject'));
     const r = await b.cast(tx, 'reject');
     expect(r.ok).toBe(true);
     expect(r.signedBy?.publicKeyHash).toBe(kh);
+    // Our key's earlier APPROVE on chain is not this REJECT landing: not cast, retried.
+    const { b: b2 } = backend(() => onChain());
+    expect(await b2.cast(tx, 'reject')).toMatchObject({ ok: false, error: expect.stringMatching(/not on chain/) });
   });
   it('absent -> a failure to retry, never a refusal', async () => {
     const { b } = backend(() => sigs([]));

@@ -12,10 +12,12 @@
  *   unknown  the chain could not be read at all -- the outcome is not known, and must never be reported
  *            as a refusal.
  *
- * The comparison is the one officer intake's landing poll has always used: the key hash, and the set of
- * delegators (order-insensitive, case-insensitive).
+ * The comparison is the key hash, the set of delegators (order-insensitive, case-insensitive) AND the vote
+ * (security review 2026-10-02): an earlier REJECT by the same key is not this APPROVE landing, and must never
+ * be reported as it.
  */
 import type { TxSignatures } from './client.js';
+import type { Vote } from '../types.js';
 
 export type SubmitOutcome = 'landed' | 'absent' | 'unknown';
 
@@ -25,6 +27,8 @@ export interface OwnSignatureQuery {
   principal: string;
   keyHash: string;
   delegators: string[];
+  /** The vote the submitted signature casts. A signature from the same key with another vote is not it. */
+  vote: Vote;
   /** How long to keep looking. */
   timeoutMs: number;
   pollMs?: number;
@@ -47,7 +51,9 @@ export async function awaitOwnSignature(q: OwnSignatureQuery): Promise<SubmitOut
     const sigs = await q.getTxSignatures(q.txHash, q.principal).catch(() => undefined);
     if (sigs && !sigs.unavailable) {
       answered = true;
+      // The chain omits an accept vote (Accept(0) marshals as absent), so an absent vote is an approve.
       const hit = sigs.signatures.some((s) => s.publicKeyHash.toLowerCase() === key
+        && (s.vote ?? 'approve') === q.vote
         && JSON.stringify(s.delegators.map((x) => x.toLowerCase()).sort()) === want);
       if (hit) return 'landed';
     }
