@@ -35,6 +35,7 @@ import {
 } from '../accumulate/signing.js';
 import { Logger } from '../logger.js';
 import { KeyPageGuardError, simPageFrom, validateKeyPageChange } from './keypage-guard.js';
+import { awaitOwnSignature } from '../accumulate/submit-outcome.js';
 
 export type RotateMode = 'updateKey' | 'update' | 'add-then-remove';
 
@@ -43,6 +44,22 @@ export interface RotateDeps {
   signer: EdSigner;          // the CURRENT key (the one on the page today)
   logger: Logger;
   now?: () => number;
+  /** After a submit that got no answer, how long to read the chain for our own signature (default 30 s). */
+  submitOutcomeTimeoutMs?: number;
+  submitOutcomePollMs?: number;
+}
+
+/**
+ * A governance submit that got NO ANSWER and whose signature the chain does not (yet) show. Not a refusal:
+ * `txHash` is the transaction that may still be on chain, so a caller keeps it with what it submitted.
+ */
+export class SubmitOutcomeUnknownError extends Error {
+  constructor(readonly txHash: string, readonly outcome: 'absent' | 'unknown', label: string, cause: string) {
+    super(outcome === 'unknown'
+      ? `${label}: submit got no answer (${cause}) and the chain cannot be read; transaction ${txHash} may be on chain — outcome UNKNOWN, not refused`
+      : `${label}: submit got no answer (${cause}) and transaction ${txHash} does not show our signature on chain`);
+    this.name = 'SubmitOutcomeUnknownError';
+  }
 }
 
 export interface RotateOptions {
@@ -160,7 +177,18 @@ export async function signAndSubmit(d: RotateDeps, page: string, body: unknown, 
   const txHashHex = bytesToHex(txHash);
   const sig = buildSignatureObject(pre, await signer.sign(pre.dataForSignature, { txHash: txHashHex, principal: page, page }), txHashHex);
   const res = await accumulate.submit(buildSubmitEnvelope(tx.asObject(), sig));
-  if (!res.ok) throw new Error(`${label} rejected by the network: ${res.error ?? res.code}`);
+  if (!res.ok && res.uncertain) {
+    // No answer is not a refusal: read the chain for this signature before deciding.
+    const outcome = await awaitOwnSignature({
+      getTxSignatures: accumulate.getTxSignatures?.bind(accumulate),
+      txHash: txHashHex, principal: page, keyHash: createHash('sha256').update(params.publicKey).digest('hex'), delegators: [],
+      timeoutMs: d.submitOutcomeTimeoutMs ?? 30_000, ...(d.submitOutcomePollMs ? { pollMs: d.submitOutcomePollMs } : {}),
+    });
+    if (outcome !== 'landed') throw new SubmitOutcomeUnknownError(txHashHex, outcome, label, res.error ?? 'no answer');
+    logger.warn({ tx: txHashHex, op: label, err: res.error }, 'submit got no answer, but the signature is on chain: submitted');
+  } else if (!res.ok) {
+    throw new Error(`${label} rejected by the network: ${res.error ?? res.code}`);
+  }
   logger.info({ tx: bytesToHex(txHash), op: label }, 'rotation transaction submitted');
   return bytesToHex(txHash);
 }

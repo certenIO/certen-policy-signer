@@ -168,6 +168,12 @@ const Schema = z.object({
     // omitted, the endpoint's host is logged instead, so an operator can always tell where they are.
     network: z.string().optional(),
     accumulate_endpoints: z.array(z.string().url()).min(1),
+    // How long one Accumulate SUBMIT may take before the call gives up (default 15000 ms: the timeout the raw
+    // client has always used for every call). Giving up is NOT a refusal: the signer then reads the chain
+    // for its own signature, for up to `submit_outcome_timeout_ms` (default 30000 ms; officer intake uses
+    // `officer_intake.landed_timeout_ms`), and reports landed, absent, or unknown -- never "refused".
+    submit_timeout_ms: z.number().int().positive().max(600_000).default(15_000),
+    submit_outcome_timeout_ms: z.number().int().positive().max(600_000).default(30_000),
     // Single-scope form (back-compat): one page + the top-level `signer` key. Optional when `scopes` is set.
     signer_url: z.string().startsWith('acc://').optional(),
     // Multi-scope form: watch several key pages, each with the key that signs there. One Poller per scope,

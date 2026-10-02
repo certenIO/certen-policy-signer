@@ -930,6 +930,7 @@ describe('G-39: open prepares and proposals are persisted and restored', () => {
       chainOverride: {
         submit: async (env: unknown) => { accepted = env; throw new Error('FICTIONAL timeout'); },
         getPendingTx: async () => ({ found: false, unavailable: true }),
+        getTxSignatures: async () => ({ status: '', delivered: false, signatures: [], unavailable: 'FICTIONAL node down' }),
       },
     });
     const c = await a.intake.propose(HARBOR_P2, [{ op: 'add-key', keyHash: 'e4'.repeat(32) }], 'ada (FICTIONAL)');
@@ -967,6 +968,7 @@ describe('G-39: open prepares and proposals are persisted and restored', () => {
   const lostSubmit = (accepted: { env?: unknown }): Partial<IntakeChain> => ({
     submit: async (env: unknown) => { accepted.env = env; throw new Error('FICTIONAL timeout'); },
     getPendingTx: async () => ({ found: false, unavailable: true }),
+    getTxSignatures: async () => ({ status: '', delivered: false, signatures: [], unavailable: 'FICTIONAL node down' }),
   });
 
   it('review #4: a proposal settled to submitted by a restart gets its awaiting record, so a co-signer can sign it', async () => {
@@ -997,6 +999,7 @@ describe('G-39: open prepares and proposals are persisted and restored', () => {
       chainOverride: {
         submit: async (env: unknown) => { accepted.env = env; throw new Error('FICTIONAL timeout'); },
         getPendingTx: async (h: string, pp: string) => (readable ? chain.getPendingTx(h, pp) : { found: false, unavailable: true }),
+        getTxSignatures: async (h: string) => (readable ? chain.getTxSignatures(h) : { status: '', delivered: false, signatures: [], unavailable: 'FICTIONAL node down' }),
       },
     });
     const c = await a.intake.propose(HARBOR_P2, [{ op: 'add-key', keyHash: 'e6'.repeat(32) }], 'ada (FICTIONAL)');
@@ -1072,4 +1075,73 @@ describe('G-69 review #2: a human-only page with an accept threshold of 2 needs 
     expect(done?.status).toBe('signed');
     expect(done?.humanSignatures?.map((s) => s.publicKeyHash).sort()).toEqual([alice.keyHash, bob.keyHash].sort());
   });
+});
+
+/* ------------------------------------------------------------------ */
+/* SP-10: a submit error is decided from the chain, never assumed       */
+/* ------------------------------------------------------------------ */
+
+describe('a submit error is decided from the chain, for a transaction ref and for a proposal', () => {
+  const PREP = '/relay/officer-signature/prepare';
+  let open: http.Server[] = [];
+  afterEach(() => { for (const s of open) s.close(); open = []; });
+
+  /** An intake whose submit THROWS (a 15 s timeout), after the network did or did not accept the envelope. */
+  async function boot(o: { accepts: boolean; readable: boolean; dropOnSubmit?: boolean }) {
+    const c: IntakeChain = Object.assign(Object.create(Object.getPrototypeOf(chain)), chain, {
+      submit: async (env: unknown) => { if (o.accepts) await chain.submit(env); if (o.dropOnSubmit) o.readable = false; throw new Error('timeout of 15000ms exceeded'); },
+      getTxSignatures: async (h: string) => (o.readable ? chain.getTxSignatures(h) : { status: '', delivered: false, signatures: [], unavailable: 'FICTIONAL node down' }),
+      getPendingTx: async (h: string, pp: string) => (o.readable ? chain.getPendingTx(h, pp) : { found: false, unavailable: true }),
+    });
+    const landed: unknown[] = [];
+    const it = createOfficerIntake({
+      humanPages: [HARBOR_P1, TREASURY_P1, ISSUANCE_P1, BOARD_P1], chain: c, readPage: chain.readPage,
+      getPolicyRequest: (h) => store.getPolicyRequest(h), landedTimeoutMs: 150, pollIntervalMs: 10, logger: silent,
+      onLanded: async (r) => { landed.push(r); },
+    });
+    const srv = createServer({ officerIntake: it.handle, orchestrator: {} as any, store, keyring: {} as any, accumulate: {} as any, pause: { paused: false }, logger: silent });
+    open.push(srv);
+    return { intake: it, port: await listen(srv), landed, chainState: o };
+  }
+  const prep = async (p: number, o: Officer, body: Record<string, unknown>) => call(p, 'POST', PREP, { 'x-officer-auth': await authHeader(o, 'POST', PREP) }, body);
+  const sign = async (p: number, o: Officer, pr: any) => call(p, 'POST', '/relay/officer-signature', {}, { prepareId: pr.prepareId, signature: await signPrepared(o, pr) });
+
+  async function ref(kind: 'tx' | 'proposal', b: Awaited<ReturnType<typeof boot>>) {
+    if (kind === 'tx') return TX;
+    const c = await b.intake.propose(HARBOR_P2, [{ op: 'add-key', keyHash: 'e7'.repeat(32) }], 'ada (FICTIONAL)');
+    return (c.body as { proposalId: string }).proposalId;
+  }
+
+  for (const kind of ['tx', 'proposal'] as const) {
+    it(`${kind}: submit throws but the signature is on chain -> 200 landed; onLanded runs; the prepare stays used`, async () => {
+      const b = await boot({ accepts: true, readable: true });
+      const pr = await prep(b.port, alice, { ref: await ref(kind, b), page: HARBOR_P1, vote: 'approve' });
+      const r = await sign(b.port, alice, pr.json);
+      expect(r).toEqual({ status: 200, json: { txHash: pr.json.txHash, status: 'landed', page: HARBOR_P1, keyHash: alice.keyHash } });
+      if (kind === 'tx') expect(b.landed).toHaveLength(1);
+      else expect(b.intake.proposals()[0]).toMatchObject({ status: 'landed', txHash: pr.json.txHash });
+      expect((await sign(b.port, alice, pr.json)).status).toBe(404);
+    });
+
+    it(`${kind}: submit throws and the signature is absent -> 502 submit_rejected`, async () => {
+      const b = await boot({ accepts: false, readable: true });
+      const pr = await prep(b.port, alice, { ref: await ref(kind, b), page: HARBOR_P1, vote: 'approve' });
+      const r = await sign(b.port, alice, pr.json);
+      expect(r.status).toBe(502);
+      expect(r.json).toMatchObject({ error: 'submit_rejected', onChain: 'absent' });
+      expect(b.landed).toHaveLength(0);
+      if (kind === 'proposal') expect(b.intake.proposals()[0]!.status).toBe('proposed');
+    });
+
+    it(`${kind}: submit throws and the chain is unreadable -> 502 onChain unknown (not refused)`, async () => {
+      // The node goes away while the submit is in flight: its answer, and the chain, are both unreadable.
+      const b = await boot({ accepts: true, readable: true, dropOnSubmit: true });
+      const pr = await prep(b.port, alice, { ref: await ref(kind, b), page: HARBOR_P1, vote: 'approve' });
+      expect(pr.status).toBe(200);
+      const r = await sign(b.port, alice, pr.json);
+      expect(r.status).toBe(502);
+      expect(r.json).toMatchObject({ error: 'submit_outcome_unknown', onChain: 'unknown' });
+      if (kind === 'proposal') expect(b.intake.proposals()[0]!.status).toBe('submitting');
+    });
+  }
 });

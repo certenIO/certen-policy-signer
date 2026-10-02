@@ -14,6 +14,7 @@
  * metadata hash — so an approve and a reject are different preimages, not the same one with a flag.
  */
 import { AccumulateClient } from '../accumulate/client.js';
+import { awaitOwnSignature } from '../accumulate/submit-outcome.js';
 import { Keyring } from '../signer/keyring.js';
 import { AccumulateSignatureType } from '../signer/signer.js';
 import { createHash } from 'node:crypto';
@@ -103,6 +104,10 @@ export interface VoteBackend {
 
 export interface DirectVoteOptions {
   maxBadVersionRetries?: number;
+  /** After a submit that got no answer, how long to read the chain for our own signature (default 30 s). */
+  submitOutcomeTimeoutMs?: number;
+  /** Poll interval for that read (default 2 s). */
+  submitOutcomePollMs?: number;
   delegators?: string[];
   now?: () => number;
 }
@@ -161,7 +166,26 @@ export class DirectVoteBackend implements VoteBackend {
         ? buildDelegatedSignatureObject(pre, sigBytes, tx.txHash)
         : buildSignatureObject(pre, sigBytes, tx.txHash);
 
-      const res = await this.accumulate.submit(buildSubmitEnvelope(tx.rawTransaction, sigObj));
+      let res = await this.accumulate.submit(buildSubmitEnvelope(tx.rawTransaction, sigObj));
+      if (!res.ok && res.uncertain) {
+        // No answer is not a refusal: read the chain for THIS signature before deciding anything.
+        const outcome = await awaitOwnSignature({
+          getTxSignatures: this.accumulate.getTxSignatures?.bind(this.accumulate),
+          txHash: tx.txHash, principal: tx.account, keyHash: createHash('sha256').update(publicKey).digest('hex'),
+          delegators: delegators ?? [], timeoutMs: this.opts.submitOutcomeTimeoutMs ?? 30_000,
+          ...(this.opts.submitOutcomePollMs ? { pollMs: this.opts.submitOutcomePollMs } : {}), now: this.now,
+        });
+        if (outcome === 'landed') {
+          this.logger.warn({ tx: tx.txHash, err: res.error }, 'submit got no answer, but our signature is on chain: the vote was cast');
+          res = { ok: true };
+        } else {
+          // Not cast as far as the chain can tell (or it cannot tell): a failure to retry, never a refusal.
+          this.logger.warn({ tx: tx.txHash, err: res.error, onChain: outcome }, outcome === 'unknown'
+            ? 'submit got no answer and the chain cannot be read: vote outcome UNKNOWN; will retry'
+            : 'submit got no answer and our signature is not on chain; will retry');
+          return { ok: false, error: `submit outcome ${outcome === 'unknown' ? 'unknown' : 'not on chain'} (${res.error ?? 'no answer'})` };
+        }
+      }
       if (res.ok || res.code === 'alreadySigned') {
         this.logger.info({ tx: tx.txHash, vote, signerVersion, timestamp, via: 'direct' }, 'vote submitted');
         return {

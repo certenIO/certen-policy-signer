@@ -20,7 +20,7 @@ import { RawAccumulateClient } from '../accumulate/raw-client.js';
 import { EdSigner } from '../signer/signer.js';
 import { Logger } from '../logger.js';
 import { hexToBytes } from '../accumulate/signing.js';
-import { confirmPage, readPage, rotateKey, signAndSubmit, PageState, RotateMode } from './rotate.js';
+import { confirmPage, readPage, rotateKey, signAndSubmit, PageState, RotateMode, SubmitOutcomeUnknownError } from './rotate.js';
 import { createHash } from 'node:crypto';
 import { KeyPageGuardError, KeyPageRefusal, operationsFromKeyPageOps, simPageFrom, validateKeyPageChange } from './keypage-guard.js';
 
@@ -42,6 +42,8 @@ export interface KeyPageDeps {
   logger: Logger;
   /** OUR key page. The principal is always this — it is not accepted from the caller. */
   page: string;
+  /** After a submit that got no answer, how long to read the chain for our own signature (default 30 s). */
+  submitOutcomeTimeoutMs?: number;
 }
 
 export interface KeyPageResult {
@@ -124,7 +126,15 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
   // still pending (awaiting another signature) must not vanish from the result.
   const submitted: string[] = [];
   const submit = async (body: unknown, label: string) => {
-    const tx = await signAndSubmit({ accumulate, signer, logger }, page, body, label);
+    let tx: string;
+    try {
+      tx = await signAndSubmit({ accumulate, signer, logger, ...(d.submitOutcomeTimeoutMs ? { submitOutcomeTimeoutMs: d.submitOutcomeTimeoutMs } : {}) }, page, body, label);
+    } catch (e) {
+      // A submit with no answer may still be on chain: keep its hash with what was submitted, so the
+      // caller records it (and a co-signer can find it) instead of forgetting a live transaction.
+      if (e instanceof SubmitOutcomeUnknownError && e.outcome === 'unknown') submitted.push(e.txHash);
+      throw e;
+    }
     submitted.push(tx);
     return tx;
   };

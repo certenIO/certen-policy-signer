@@ -81,6 +81,11 @@ wallet:
   # "every vote you cast will be silently rejected by the network". Only for pages whose key hashes the
   # node will not expose.
   allow_unverified_signer: false
+  #
+  # How long one Accumulate submit may take (default 15000 ms), and how long the signer then reads the chain
+  # for its own signature when a submit got no answer (default 30000 ms). No answer is never a refusal.
+  # submit_timeout_ms: 15000
+  # submit_outcome_timeout_ms: 30000
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 #  KEY CUSTODY — where the private key lives. Used in single-scope mode.

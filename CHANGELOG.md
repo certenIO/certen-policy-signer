@@ -38,6 +38,13 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Changed
 
+- **SP-10: a submit with no answer is decided from the chain.** Officer intake (transaction refs as well
+  as proposals), the machine vote and governance read the transaction's signature set for their own
+  signature after a submit error and act on it (landed / absent / unknown); a timeout is never recorded as a
+  refusal. New `wallet.submit_timeout_ms` (default 15000, unchanged) and `wallet.submit_outcome_timeout_ms`
+  (default 30000). `SubmitResult.uncertain` marks a submit that got no answer. Officer intake answers
+  `502 submit_outcome_unknown` (`onChain: "unknown"`) when it cannot tell.
+
 - **cloud-kms review #10.** An AWS key's metadata is re-read before every signature and a changed type or
   public key (a re-pointed alias) is refused; the declared type never follows the alias. One extra
   `GetPublicKey` per signature. The previous "type changed" check could never fire and is gone.

@@ -211,7 +211,16 @@ export class GatewayVoteBackend implements VoteBackend {
         this.logger.error({ tx: tx.txHash, page: tx.signerUrl, err: msg, via: 'gateway' }, 'signing failed; vote withheld');
         return { ok: false, error: `signing failed: ${msg}` };
       }
-      const res = await this.gw.submitSignature(sd, signature, publicKey);
+      let res: { ok: boolean; status?: string; error?: string };
+      try {
+        res = await this.gw.submitSignature(sd, signature, publicKey);
+      } catch (e) {
+        // No answer from the gateway (timeout, dropped connection): the outcome is UNKNOWN, not a refusal.
+        // The sign request is spent either way; this vote is reported failed-to-confirm and retried next poll.
+        const msg = (e as Error).message;
+        this.logger.warn({ tx: tx.txHash, err: msg, via: 'gateway' }, 'gateway submit got no answer: vote outcome UNKNOWN; will retry');
+        return { ok: false, error: `gateway submit outcome unknown (${msg})` };
+      }
       if (res.ok) {
         this.logger.info(
           { tx: tx.txHash, vote, via: 'gateway', signRequest: sd.signRequestId, signerVersion: sd.signerVersion, status: res.status },

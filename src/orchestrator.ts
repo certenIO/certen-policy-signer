@@ -27,6 +27,8 @@ export interface OrchestratorOptions {
   guard?: (tx: { account: string; summary: string; value?: string; values?: string[]; unpricedLegs?: number }) => boolean;
   isPaused?: () => boolean;     // SR8 emergency kill switch
   delegators?: string[];        // delegate attachment model: user page(s) delegating to our book
+  /** How long to read the chain for our own signature after a submit got no answer (default 30 s). */
+  submitOutcomeTimeoutMs?: number;
 }
 
 /**
@@ -108,6 +110,7 @@ export class Orchestrator {
       maxBadVersionRetries: this.opt.maxBadVersionRetries,
       delegators: this.opt.delegators,
       now: this.now,
+      ...(d.options?.submitOutcomeTimeoutMs ? { submitOutcomeTimeoutMs: d.options.submitOutcomeTimeoutMs } : {}),
     });
   }
 

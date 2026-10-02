@@ -318,3 +318,18 @@ describe('gateway seam: the signer never signs the gateway’s bytes on trust (G
     } finally { srv.close(); }
   });
 });
+
+describe('gateway seam: a submit with no answer is not a refusal (SP-10)', () => {
+  it('a thrown gateway submit is reported as an unknown outcome', async () => {
+    const pk = Buffer.from(await SIGNER.publicKey()).toString('hex');
+    const gw = {
+      requestSigningData: async (txHash: string, vote: string) => ({
+        signRequestId: 'x', dataForSignature: preimageFor(txHash, vote, pk), transactionHash: txHash,
+        signerUrl: 'acc://org.acme/book/1', signerVersion: FAKE_VERSION, timestamp: FAKE_TIMESTAMP, submitUrl: '/v1/sign/x/signature',
+      }),
+      submitSignature: async () => { throw new Error('timeout of 20000ms exceeded'); },
+    };
+    const r = await new GatewayVoteBackend(gw as any, singleKeyring(SIGNER), silent).cast(tx, 'approve');
+    expect(r).toMatchObject({ ok: false, error: expect.stringMatching(/outcome unknown/) });
+  });
+});

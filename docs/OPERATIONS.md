@@ -436,6 +436,22 @@ definitively absent: `proposed`; unreadable: left `submitting`, which nothing ma
 A submit that errors is likewise checked against the chain before the proposal is given back: a proposal
 transaction that is on chain is never `proposed` again.
 
+### A submit with no answer is not a refusal
+
+`wallet.submit_timeout_ms` (default 15000, the raw client's timeout for every call) bounds one Accumulate
+submit. When a submit gets no answer -- a timeout, a dropped connection, a proxy error -- the outcome is
+UNKNOWN, and every path decides it from the chain by looking for THIS key's signature (with its delegators)
+in the transaction's signature set:
+
+- **Officer intake** (transaction refs and proposals; any submit error) polls for up to
+  `officer_intake.landed_timeout_ms`: landed -> `200 landed` exactly as a success (the landing hook runs,
+  the prepare stays used); absent -> `502 {"error":"submit_rejected","onChain":"absent"}`; unreadable ->
+  `502 {"error":"submit_outcome_unknown","onChain":"unknown"}` (a proposal stays `submitting`).
+- **The machine vote** and **governance** poll for up to `wallet.submit_outcome_timeout_ms` (default 30000):
+  landed -> cast/submitted; otherwise a failure to retry (`error`, or governance's "outcome UNKNOWN, not
+  refused" with the transaction hash kept), never a refusal. A node that ANSWERS with an error is still a
+  refusal. A gateway submit that throws is an unknown outcome, retried next poll.
+
 ### Human-only seats (G-69)
 
 A party with no machine page -- legal and board books (runbook A5), or a firm with only book/1 and its

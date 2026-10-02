@@ -68,7 +68,7 @@ export interface IntakeOnlyProcess { server: http.Server; intake: OfficerIntake;
 
 /** Build (and, unless `listen: false`, start) the intake-only process. */
 export async function startIntakeOnly(cfg: Config, logger: Logger, opts: { accumulate?: RawAccumulateClient; listen?: boolean } = {}): Promise<IntakeOnlyProcess> {
-  const accumulate = opts.accumulate ?? new RawAccumulateClient(cfg.wallet.accumulate_endpoints[0], logger);
+  const accumulate = opts.accumulate ?? new RawAccumulateClient(cfg.wallet.accumulate_endpoints[0], logger, undefined, { submitTimeoutMs: cfg.wallet.submit_timeout_ms });
   const store: Store = cfg.store.path ? new FileStore(cfg.store.path) : new MemoryStore();
   const decoders = await buildDecoders(cfg, logger);
   const intake = buildOfficerIntake(cfg, accumulate, store, decoders, logger);

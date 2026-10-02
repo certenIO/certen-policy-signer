@@ -32,6 +32,7 @@ import { buildProposalDisplay, proposalOperations, tclSummaryV1, withDisplay, Di
 import { extractAcceptance, extractGovernance } from '../decode/facts.js';
 import type { ActionSummary } from '../types.js';
 import { checkKeyPageChange, KeyPageRefusal, operationsFromKeyPageOps } from '../ops/keypage-guard.js';
+import { awaitOwnSignature, type SubmitOutcome } from '../accumulate/submit-outcome.js';
 import { createOfficerAuthenticator, OFFICER_AUTH_FAILED } from './auth.js';
 import { P256Key, hexBytes, parseP256Spki, toCanonicalDer, verifyP256Sha256 } from './crypto.js';
 
@@ -626,15 +627,20 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
       sub = { ok: false, error: (e as Error).message };
     }
     if (!sub.ok) {
-      // G-39: an error is not proof the network refused it. For a proposal (a transaction this signer
-      // originates) read the chain before deciding: on chain means submitted, whatever the error said.
-      const seen = proposal ? await onChain(rec.txHash, proposal.page) : 'absent';
-      if (seen !== 'present') {
-        if (seen === 'unknown') markUncertain();
-        d.logger.warn({ audit: 'officer_signature_submit_failed', ref: rec.ref, keyHash: rec.keyHash, code: sub.code, err: sub.error, onChain: seen }, 'officer signature refused by the network');
-        return send(res, 502, { error: 'submit_rejected', code: sub.code ?? 'error', ...(seen === 'unknown' ? { onChain: 'unknown' } : {}) });
+      // An error is not proof the network refused it (SP-10: a 15 s timeout on a signature that landed and
+      // a payment that was delivered). For a transaction ref AND a proposal, the chain decides: is THIS
+      // key's signature (through these delegators) in the transaction's signature set?
+      const seen = await submitFate(rec, proposal);
+      if (seen === 'unknown') {
+        markUncertain();
+        d.logger.warn({ audit: 'officer_signature_submit_outcome_unknown', ref: rec.ref, txHash: rec.txHash, keyHash: rec.keyHash, code: sub.code, err: sub.error, onChain: 'unknown' }, 'officer signature submit got an error and the chain cannot be read: outcome UNKNOWN (not refused)');
+        return send(res, 502, { error: 'submit_outcome_unknown', code: sub.code ?? 'error', onChain: 'unknown' });
       }
-      d.logger.warn({ audit: 'officer_signature_submit_error_but_on_chain', ref: rec.ref, txHash: rec.txHash, err: sub.error }, 'submit reported an error, but the proposal transaction is on chain; treating it as submitted');
+      if (seen === 'absent') {
+        d.logger.warn({ audit: 'officer_signature_submit_failed', ref: rec.ref, keyHash: rec.keyHash, code: sub.code, err: sub.error, onChain: 'absent' }, 'officer signature refused by the network (not on chain)');
+        return send(res, 502, { error: 'submit_rejected', code: sub.code ?? 'error', onChain: 'absent' });
+      }
+      d.logger.warn({ audit: 'officer_signature_submit_error_but_on_chain', ref: rec.ref, txHash: rec.txHash, keyHash: rec.keyHash, err: sub.error }, 'submit reported an error, but this signature is on chain; treating it as submitted');
     }
     markSubmitted();
     if (proposal) {
@@ -687,18 +693,31 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     }
   }
 
+  /** Is THIS prepare's signature in the transaction's signature set? Polls up to `landed_timeout_ms`. */
+  function ownSignature(rec: PrepareRecord): Promise<SubmitOutcome> {
+    return awaitOwnSignature({
+      ...(d.chain.getTxSignatures ? { getTxSignatures: d.chain.getTxSignatures.bind(d.chain) } : {}),
+      txHash: rec.txHash, principal: rec.principal, keyHash: rec.keyHash, delegators: rec.delegators,
+      timeoutMs: d.landedTimeoutMs, pollMs, now,
+    });
+  }
+
+  /**
+   * After a submit error: did the signature land? Decided from the signature set; a chain client that cannot
+   * read signature sets falls back, for a proposal only, to whether its transaction exists.
+   */
+  async function submitFate(rec: PrepareRecord, proposal: Proposal | undefined): Promise<SubmitOutcome> {
+    if (d.chain.getTxSignatures) return ownSignature(rec);
+    if (proposal) {
+      const s = await onChain(rec.txHash, proposal.page);
+      return s === 'present' ? 'landed' : s;
+    }
+    return 'unknown';
+  }
+
   async function pollLanded(rec: PrepareRecord): Promise<'landed' | 'submitted'> {
     if (!d.chain.getTxSignatures) return 'submitted';
-    const want = rec.delegators.map((x) => x.toLowerCase()).sort();
-    const deadline = now() + d.landedTimeoutMs;
-    for (;;) {
-      const sigs = await d.chain.getTxSignatures(rec.txHash, rec.principal).catch(() => undefined);
-      const hit = sigs?.signatures.some((s) => s.publicKeyHash === rec.keyHash
-        && JSON.stringify(s.delegators.map((x) => x.toLowerCase()).sort()) === JSON.stringify(want));
-      if (hit) return 'landed';
-      if (now() + pollMs > deadline) return 'submitted';
-      await new Promise((r) => setTimeout(r, pollMs));
-    }
+    return (await ownSignature(rec)) === 'landed' ? 'landed' : 'submitted';
   }
 
   async function propose(page: string, operations: KeyPageOp[], proposer: string): Promise<{ status: number; body: unknown }> {

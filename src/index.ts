@@ -106,7 +106,7 @@ async function main() {
     scopes.length > 1 ? `starting policy signer (MULTI-SCOPE: ${scopes.length} pages)` : 'starting policy signer',
   );
 
-  const accumulate = new RawAccumulateClient(cfg.wallet.accumulate_endpoints[0], logger);
+  const accumulate = new RawAccumulateClient(cfg.wallet.accumulate_endpoints[0], logger, undefined, { submitTimeoutMs: cfg.wallet.submit_timeout_ms });
 
   /**
    * Build the policy client for one effective policy block.
@@ -244,6 +244,7 @@ async function main() {
     options: {
       submitRejectVote: cfg.behavior.submit_reject_vote,
       maxBadVersionRetries: cfg.behavior.max_bad_version_retries,
+      submitOutcomeTimeoutMs: cfg.wallet.submit_outcome_timeout_ms,
       policyTtlSeconds: cfg.policy.async_ttl_seconds,
       guard,
       isPaused: () => pause.paused,
@@ -343,7 +344,7 @@ async function main() {
 
   // --- decision-service relay (6.4): one credential + scope list per Console decision service ---
   const governKeyPage = (op: Parameters<typeof applyKeyPageOp>[1], page: string) =>
-    applyKeyPageOp({ accumulate, signer: keyring.forPage(page), logger, page }, op);
+    applyKeyPageOp({ accumulate, signer: keyring.forPage(page), logger, page, submitOutcomeTimeoutMs: cfg.wallet.submit_outcome_timeout_ms }, op);
   let relayClients: RelayClientsHandler | undefined;
   if (cfg.admin.relay_clients?.length) {
     const gw = cfg.relay.gateway
@@ -384,7 +385,7 @@ async function main() {
     // we do not hold a key for, so a caller can never point governance at an arbitrary page. Default: scope 0.
     keyPage: (op, page) => {
       const target = page ?? scopes[0]?.page ?? '';   // a human-only signer has no scope 0: forPage refuses ''
-      return applyKeyPageOp({ accumulate, signer: keyring.forPage(target), logger, page: target }, op);
+      return applyKeyPageOp({ accumulate, signer: keyring.forPage(target), logger, page: target, submitOutcomeTimeoutMs: cfg.wallet.submit_outcome_timeout_ms }, op);
     },
     // Reading a page is a READ, so it is bound with no credential of its own beyond the admin key -- unlike
     // keyPage above, which changes who can act and therefore carries a second one. `keyring.forPage` still
