@@ -8,8 +8,13 @@
  * page by vote:
  *
  *   - a direct signature whose signer is the page and whose key hash is an entry on it counts that key's seat;
- *   - a delegated signature whose OUTERMOST delegator is the page counts the delegate seat it came through
- *     (the next book inward), when that book is a delegate entry on the page.
+ *   - a delegate seat (a book that is a delegate entry on the page) counts ONLY when that book has itself
+ *     voted as Accumulate counts it: one of its pages reached its own threshold for that vote on the
+ *     signatures that came through the page to it (security review 2026-10-02: one signature on a 2-of-3
+ *     delegate page used to count the whole delegate seat). The delegate pages are read from the chain
+ *     and counted the same way, recursively (a delegate of a delegate), to a depth of MAX_DELEGATION_DEPTH.
+ *     A delegate page that cannot be read, a path deeper than that, or a delegate book that reached both
+ *     thresholds at once does not count (fail closed: the request stays `awaiting_human`).
  *
  * Approvals reaching the page's accept threshold end the request `signed`; rejections reaching its reject
  * threshold (0 means the accept threshold, as the executor reads it) end it `rejected`. Until then the
@@ -29,7 +34,7 @@
 import { humanRecordId, type Store } from '../store/store.js';
 import type { Logger } from '../logger.js';
 import type { PageState } from '../ops/rotate.js';
-import type { TxSignatures } from '../accumulate/client.js';
+import type { ChainSignature, TxSignatures } from '../accumulate/client.js';
 import type { HumanSignature, SigningRequest } from '../types.js';
 
 const norm = (u: string) => u.toLowerCase().replace(/\/+$/, '');
@@ -45,23 +50,99 @@ export interface HumanTallyDeps {
   now?: () => number;
 }
 
-/** The signatures in `sigs` that count for `page`, one per seat (the first seen wins). */
-export function countedSignatures(sigs: TxSignatures, page: string, st: PageState): HumanSignature[] {
+/** How deep a delegation chain is followed below the human page. Deeper paths never count (fail closed). */
+export const MAX_DELEGATION_DEPTH = 5;
+
+type CountedVote = 'approve' | 'reject';
+type ReadPage = (page: string) => Promise<PageState>;
+
+/** A chain signature with the part of its delegation path still to walk (`rest[0]` is the page it is at). */
+interface Walk { s: ChainSignature; rest: string[] }
+
+/** The page a walk is at: its next delegator, or the page the signature was made on once the path is used up. */
+const pageAt = (w: Walk): string | undefined => (w.rest.length ? w.rest[0] : w.s.signer);
+const voteOf = (s: ChainSignature): CountedVote | 'abstain' => s.vote ?? 'approve';
+
+/**
+ * The seats of page `page` that cast `vote` on the signatures that reached it (`walks`, each positioned at `page`):
+ * a key entry signed directly, or a delegate book that has itself reached its threshold for `vote` (recursively).
+ * Returns the seat ids with the signature that represents each (the first seen).
+ */
+async function seatsVoting(page: string, st: PageState, walks: Walk[], vote: CountedVote, readPage: ReadPage | undefined, depth: number, seenPages: string[], unread: string[]): Promise<Map<string, ChainSignature>> {
   const keys = new Set(st.keyHashes.map((h) => h.toLowerCase()));
-  const delegateSeats = new Set(st.entries.map((e) => e.delegate).filter((x): x is string => !!x).map(norm));
-  const seen = new Set<string>();
-  const out: HumanSignature[] = [];
-  for (const s of sigs.signatures) {
-    let seat: string | undefined;
-    if (s.delegators.length === 0) {
-      if (s.signer && norm(s.signer) === norm(page) && keys.has(s.publicKeyHash.toLowerCase())) seat = `key:${s.publicKeyHash.toLowerCase()}`;
-    } else if (norm(s.delegators[0]!) === norm(page)) {
-      const inward = s.delegators.length > 1 ? bookOf(s.delegators[1]!) : s.signer ? bookOf(s.signer) : undefined;
-      if (inward && delegateSeats.has(inward)) seat = `delegate:${inward}`;
+  const delegateBooks = new Set(st.entries.map((e) => e.delegate).filter((x): x is string => !!x).map(norm));
+  const out = new Map<string, ChainSignature>();
+  const below = new Map<string, Walk[]>();
+  for (const w of walks) {
+    if (w.rest.length === 0) {
+      // Signed on this page itself: a key seat.
+      const kh = w.s.publicKeyHash.toLowerCase();
+      if (voteOf(w.s) === vote && w.s.signer && norm(w.s.signer) === norm(page) && keys.has(kh) && !out.has(`key:${kh}`)) out.set(`key:${kh}`, w.s);
+      continue;
     }
-    if (!seat || seen.has(seat)) continue;
-    seen.add(seat);
-    out.push({ seat, publicKeyHash: s.publicKeyHash.toLowerCase(), type: s.type, delegators: [...s.delegators], vote: s.vote ?? 'approve' });
+    // Delegated through this page: the next page inward (or the signing page) names the delegate book.
+    const next: Walk = { s: w.s, rest: w.rest.slice(1) };
+    const inward = pageAt(next);
+    if (!inward) continue;
+    const book = bookOf(inward);
+    if (!delegateBooks.has(book)) continue;
+    const list = below.get(book) ?? [];
+    list.push(next);
+    below.set(book, list);
+  }
+  for (const [book, ws] of below) {
+    if (await bookVotes(book, ws, vote, readPage, depth + 1, seenPages, unread)) out.set(`delegate:${book}`, ws.find((w) => voteOf(w.s) === vote)!.s);
+  }
+  return out;
+}
+
+/** Has delegate book `book` voted `vote` as Accumulate counts it (one of its pages reached that threshold)? */
+async function bookVotes(book: string, walks: Walk[], vote: CountedVote, readPage: ReadPage | undefined, depth: number, seenPages: string[], unread: string[]): Promise<boolean> {
+  if (depth > MAX_DELEGATION_DEPTH) { unread.push(`${book}: delegation deeper than ${MAX_DELEGATION_DEPTH}`); return false; }
+  if (!readPage) { unread.push(`${book}: no page reader`); return false; }
+  const pages = [...new Set(walks.map((w) => pageAt(w)).filter((x): x is string => !!x).map(norm))].filter((pg) => bookOf(pg) === book);
+  for (const pg of pages) {
+    if (seenPages.includes(pg)) { unread.push(`${pg}: delegation cycle`); continue; }
+    let st: PageState;
+    try { st = await readPage(pg); } catch (e) { unread.push(`${pg}: ${(e as Error).message}`); continue; }
+    const here = walks.filter((w) => norm(pageAt(w) ?? '') === pg);
+    const seats = await seatsVoting(pg, st, here, vote, readPage, depth, [...seenPages, pg], unread);
+    const needed = vote === 'approve' ? st.threshold : (st.rejectThreshold || st.threshold);
+    if (seats.size >= needed) return true;
+  }
+  return false;
+}
+
+/**
+ * The signatures in `sigs` that count for `page`, one per seat (the first seen wins). A delegate seat counts only
+ * when its book has reached its own threshold (see the header); `unread` collects what could not be counted.
+ */
+export async function countedSignatures(sigs: TxSignatures, page: string, st: PageState, readPage?: ReadPage, unread: string[] = []): Promise<HumanSignature[]> {
+  // Signatures that reached the page: made on it directly, or delegated through it (it is the OUTERMOST delegator).
+  const walks: Walk[] = [];
+  for (const s of sigs.signatures) {
+    if (s.delegators.length === 0) walks.push({ s, rest: [] });
+    else if (norm(s.delegators[0]!) === norm(page)) walks.push({ s, rest: [...s.delegators] }); // rest[0] is the page itself
+  }
+  const byVote = new Map<CountedVote, Map<string, ChainSignature>>();
+  for (const vote of ['approve', 'reject'] as const) {
+    byVote.set(vote, await seatsVoting(page, st, walks, vote, readPage, 0, [norm(page)], unread));
+  }
+  const approve = byVote.get('approve')!;
+  const reject = byVote.get('reject')!;
+  const out: HumanSignature[] = [];
+  const done = new Set<string>();
+  // Page order of first appearance, as before: one record per seat.
+  for (const s of sigs.signatures) {
+    for (const [vote, seats] of [['approve', approve], ['reject', reject]] as const) {
+      for (const [seat, rep] of seats) {
+        if (rep !== s || done.has(seat)) continue;
+        // A delegate book that reached BOTH thresholds is not a vote either way: neither is counted.
+        if (seat.startsWith('delegate:') && approve.has(seat) && reject.has(seat)) { unread.push(`${seat}: reached both thresholds`); done.add(seat); continue; }
+        done.add(seat);
+        out.push({ seat, publicKeyHash: rep.publicKeyHash.toLowerCase(), type: rep.type, delegators: [...rep.delegators], vote });
+      }
+    }
   }
   return out;
 }
@@ -80,7 +161,9 @@ export async function advanceAwaitingHuman(d: HumanTallyDeps, txHash: string, pa
   let st: PageState;
   try { st = await d.readPage(page); } catch { return req; }
 
-  const counted = countedSignatures(sigs, page, st);
+  const unread: string[] = [];
+  const counted = await countedSignatures(sigs, page, st, d.readPage, unread);
+  if (unread.length) d.logger?.warn({ tx: txHash, page, unread }, 'human-only seat: some delegate seats could not be counted from the chain; they do not count');
   const approvals = counted.filter((s) => s.vote === 'approve');
   const rejections = counted.filter((s) => s.vote === 'reject');
   const accept = st.threshold;
