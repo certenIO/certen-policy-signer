@@ -575,6 +575,22 @@ export function validateHumanScopes(cfg: Pick<ParsedConfig, 'officer_intake' | '
   }
 }
 
+/**
+ * A machine key must never be able to satisfy a human page (G-69; security review 2026-10-02). Every keyed vote
+ * this signer casts under `attachment_model: delegate` goes THROUGH `wallet.delegator_url`, so if that page is a
+ * human-only scope or an officer page, the machine key would satisfy the people's page on chain: refused at boot,
+ * whatever the attachment model (a delegator naming a human page is a mistake even while it is unused).
+ */
+export function validateDelegatorNotHuman(cfg: Pick<ParsedConfig, 'officer_intake' | 'wallet'>): void {
+  const d = cfg.wallet.delegator_url;
+  if (!d) return;
+  const norm = (u: string) => u.toLowerCase().replace(/\/+$/, '');
+  const human = new Set([...(cfg.wallet.human_scopes ?? []).map((h) => norm(h.page)), ...(cfg.officer_intake.enabled ? cfg.officer_intake.human_pages.map(norm) : [])]);
+  if (human.has(norm(d))) {
+    throw new Error(`config: wallet.delegator_url ${d} is a human page (a human-only scope or an officer page) — every keyed vote would be cast through it, so a machine key would satisfy the people's page; delegate through a page that holds no human seat`);
+  }
+}
+
 const PAGE_URL = /^acc:\/\/[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9._-]+)*\/\d+$/;
 
 /** Officer intake checks. Exported for tests. */
@@ -599,6 +615,7 @@ export function loadConfig(path: string): Config {
   const parsed = Schema.parse(raw);
   validateOfficerIntake(parsed);
   validateHumanScopes(parsed);
+  validateDelegatorNotHuman(parsed);
   const intakeOnly = isIntakeOnly(parsed);
   if (!parsed.policy && !intakeOnly) throw new Error('config: policy is required (policy.url) — only an intake-only signer runs without a policy engine');
   const cfg = parsed as Config;

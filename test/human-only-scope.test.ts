@@ -87,6 +87,22 @@ ${extra}`);
     expect(() => load(`${human}\n    - { page: "${SUMMIT_P1.toUpperCase().replace('ACC://', 'acc://')}" }`, intake([SUMMIT_P1]))).toThrow(/twice/);
   });
 
+  it('refuses a delegator_url that is a human page: a machine key would satisfy the people\u2019s page (security review 2026-10-02)', () => {
+    const keyed = `  scopes:\n    - { page: "acc://summit-inspection-tcl1.acme/book/2", key: { provider: "local", local: { allow_ephemeral: true } } }`;
+    // The human-only scope itself as the delegator every keyed vote is cast through.
+    expect(() => load(`${keyed}\n${human}\n  attachment_model: delegate\n  delegator_url: "${SUMMIT_P1}"`, intake([SUMMIT_P1])))
+      .toThrow(/delegator_url .* is a human page/);
+    // An officer page (no human-only scope), and the same page spelt with a trailing slash and other case.
+    const officer = 'acc://summit-inspection-tcl1.acme/book/3';
+    expect(() => load(`${keyed}\n  attachment_model: delegate\n  delegator_url: "${officer.toUpperCase().replace('ACC://', 'acc://')}/"`, intake([officer])))
+      .toThrow(/is a human page/);
+    // Named even while unused (attachment_model authority): still a mistake, still refused.
+    expect(() => load(`${keyed}\n${human}\n  delegator_url: "${SUMMIT_P1}"`, intake([SUMMIT_P1]))).toThrow(/is a human page/);
+    // A delegator page that holds no human seat is fine.
+    const ok = load(`${keyed}\n${human}\n  attachment_model: delegate\n  delegator_url: "acc://fictional-customer-tcl1.acme/book/2"`, intake([SUMMIT_P1]));
+    expect(ok.wallet.delegator_url).toBe('acc://fictional-customer-tcl1.acme/book/2');
+  });
+
   it('sits beside keyed scopes', () => {
     const cfg = load(`  scopes:\n    - { page: "acc://summit-inspection-tcl1.acme/book/2", key: { provider: "local", local: { allow_ephemeral: true } } }\n${human}`, intake([SUMMIT_P1]));
     expect(cfg.wallet.scopes).toHaveLength(1);
