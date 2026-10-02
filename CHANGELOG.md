@@ -38,6 +38,13 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Changed
 
+- **G-47: the gateway vote backend signs only a preimage it built itself.** It rebuilds the Accumulate
+  signing preimage (buildPreimage, as the direct backend) from the resolved transaction hash, its own key,
+  key type, page and vote, plus the gateway's signer version and timestamp, and signs that. A gateway
+  `data_for_signature` that differs, an absent/empty/different `transaction_hash` (absent used to default
+  to ours and skip the check), a different or missing `signer_url`, or an unusable version/timestamp is
+  refused before anything is signed.
+
 - **G-65: a key-page change that would brick the page is refused everywhere the signer touches one.**
   This changes the conditions under which a signature is withheld: the machine vote no longer approves a
   pending `updateKeyPage` whose operations, applied to the page as it reads on chain, would leave no
