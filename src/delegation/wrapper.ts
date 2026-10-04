@@ -14,33 +14,18 @@
  *   2. Every page of B has an entry whose delegate is T, with NO key hash. A key signature is matched to
  *      an entry by key hash alone (`protocol/keys.go:61`), so `{keyHash: K, delegate: T}` is a seat whoever
  *      holds K fills without us.
- *   3. That entry is the page's FIRST entry, in the network's own order. See below — this is the
- *      condition the runbook did not have.
- *   4. On every page, acceptThreshold > entries − 1.
- *   5. B and all its pages are readable now. Unreadable is not "probably fine".
+ *   3. On every page, acceptThreshold > entries − 1.
+ *   4. B and all its pages are readable now. Unreadable is not "probably fine".
  *
- * ── WHY T MUST BE ENTRY 0 ──────────────────────────────────────────────────────────────────────────
+ * ── NOT GUARDED HERE: THE UPDATEKEY RE-INDEX ───────────────────────────────────────────────────────
  *
- * Threshold = entry count looks sufficient, and is not. A page counts votes as entries of its signature
- * set, keyed by (key index, path) (`internal/database/signatures.go:20-41`, `block/transaction.go:331-346`),
- * and a delegated vote is not de-duplicated by authority (`block/sig_authority.go:163-200`). `UpdateKey`
- * needs only the initiating delegate (`chain/update_key.go:92-140`), does NOT bump the page version
- * (`:183`, `:224-226`), and re-sorts the entry it changes (`updateKey` → `AddKeySpec`, `protocol/keys.go:72`:
- * by key hash, empty first, then by delegate URL as a lowercase string, `pkg/url/url.go:164`). So with
- * `{→ acc://alice.acme/book, → acc://truststamp.acme/book}`, Alice sorts first at index 0 and votes; her book
- * alone runs `UpdateKey`, her entry gains a key hash and moves to index 1 while T slides to 0; she votes
- * again at index 1. Two entries in the set, version unchanged: 2-of-2 met without Trust Stamp.
- *
- * With T at index 0 and keyless, nothing can sort before it: `UpdateKey` always sets a key hash
- * (`requireKeyHash`), which sorts after every keyless entry, and anything else that rewrites the page is an
- * `UpdateKeyPage` — which needs our vote and bumps the version (clearing the signature set). Index 0 is
- * then filled only by T's own vote, and the other n−1 indices cannot reach a threshold of n.
- *
- * The cost: Trust Stamp's book URL must sort before the subscriber's own book URL on every wrapper page
- * (`acc://truststamp.acme/book` does NOT sort before `acc://alice.acme/book`). Name Trust Stamp's identity
- * to sort first — e.g. `acc://0truststamp.acme` — and check each subscriber at registration
- * (`wrapperOrderProblem`). A wrapper that does not satisfy it is refused, loudly, rather than co-signed
- * while bypassable.
+ * A page counts votes by (key index, path) (`internal/database/signatures.go:20-41`), and `UpdateKey`
+ * re-sorts the entry it changes without bumping the page version (`chain/update_key.go:183`,
+ * `protocol/keys.go:72`). If the subscriber's entry sorts before T's, their book can vote, re-index with
+ * `UpdateKey`, and vote again, meeting the 2-of-2 without us (reproduced on Kermit). That is a network
+ * defect, to be fixed in accumulate-core (UpdateKey bumping the version clears the signature set). It is not
+ * worked around here: a wrapper is accepted whatever its entry order, and Trust Stamp never signs a
+ * transaction it was bypassed on, so it never attests one.
  */
 import { RawAccumulateClient } from '../accumulate/raw-client.js';
 import { PageEntry, PageState, pageStateOf } from '../ops/rotate.js';
@@ -110,26 +95,6 @@ export function networkOrder(entries: PageEntry[]): PageEntry[] {
   return [...entries].sort(cmp);
 }
 
-/**
- * Can a wrapper pairing Trust Stamp's book `T` with this subscriber's book be built safely? Undefined when
- * it can; otherwise the reason, in words an enrolment service can show the subscriber.
- *
- * Both entries are keyless delegates, so the network orders them by delegate URL as a lowercase string
- * (`networkOrder`). T must come FIRST, or the subscriber's book could re-index its vote into T's slot with
- * an UpdateKey and meet the 2-of-2 alone (reproduced on Kermit; see the header of this file). Checked at
- * registration, before any transaction exists, so a subscriber whose book name sorts too early gets a clear
- * error rather than a creation transaction the signer will later refuse.
- */
-export function wrapperOrderProblem(T: string, subscriberBook: string): string | undefined {
-  if (sameUrl(T, subscriberBook)) return `the subscriber's book cannot be Trust Stamp's own book (${T})`;
-  const order = networkOrder([{ keyHash: null, delegate: subscriberBook }, { keyHash: null, delegate: T }]);
-  if (!sameUrl(order[0]!.delegate!, T)) {
-    return `${subscriberBook} sorts before ${T} (URLs compare as lowercase strings), so on a wrapper page it would come first ` +
-      `and its owner could re-index a vote into Trust Stamp's slot with UpdateKey. Use a book whose URL sorts after ${T}.`;
-  }
-  return undefined;
-}
-
 export function checkWrapperShape(B: string, T: string, book: BookState, pages: Array<{ url: string; state: PageState }>): WrapperCheck {
   if (book.authorities.length !== 1 || !sameUrl(book.authorities[0]!.url, B)) {
     return { ok: false, reason: `authorities must be exactly [${B}], found [${book.authorities.map((a) => a.url).join(', ')}]` };
@@ -141,10 +106,6 @@ export function checkWrapperShape(B: string, T: string, book: BookState, pages: 
     const t = state.entries.find((e) => e.delegate && sameUrl(e.delegate, T));
     if (!t) return { ok: false, reason: `${url} has no entry delegating to ${T}` };
     if (t.keyHash) return { ok: false, reason: `${url}'s ${T} entry also carries key hash ${t.keyHash}, which a key holder can fill without ${T}` };
-    const first = networkOrder(state.entries)[0]!;
-    if (first !== t) {
-      return { ok: false, reason: `${url}: ${T} is not the page's first entry (${first.delegate ?? first.keyHash} sorts before it), so an UpdateKey can re-index a vote into ${T}'s place` };
-    }
     if (!(state.threshold > n - 1)) return { ok: false, reason: `${url} threshold ${state.threshold} with ${n} entries can be met without ${T}` };
   }
   return { ok: true };

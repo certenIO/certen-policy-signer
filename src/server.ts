@@ -7,7 +7,6 @@ import { PageState } from './ops/rotate.js';
 import { Orchestrator } from './orchestrator.js';
 import { bookOf } from './delegation/path.js';
 import { WrapperRegistry } from './registry/wrappers.js';
-import { wrapperOrderProblem } from './delegation/wrapper.js';
 import { Store } from './store/store.js';
 import { Keyring } from './signer/keyring.js';
 import { AccumulateClient } from './accumulate/client.js';
@@ -266,14 +265,12 @@ export function createServer(d: ServerDeps): http.Server {
         const book = typeof b.wrapper_book === 'string' ? b.wrapper_book.replace(/\/+$/, '') : '';
         if (!/^acc:\/\/[^\s/]+(\/[^\s/]+)+$/i.test(book) || /\/\d+$/.test(book)) return json(res, 400, { error: 'wrapper_book must be an acc:// key book URL' });
         if (typeof b.subject_id !== 'string' || !b.subject_id || b.subject_id.length > 256) return json(res, 400, { error: 'subject_id required (at most 256 characters)' });
-        // The subscriber's own book, the wrapper's other delegate. Its name must sort after ours, or the
-        // wrapper could be satisfied without us (src/delegation/wrapper.ts). Refused HERE, before anything
-        // is on chain, with a reason the enrolment service can show the subscriber.
+        // The subscriber's own book, the wrapper's other delegate. The creation vote requires exactly this
+        // book, so the wrapper we join is the one the subject enrolled.
         const subscriberBook = typeof b.subscriber_book === 'string' ? b.subscriber_book.replace(/\/+$/, '') : '';
         if (!/^acc:\/\/[^\s/]+(\/[^\s/]+)+$/i.test(subscriberBook) || /\/\d+$/.test(subscriberBook)) return json(res, 400, { error: 'subscriber_book must be an acc:// key book URL (the subscriber\'s own book, not a page)' });
         if (!d.wrapperOurBook) return json(res, 500, { error: 'wrapper mode without our own book configured' });
-        const orderProblem = wrapperOrderProblem(d.wrapperOurBook, subscriberBook);
-        if (orderProblem) return json(res, 422, { error: 'wrapper_order', reason: orderProblem });
+        if (subscriberBook.toLowerCase() === d.wrapperOurBook.replace(/\/+$/, '').toLowerCase()) return json(res, 400, { error: 'subscriber_book cannot be our own book' });
         const existing = await d.wrapperRegistry.get(book);
         if (existing && existing.status !== 'enrolling') return json(res, 409, { error: 'already an active wrapper', wrapper: existing });
         // The subject is what every later vote through this wrapper stands for. Re-registering under a

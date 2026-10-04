@@ -81,7 +81,7 @@ export interface OrchestratorDeps {
 }
 
 export interface WrapperModeOptions {
-  /** Our book (`acc://0truststamp.acme/book`) and page (`…/book/1`). */
+  /** Our book (`acc://truststamp.acme/book`) and page (`…/book/1`). */
   ourBook: string;
   ourPage: string;
   /** Registry + on-chain check: may a path start at this page? Throws = unknown, and nothing is signed. */
