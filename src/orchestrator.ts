@@ -22,6 +22,8 @@ export interface OrchestratorOptions {
   guard?: (tx: { account: string; summary: string; value?: string; values?: string[]; unpricedLegs?: number }) => boolean;
   isPaused?: () => boolean;     // SR8 emergency kill switch
   delegators?: string[];        // delegate attachment model: user page(s) delegating to our book
+  /** Wrapper runbook, change 4: refuse an approval whose evidence has no valid `signatureData`. */
+  requireSignatureData?: boolean;
 }
 
 /**
@@ -81,6 +83,7 @@ export class Orchestrator {
       guard: d.options?.guard,
       isPaused: d.options?.isPaused,
       delegators: d.options?.delegators,
+      requireSignatureData: d.options?.requireSignatureData,
     };
     this.now = d.now ?? Date.now;
     this.notifier = d.notifier ?? NULL_NOTIFIER;
@@ -312,7 +315,7 @@ export class Orchestrator {
       if (rules.submitRejectVote) {
         const lateReject = this.deadlineRefusal(tx);
         if (lateReject) return this.refuseDeadline(tx, lateReject, decision);
-        const res = await this.signAndSubmit(tx, 'reject');
+        const res = await this.signAndSubmit(tx, 'reject', undefined, signatureEvidence(decision.evidence));
         if (!res.ok) {
           logger.error({ tx: ref.txHash, err: res.error }, 'reject vote submission failed');
           this.notify('signature.failed', tx, { reason: decision.reason, error: res.error });
@@ -354,6 +357,22 @@ export class Orchestrator {
       return store.update(ref.txHash, { status: 'rejected', lastError: 'local_guard_block' });
     }
 
+    // Wrapper runbook, change 4: the evidence this vote commits to. With `require_signature_data` an
+    // approval that brings no valid digest is not signed — a vote that cannot be tied back to the live
+    // check it stands for is a claim nobody can verify. Malformed counts as absent (see
+    // `signatureEvidence`), so a garbled digest refuses here rather than being signed as something else.
+    const evidence = signatureEvidence(decision.evidence);
+    if (this.opt.requireSignatureData && !evidence.data) {
+      logger.warn({ tx: ref.txHash }, 'approved, but the decision carries no valid signatureData and it is required; not signing');
+      await this.saveReceipt({
+        txHash: tx.txHash, operationId: tx.operationId, decision: 'approve',
+        reason: decision.reason,
+        ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
+        policyEvidence: { ...(decision.evidence ?? {}), blockedBy: 'signature_data_missing' },
+      });
+      return store.update(ref.txHash, { status: 'rejected', lastError: 'signature_data_missing' });
+    }
+
     // 3. Sign + submit (approve). The deadline is re-read against the clock now: an approval that arrived
     // after the transaction died must not become a late signature (0031).
     const lateApprove = this.deadlineRefusal(tx);
@@ -363,7 +382,7 @@ export class Orchestrator {
     // Whose key signs. T29: when the policy engine names the approver, THEIR key signs — so the
     // signature on chain is the person's rather than the organisation's cast in their name. Absent,
     // the organisation signs as itself, exactly as before.
-    const res = await this.castForApprovers(tx, 'approve', approverKeyRefs(decision.evidence));
+    const res = await this.castForApprovers(tx, 'approve', approverKeyRefs(decision.evidence), evidence);
     if (res.ok) {
       await this.saveReceipt({
         txHash: tx.txHash, operationId: tx.operationId, decision: 'approve', vote: 'approve',
@@ -439,9 +458,9 @@ export class Orchestrator {
    * or GATEWAY (the Certen api-gateway hands us the bytes; we sign; we hand the signature back). The
    * decision above this line is identical either way: the policy engine gates both.
    */
-  private async signAndSubmit(tx: ResolvedTx, vote: 'approve' | 'reject', keyRef?: string): Promise<VoteResult> {
+  private async signAndSubmit(tx: ResolvedTx, vote: 'approve' | 'reject', keyRef?: string, evidence: SignatureEvidence = {}): Promise<VoteResult> {
     await this.d.store.update(tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
-    return this.votes.cast(tx, vote, keyRef === undefined ? {} : { keyRef });
+    return this.votes.cast(tx, vote, { ...(keyRef === undefined ? {} : { keyRef }), ...evidence });
   }
 
   /**
@@ -467,9 +486,10 @@ export class Orchestrator {
     tx: ResolvedTx,
     vote: 'approve' | 'reject',
     refs: string[],
+    evidence: SignatureEvidence = {},
   ): Promise<VoteResult> {
     // Nobody named: one vote, the organisation's own key, exactly as before T29.
-    if (refs.length === 0) return this.signAndSubmit(tx, vote);
+    if (refs.length === 0) return this.signAndSubmit(tx, vote, undefined, evidence);
 
     // From one ref upward the loop below handles it, so a named approver this wallet cannot sign for
     // is RECORDED as a failed vote rather than thrown out of the pipeline. One ref and two refs
@@ -483,7 +503,7 @@ export class Orchestrator {
     for (const ref of refs) {
       let res: VoteResult;
       try {
-        res = await this.votes.cast(tx, vote, { keyRef: ref });
+        res = await this.votes.cast(tx, vote, { keyRef: ref, ...evidence });
       } catch (e) {
         // A ref this wallet holds no key for throws rather than substituting the organisation's key.
         // That is the T29 refusal working; it is not a reason to abandon the approvers it CAN sign for.
@@ -553,6 +573,37 @@ export function approverKeyRefs(evidence: Record<string, unknown> | undefined): 
   if (refs.length) return refs;
   const single = approverKeyRef(evidence);
   return single ? [single] : [];
+}
+
+/** What a signature commits to, read off the decision. Both fields absent is the ordinary case. */
+export interface SignatureEvidence {
+  memo?: string;
+  data?: Uint8Array;
+}
+
+/**
+ * The digest and memo the policy engine wants IN the signature. Wrapper runbook, change 4.
+ *
+ * Carried in `evidence`, the decision's free-form record, so this needs no contract change (invariant
+ * F-9), the same route `approverKeyRef` takes. Read strictly, and anything malformed is ABSENT:
+ *
+ *   signatureData: hex (an optional 0x is tolerated), exactly 32 bytes. A digest of any other length
+ *                  is not the digest of anything we agreed on, and truncating or padding one would sign
+ *                  a value the engine never produced.
+ *   signatureMemo: a non-empty string of at most 256 characters.
+ *
+ * Absent is safe by construction: the signature is then built exactly as before, and with
+ * `require_signature_data` the approval is refused rather than signed without its evidence.
+ */
+export function signatureEvidence(evidence: Record<string, unknown> | undefined): SignatureEvidence {
+  const out: SignatureEvidence = {};
+  const raw = evidence?.['signatureData'];
+  if (typeof raw === 'string' && /^(0x)?[0-9a-fA-F]{64}$/.test(raw)) {
+    out.data = new Uint8Array(Buffer.from(raw.replace(/^0x/, ''), 'hex'));
+  }
+  const memo = evidence?.['signatureMemo'];
+  if (typeof memo === 'string' && memo.length > 0 && memo.length <= 256) out.memo = memo;
+  return out;
 }
 
 /** True when the transaction provably carries no contract call: acceptance and governance facts, or a non-WriteData body. */

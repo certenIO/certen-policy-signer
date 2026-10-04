@@ -279,6 +279,11 @@ behavior:
   # this, compared as a big integer. Optional. This is a backstop for an engine bug, not a policy.
   # value_ceiling: "1000000"
 
+  # Refuse an approval whose decision evidence carries no valid `signatureData` (hex, exactly 32 bytes).
+  # When present it is put IN the signature (the key signature's `data`, which is signed), so the vote
+  # commits to the evidence it stands for. Not available with gateway.enabled.
+  # require_signature_data: false
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 #  DURABLE STATE — idempotency (never vote twice) and the receipt audit trail.
 #  Omit the path and BOTH die with the process: a restart can double-vote and the audit trail is lost.

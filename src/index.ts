@@ -236,6 +236,7 @@ async function main() {
       guard,
       isPaused: () => pause.paused,
       delegators,
+      requireSignatureData: cfg.behavior.require_signature_data,
     },
   });
 

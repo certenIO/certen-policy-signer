@@ -318,6 +318,11 @@ const Schema = z.object({
     submit_reject_vote: z.boolean().default(false),
     max_bad_version_retries: z.number().default(3),
     value_ceiling: z.string().optional(), // SR4 local guard (optional)
+    // Wrapper runbook, change 4. When true, an approval whose evidence carries no valid `signatureData`
+    // (hex, exactly 32 bytes) is not signed: a Trust Stamp vote must commit to the live check it stands
+    // for, and one without the digest is an unverifiable claim. Default false keeps every existing
+    // deployment as it was.
+    require_signature_data: z.boolean().default(false),
   }).default({})),
   // Admin routes are served on the SAME listener as health (there is one HTTP server, on `health.bind`).
   // There is no separate admin port, so `api_key` — not a bind address — is what protects them:
@@ -597,6 +602,11 @@ export function loadConfig(path: string): Config {
   if (cfg.gateway.api_key) cfg.gateway.api_key = resolveSecret(cfg.gateway.api_key);
   if (cfg.gateway.enabled && (!cfg.gateway.url || !cfg.gateway.api_key || !cfg.gateway.identity)) {
     throw new Error('gateway.enabled requires gateway.url, gateway.api_key and gateway.identity');
+  }
+  // The gateway builds the preimage and has no field for signature data, so every approval would be
+  // refused at signing time. Say so now rather than on the first transaction.
+  if (cfg.gateway.enabled && cfg.behavior.require_signature_data) {
+    throw new Error('config: behavior.require_signature_data cannot be met through gateway.enabled — the gateway cannot put data in the signature');
   }
   if (cfg.policy?.hmac_secret) cfg.policy.hmac_secret = resolveSecret(cfg.policy.hmac_secret);
 
