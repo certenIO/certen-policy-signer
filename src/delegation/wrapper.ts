@@ -37,8 +37,10 @@
  * then filled only by T's own vote, and the other n−1 indices cannot reach a threshold of n.
  *
  * The cost: Trust Stamp's book URL must sort before the subscriber's own book URL on every wrapper page
- * (`acc://truststamp.acme/book` does NOT sort before `acc://alice.acme/book`). A wrapper that does not
- * satisfy it is refused, loudly, rather than co-signed while bypassable.
+ * (`acc://truststamp.acme/book` does NOT sort before `acc://alice.acme/book`). Name Trust Stamp's identity
+ * to sort first — e.g. `acc://0truststamp.acme` — and check each subscriber at registration
+ * (`wrapperOrderProblem`). A wrapper that does not satisfy it is refused, loudly, rather than co-signed
+ * while bypassable.
  */
 import { RawAccumulateClient } from '../accumulate/raw-client.js';
 import { PageEntry, PageState, pageStateOf } from '../ops/rotate.js';
@@ -106,6 +108,26 @@ export function networkOrder(entries: PageEntry[]): PageEntry[] {
     return a < b ? -1 : a > b ? 1 : 0;
   };
   return [...entries].sort(cmp);
+}
+
+/**
+ * Can a wrapper pairing Trust Stamp's book `T` with this subscriber's book be built safely? Undefined when
+ * it can; otherwise the reason, in words an enrolment service can show the subscriber.
+ *
+ * Both entries are keyless delegates, so the network orders them by delegate URL as a lowercase string
+ * (`networkOrder`). T must come FIRST, or the subscriber's book could re-index its vote into T's slot with
+ * an UpdateKey and meet the 2-of-2 alone (reproduced on Kermit; see the header of this file). Checked at
+ * registration, before any transaction exists, so a subscriber whose book name sorts too early gets a clear
+ * error rather than a creation transaction the signer will later refuse.
+ */
+export function wrapperOrderProblem(T: string, subscriberBook: string): string | undefined {
+  if (sameUrl(T, subscriberBook)) return `the subscriber's book cannot be Trust Stamp's own book (${T})`;
+  const order = networkOrder([{ keyHash: null, delegate: subscriberBook }, { keyHash: null, delegate: T }]);
+  if (!sameUrl(order[0]!.delegate!, T)) {
+    return `${subscriberBook} sorts before ${T} (URLs compare as lowercase strings), so on a wrapper page it would come first ` +
+      `and its owner could re-index a vote into Trust Stamp's slot with UpdateKey. Use a book whose URL sorts after ${T}.`;
+  }
+  return undefined;
 }
 
 export function checkWrapperShape(B: string, T: string, book: BookState, pages: Array<{ url: string; state: PageState }>): WrapperCheck {

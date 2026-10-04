@@ -190,6 +190,9 @@ async function main() {
       readPage: (url) => wrapperReader.readPage(url),
     };
     logger.info({ page: scopes[0].page, registry: regPath ?? '(memory)', wrappers: (await reg.list()).length }, 'attachment model: WRAPPER delegate');
+    // The naming rule the wrapper check enforces (src/delegation/wrapper.ts): every subscriber's book must
+    // sort after ours. Said once at boot so an operator sees it before the first refused enrolment.
+    logger.info({ ourBook: scopes[0].book }, `wrapper naming rule: a subscriber's book URL must sort after ${scopes[0].book} (lowercase string order); registrations that do not are refused`);
   }
 
   // --- per-scope rules: a fleet rarely shares one rulebook ---
@@ -399,7 +402,7 @@ async function main() {
   const server = createServer({
     relay, relayClients, officerIntake: officerIntake?.handle, configVersion: cfg.configVersion,
     orchestrator, store, keyring, accumulate, pause, logger, poller: pollerHealth,
-    ...(wrapperRegistry ? { wrapperRegistry } : {}),
+    ...(wrapperRegistry ? { wrapperRegistry, wrapperOurBook: scopes[0].book } : {}),
     webhookHmacSecret: cfg.trigger.webhook.enabled ? cfg.trigger.webhook.hmac_secret : undefined,
     webhookSignatureHeader: cfg.trigger.webhook.signature_header,
     adminApiKey: cfg.admin.api_key,

@@ -81,7 +81,7 @@ export interface OrchestratorDeps {
 }
 
 export interface WrapperModeOptions {
-  /** Our book (`acc://truststamp.acme/book`) and page (`…/book/1`). */
+  /** Our book (`acc://0truststamp.acme/book`) and page (`…/book/1`). */
   ourBook: string;
   ourPage: string;
   /** Registry + on-chain check: may a path start at this page? Throws = unknown, and nothing is signed. */
@@ -510,6 +510,8 @@ export class Orchestrator {
           ? { ok: false, reason: `${tx.account} is not a page of a wrapper being enrolled` }
           : !addsDelegate(tx, w.ourBook)
             ? { ok: false, reason: 'the transaction does not add Trust Stamp as a delegate' }
+            : entry.subscriberBook && !addsDelegate(tx, entry.subscriberBook)
+              ? { ok: false, reason: `the transaction does not add the registered subscriber book ${entry.subscriberBook}` }
             : w.checkWrapperChange ? await w.checkWrapperChange(book, tx) : { ok: false, reason: 'no check for changes to the wrapper is wired' };
       } else if (targetsWrapper(tx.account, book)) {
         check = w.checkWrapperChange ? await w.checkWrapperChange(book, tx) : { ok: false, reason: 'no check for changes to the wrapper is wired' };

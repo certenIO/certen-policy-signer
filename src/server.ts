@@ -7,6 +7,7 @@ import { PageState } from './ops/rotate.js';
 import { Orchestrator } from './orchestrator.js';
 import { bookOf } from './delegation/path.js';
 import { WrapperRegistry } from './registry/wrappers.js';
+import { wrapperOrderProblem } from './delegation/wrapper.js';
 import { Store } from './store/store.js';
 import { Keyring } from './signer/keyring.js';
 import { AccumulateClient } from './accumulate/client.js';
@@ -38,6 +39,8 @@ export interface HealthSource {
 export interface ServerDeps {
   /** Wrapper mode: the enrolment registry behind `/v1/admin/wrappers`. Absent => that route is 404. */
   wrapperRegistry?: WrapperRegistry;
+  /** Wrapper mode: our own book, which every subscriber's book must sort after. */
+  wrapperOurBook?: string;
   orchestrator: Orchestrator;
   store: Store;
   keyring: Keyring;
@@ -263,14 +266,24 @@ export function createServer(d: ServerDeps): http.Server {
         const book = typeof b.wrapper_book === 'string' ? b.wrapper_book.replace(/\/+$/, '') : '';
         if (!/^acc:\/\/[^\s/]+(\/[^\s/]+)+$/i.test(book) || /\/\d+$/.test(book)) return json(res, 400, { error: 'wrapper_book must be an acc:// key book URL' });
         if (typeof b.subject_id !== 'string' || !b.subject_id || b.subject_id.length > 256) return json(res, 400, { error: 'subject_id required (at most 256 characters)' });
+        // The subscriber's own book, the wrapper's other delegate. Its name must sort after ours, or the
+        // wrapper could be satisfied without us (src/delegation/wrapper.ts). Refused HERE, before anything
+        // is on chain, with a reason the enrolment service can show the subscriber.
+        const subscriberBook = typeof b.subscriber_book === 'string' ? b.subscriber_book.replace(/\/+$/, '') : '';
+        if (!/^acc:\/\/[^\s/]+(\/[^\s/]+)+$/i.test(subscriberBook) || /\/\d+$/.test(subscriberBook)) return json(res, 400, { error: 'subscriber_book must be an acc:// key book URL (the subscriber\'s own book, not a page)' });
+        if (!d.wrapperOurBook) return json(res, 500, { error: 'wrapper mode without our own book configured' });
+        const orderProblem = wrapperOrderProblem(d.wrapperOurBook, subscriberBook);
+        if (orderProblem) return json(res, 422, { error: 'wrapper_order', reason: orderProblem });
         const existing = await d.wrapperRegistry.get(book);
         if (existing && existing.status !== 'enrolling') return json(res, 409, { error: 'already an active wrapper', wrapper: existing });
         // The subject is what every later vote through this wrapper stands for. Re-registering under a
         // different subject is refused rather than silently re-pointed, even before activation.
-        if (existing && existing.subjectId !== b.subject_id) return json(res, 409, { error: 'already enrolling for a different subject', wrapper: existing });
-        const entry = { wrapperBook: book, wrapperPage: `${book}/1`, subjectId: b.subject_id, enrolledAt: 0, seats: [], status: 'enrolling' as const };
+        if (existing && (existing.subjectId !== b.subject_id || (existing.subscriberBook && existing.subscriberBook.toLowerCase() !== subscriberBook.toLowerCase()))) {
+          return json(res, 409, { error: 'already enrolling for a different subject or subscriber book', wrapper: existing });
+        }
+        const entry = { wrapperBook: book, wrapperPage: `${book}/1`, subjectId: b.subject_id, subscriberBook, enrolledAt: 0, seats: [], status: 'enrolling' as const };
         await d.wrapperRegistry.upsert(entry);
-        d.logger.info({ audit: 'wrapper_enrolling', wrapper: book, subject: b.subject_id }, 'wrapper registered as enrolling');
+        d.logger.info({ audit: 'wrapper_enrolling', wrapper: book, subject: b.subject_id, subscriberBook }, 'wrapper registered as enrolling');
         return json(res, 201, { wrapper: entry });
       }
       // GET /v1/config/version — the signer-config version stamped on every PolicyRequest and Receipt (6.3).
