@@ -33,7 +33,17 @@ export interface WrapperEntry {
   subjectId: string;
   enrolledAt: number;
   seats: Seat[];
+  /**
+   * `enrolling`: Trust Stamp's enrolment service registered the wrapper before its creation transaction,
+   * so discovery watches it and the creation vote can be recognised — but it is NOT yet a wrapper we vote
+   * through. It becomes `active` only once the creation transaction has EXECUTED on chain and the result
+   * passes the wrapper check (wrapper runbook, change 6). Absent means `active` (entries written before
+   * enrolment states existed).
+   */
+  status?: 'enrolling' | 'active';
 }
+
+export const isActive = (e: WrapperEntry) => e.status !== 'enrolling';
 
 export interface WrapperRegistry {
   list(): Promise<WrapperEntry[]>;
@@ -111,7 +121,16 @@ export class FileWrapperRegistry extends MemoryWrapperRegistry {
   }
 }
 
-/** Is this page an enrolled wrapper page in the registry? (The on-chain check is `checkWrapper`.) */
+/**
+ * Is this page an ACTIVE enrolled wrapper page in the registry? (The on-chain check is `checkWrapper`.)
+ * A wrapper still enrolling is not one we vote through: its creation has not executed yet.
+ */
 export async function isRegisteredWrapperPage(reg: WrapperRegistry, page: string): Promise<boolean> {
-  return (await reg.list()).some((e) => norm(e.wrapperPage) === norm(page));
+  return (await reg.list()).some((e) => isActive(e) && norm(e.wrapperPage) === norm(page));
+}
+
+/** The registry entry (any status) whose wrapper book is, or contains, this account. */
+export async function wrapperOwning(reg: WrapperRegistry, account: string): Promise<WrapperEntry | undefined> {
+  const a = norm(account);
+  return (await reg.list()).find((e) => a === norm(e.wrapperBook) || a.startsWith(`${norm(e.wrapperBook)}/`));
 }

@@ -38,6 +38,8 @@ import { singleKeyring } from '../src/signer/keyring.js';
 import { Orchestrator } from '../src/orchestrator.js';
 import { loadConfig } from '../src/config.js';
 import { WrapperChain, submittedVote } from './support/wrapper-chain.js';
+import { MemoryWrapperRegistry } from '../src/registry/wrappers.js';
+import { PageState } from '../src/ops/rotate.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'ab'.repeat(32);
@@ -202,15 +204,21 @@ function wrapperSetup(enrolledPages: string[], decision: ConstructorParameters<t
   const store = new MemoryStore();
   const policy = new MockPolicyClient(decision);
   const signer = new LocalSigner(new Uint8Array(32).fill(9));
+  // Seats: the org page holds every enrolled wrapper as a delegate (enrollment.test.ts covers the others).
+  const registry = new MemoryWrapperRegistry();
+  const orgPage: PageState = { version: 1, threshold: 2, keyHashes: [], entries: enrolledPages.map((p) => ({ keyHash: null, delegate: p.replace(/\/\d+$/, '') })) };
   const o = new Orchestrator({
     accumulate: acc, keyring: singleKeyring(signer, TS_PAGE), policy, store, resolver: new Resolver(acc), logger: silent,
     wrapper: {
       ourBook: TS_BOOK, ourPage: TS_PAGE, isEnrolledWrapperPage: enrolled(...enrolledPages),
       wrapperBooks: async () => enrolledPages.map((p) => p.replace(/\/\d+$/, '')),
       checkWrapper: async () => ({ ok: true }),   // the invariant has its own suite (wrapper-invariant.test.ts)
+      registry,
+      readPage: async (u) => { if (u.toLowerCase() !== ORG) throw new Error(`no page ${u}`); return orgPage; },
     },
   });
-  return { acc, store, policy, o };
+  for (const p of enrolledPages) void registry.upsert({ wrapperBook: p.replace(/\/\d+$/, ''), wrapperPage: p, subjectId: p, enrolledAt: 1, seats: [] });
+  return { acc, store, policy, o, registry };
 }
 const REF = { txHash: TX, signerUrl: TS_PAGE, principal: PRINCIPAL };
 

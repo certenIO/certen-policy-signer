@@ -77,7 +77,11 @@ describe('wrapper discovery', () => {
     const o = new Orchestrator({
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), TS_PAGE), policy: new MockPolicyClient({ decision: 'approve' }),
       store: new MemoryStore(), resolver: new Resolver(acc), logger: silent,
-      wrapper: { ourBook: TS_BOOK, ourPage: TS_PAGE, isEnrolledWrapperPage: (p) => isRegisteredWrapperPage(reg, p), wrapperBooks: async () => (await reg.list()).map((e) => e.wrapperBook), checkWrapper: async () => ({ ok: true }) },
+      wrapper: {
+        ourBook: TS_BOOK, ourPage: TS_PAGE, isEnrolledWrapperPage: (p) => isRegisteredWrapperPage(reg, p), wrapperBooks: async () => (await reg.list()).map((e) => e.wrapperBook),
+        checkWrapper: async () => ({ ok: true }), registry: reg,
+        readPage: async () => ({ version: 1, threshold: 1, keyHashes: [], entries: [{ keyHash: null, delegate: 'acc://p.acme/id' }] }),
+      },
     });
     await tick(new Poller(acc, o, TS_PAGE, 1000, silent, Date.now, undefined, TS_BOOK, { registry: reg, concurrency: 8 }));
     expect(acc.submissions).toHaveLength(1);

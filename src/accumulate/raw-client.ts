@@ -118,6 +118,9 @@ export class RawAccumulateClient implements AccumulateClient {
       const status: string = (rec?.status ?? '').toString();
       const executed = /delivered|executed/i.test(status);
       const expired = /expired/i.test(status);
+      // A final error status (the transaction ran and failed). Not used to retire a vote — the resolver
+      // never reads it — only to stop waiting on enrolment settlement for a transaction that will not execute.
+      const failed = !executed && !expired && /fail|error|reject/i.test(status);
       const principal = rawTransaction?.header?.principal ?? '';
       return {
         found: true,
@@ -129,6 +132,7 @@ export class RawAccumulateClient implements AccumulateClient {
         header: extractTxHeader(rawTransaction, String(principal)),
         executed,
         expired,
+        ...(failed ? { failed } : {}),
       };
     } catch (e) {
       // "The chain has no such record" and "we could not reach the chain" are different answers, and the

@@ -28,7 +28,19 @@ export interface PendingRef {
    * recorded there, and a wrong hint simply finds none. Absent, every enrolled wrapper book is read.
    */
   wrapperBook?: string;
+  /** Wrapper mode: what this work is. Set by the orchestrator only (see `AttachmentKind`). */
+  kind?: AttachmentKind;
 }
+
+/**
+ * What a wrapper-mode vote is for (wrapper runbook, change 6):
+ *   wrapper_create  adding Trust Stamp as a delegate on a new wrapper page. We vote DIRECTLY on our page,
+ *                   as a new owner of that page (`chain/update_key_page.go:65-73`): the delegate entry that
+ *                   would let us vote through the wrapper does not exist until this executes.
+ *   seat_attach     an org page adding the wrapper as a delegate. Through `[wrapper page]`.
+ *   vote            an ordinary transaction an enrolled person approved through their wrapper.
+ */
+export type AttachmentKind = 'wrapper_create' | 'seat_attach' | 'vote';
 
 /**
  * WHO A TRANSACTION IS ABOUT — the end user whose policy decision gates it.
@@ -309,6 +321,8 @@ export interface PolicyRequest {
    * stands for a different person's live check. Absent outside wrapper mode.
    */
   wrapper?: { page: string; path: string[] };
+  /** Wrapper mode only: what this vote is for. See `AttachmentKind`. */
+  attachmentKind?: AttachmentKind;
   /** `sha256:` + hex of the canonical JSON of this signer's effective config, secrets removed. */
   configVersion?: string;
   /** Assets moved or referenced by decoded legs. See `LegAsset`. */
@@ -405,6 +419,10 @@ export interface SigningRequest {
   /** Wrapper mode: the path this vote travels, hop order, and the principal the tx was read at. */
   delegators?: string[];
   principal?: string;
+  /** Wrapper mode: what the vote was for, and — for enrolment — whether the registry has caught up with the chain. */
+  kind?: AttachmentKind;
+  settled?: 'executed' | 'failed' | 'refused';
+  settleAttempts?: number;
   operationId?: string;
   account?: string;
   signerUrl: string;

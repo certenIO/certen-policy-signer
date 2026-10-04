@@ -6,6 +6,7 @@ import { KeyPageOp, KeyPageResult } from './ops/keypage.js';
 import { PageState } from './ops/rotate.js';
 import { Orchestrator } from './orchestrator.js';
 import { bookOf } from './delegation/path.js';
+import { WrapperRegistry } from './registry/wrappers.js';
 import { Store } from './store/store.js';
 import { Keyring } from './signer/keyring.js';
 import { AccumulateClient } from './accumulate/client.js';
@@ -35,6 +36,8 @@ export interface HealthSource {
 }
 
 export interface ServerDeps {
+  /** Wrapper mode: the enrolment registry behind `/v1/admin/wrappers`. Absent => that route is 404. */
+  wrapperRegistry?: WrapperRegistry;
   orchestrator: Orchestrator;
   store: Store;
   keyring: Keyring;
@@ -247,6 +250,28 @@ export function createServer(d: ServerDeps): http.Server {
           ...(reqRow.delegators?.length ? { wrapperBook: bookOf(reqRow.delegators[0]!) } : {}),
         }).catch(() => {});
         return json(res, 202, { retrying: m[1] });
+      }
+      // GET|POST /v1/admin/wrappers — the enrolment registry (wrapper mode). POST registers a wrapper as
+      // ENROLLING, before its creation transaction is submitted, so discovery watches it and the creation
+      // vote is recognised. It never makes a wrapper active: that happens only when the creation executes
+      // on chain and the result passes the wrapper check (wrapper runbook, change 6).
+      if (path === '/v1/admin/wrappers' && (method === 'GET' || method === 'POST')) {
+        if (!d.wrapperRegistry) return json(res, 404, { error: 'not in wrapper mode' });
+        if (method === 'GET') return json(res, 200, { wrappers: await d.wrapperRegistry.list() });
+        let b: any;
+        try { b = JSON.parse((await readBody(req)) || '{}'); } catch { return json(res, 400, { error: 'body must be JSON' }); }
+        const book = typeof b.wrapper_book === 'string' ? b.wrapper_book.replace(/\/+$/, '') : '';
+        if (!/^acc:\/\/[^\s/]+(\/[^\s/]+)+$/i.test(book) || /\/\d+$/.test(book)) return json(res, 400, { error: 'wrapper_book must be an acc:// key book URL' });
+        if (typeof b.subject_id !== 'string' || !b.subject_id || b.subject_id.length > 256) return json(res, 400, { error: 'subject_id required (at most 256 characters)' });
+        const existing = await d.wrapperRegistry.get(book);
+        if (existing && existing.status !== 'enrolling') return json(res, 409, { error: 'already an active wrapper', wrapper: existing });
+        // The subject is what every later vote through this wrapper stands for. Re-registering under a
+        // different subject is refused rather than silently re-pointed, even before activation.
+        if (existing && existing.subjectId !== b.subject_id) return json(res, 409, { error: 'already enrolling for a different subject', wrapper: existing });
+        const entry = { wrapperBook: book, wrapperPage: `${book}/1`, subjectId: b.subject_id, enrolledAt: 0, seats: [], status: 'enrolling' as const };
+        await d.wrapperRegistry.upsert(entry);
+        d.logger.info({ audit: 'wrapper_enrolling', wrapper: book, subject: b.subject_id }, 'wrapper registered as enrolling');
+        return json(res, 201, { wrapper: entry });
       }
       // GET /v1/config/version — the signer-config version stamped on every PolicyRequest and Receipt (6.3).
       if (method === 'GET' && path === '/v1/config/version') {

@@ -186,6 +186,8 @@ async function main() {
       // nobody can meet without it, and the wrapper governed by itself alone.
       checkWrapper: (book) => checkWrapper(wrapperReader, book, scopes[0].book),
       checkWrapperChange: (book, tx) => checkWrapperChange(wrapperReader, book, scopes[0].book, tx),
+      registry: reg,
+      readPage: (url) => wrapperReader.readPage(url),
     };
     logger.info({ page: scopes[0].page, registry: regPath ?? '(memory)', wrappers: (await reg.list()).length }, 'attachment model: WRAPPER delegate');
   }
@@ -264,6 +266,21 @@ async function main() {
       requireSignatureData: cfg.behavior.require_signature_data,
     },
   });
+
+  // Wrapper mode: enrolment settlement on its OWN timer, always on — not a step of a successful poll cycle,
+  // so a push-only deployment or a run of failing cycles still brings the registry up to date once the
+  // enrolment transactions execute (wrapper runbook, change 6).
+  if (wrapperMode) {
+    const settleEvery = Math.max(5, cfg.trigger.poller.interval_seconds) * 1000;
+    let settling = false;
+    setInterval(() => {
+      if (settling) return;
+      settling = true;
+      orchestrator.settleEnrolments()
+        .catch((e) => logger.warn({ err: (e as Error).message }, 'enrolment settlement failed; will retry'))
+        .finally(() => { settling = false; });
+    }, settleEvery).unref();
+  }
 
   // --- SR6 startup self-check: EACH scope's public key MUST be verifiably on its on-chain page ---
   // Fail-closed, per scope. A wallet that cannot prove it holds a key on a page it claims to sign for is
@@ -382,6 +399,7 @@ async function main() {
   const server = createServer({
     relay, relayClients, officerIntake: officerIntake?.handle, configVersion: cfg.configVersion,
     orchestrator, store, keyring, accumulate, pause, logger, poller: pollerHealth,
+    ...(wrapperRegistry ? { wrapperRegistry } : {}),
     webhookHmacSecret: cfg.trigger.webhook.enabled ? cfg.trigger.webhook.hmac_secret : undefined,
     webhookSignatureHeader: cfg.trigger.webhook.signature_header,
     adminApiKey: cfg.admin.api_key,

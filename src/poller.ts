@@ -99,9 +99,16 @@ export class Poller {
       while (next < wrappers.length) {
         const w = wrappers[next++]!;
         try {
-          for (const p of await this.acc.listPendingForAccount(w.wrapperBook)) {
-            if (!p.txHash || !p.principal) continue;
-            out.push({ txHash: p.txHash, signerUrl: this.signerUrl, principal: p.principal, wrapperBook: w.wrapperBook });
+          // A wrapper still being created is also watched at its PAGE: the creation transaction's
+          // principal is the page itself, which its temporary key satisfies, so the transaction waits on
+          // the new owners rather than on the book (wrapper runbook, change 6).
+          const where = w.status === 'enrolling' ? [w.wrapperBook, w.wrapperPage] : [w.wrapperBook];
+          for (const account of where) {
+            for (const p of await this.acc.listPendingForAccount(account)) {
+              if (!p.txHash || !p.principal) continue;
+              if (out.some((o) => o.txHash === p.txHash && o.wrapperBook === w.wrapperBook)) continue;
+              out.push({ txHash: p.txHash, signerUrl: this.signerUrl, principal: p.principal, wrapperBook: w.wrapperBook });
+            }
           }
         } catch (e) {
           failures++;

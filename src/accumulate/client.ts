@@ -21,6 +21,8 @@ export interface PendingTxResult {
   header?: ExtractedHeader;
   executed?: boolean;
   expired?: boolean;
+  /** The network recorded the transaction as FAILED (a final, non-success status). */
+  failed?: boolean;
 }
 
 export interface SignerInfo {
@@ -187,6 +189,7 @@ export interface MockPending {
   principal: string;
   executed?: boolean;
   expired?: boolean;
+  failed?: boolean;
 }
 
 export class MockAccumulateClient implements AccumulateClient {
@@ -213,6 +216,7 @@ export class MockAccumulateClient implements AccumulateClient {
       header: extractTxHeader(rawTransaction, p.principal),
       executed: p.executed,
       expired: p.expired,
+      ...(p.failed ? { failed: true } : {}),
     };
   }
   async getSignerInfo(): Promise<SignerInfo> { return { ...this.signer }; }

@@ -21,6 +21,7 @@ import { singleKeyring } from '../src/signer/keyring.js';
 import { Orchestrator } from '../src/orchestrator.js';
 import { Notifier, NotifyEvent } from '../src/notify.js';
 import { WrapperChain } from './support/wrapper-chain.js';
+import { MemoryWrapperRegistry } from '../src/registry/wrappers.js';
 
 const silent = pino({ level: 'silent' });
 const B = 'acc://p.acme/id';
@@ -280,12 +281,16 @@ describe('the orchestrator checks the wrapper before asking the engine', () => {
     const store = new MemoryStore();
     const policy = new MockPolicyClient({ decision: 'approve' });
     const r = reader(st);
+    const reg = new MemoryWrapperRegistry();
+    void reg.upsert({ wrapperBook: B, wrapperPage: B1, subjectId: 'alice', enrolledAt: 1, seats: [] });
     const o = new Orchestrator({
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), TS_PAGE), policy, store, resolver: new Resolver(acc), logger: silent, notifier,
       wrapper: {
         ourBook: T, ourPage: TS_PAGE, isEnrolledWrapperPage: async (p) => p.toLowerCase() === B1, wrapperBooks: async () => [B],
         checkWrapper: (book) => checkWrapper(r, book, T),
         checkWrapperChange: (book, tx) => checkWrapperChange(r, book, T, tx),
+        registry: reg,
+        readPage: async () => page(2, { keyHash: KEY }, { delegate: B }),
       },
     });
     return { acc, store, policy, events, o, ref: { txHash: TX, signerUrl: TS_PAGE, principal } };

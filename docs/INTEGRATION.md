@@ -221,11 +221,24 @@ POST <policy.url>    content-type: application/json
     "page": "acc://alice.acme/id/1",                 // the enrolled wrapper page; one request per wrapper on the tx
     "path": ["acc://alice.acme/id/1", "acc://acme.acme/treasury/1"]  // the path the vote travels, first hop first
   },
+  "attachmentKind": "vote",           // attachment_model: wrapper only — "wrapper_create" | "seat_attach" | "vote" (see below)
   "display":       [["Principal", "acc://acme.acme/orders"], ["Body type", "writeData"], ["Payer", "acc://acme.acme"]],  // Phase 7: what a human is shown
   "summaryHash":   "77533e7e…",       // tcl-summary/v1 of `display` (lowercase hex); tx hash and vote are NOT inside
   "expiresAt":     "2026-07-26T12:00:00Z"         // THIS REQUEST's validity (policy TTL) — not the on-chain deadline
 }
 ```
+
+### Wrapper mode: `wrapper` and `attachmentKind`
+
+With `attachment_model: wrapper` the signer is a delegate on each subscriber's wrapper book, and every
+request names the wrapper it is for: `wrapper.page` and the path the vote travels. One transaction can
+carry one request per wrapper on it, each its own question. `attachmentKind` says what the vote does:
+`wrapper_create` (adding the signer to a new wrapper page; signed directly, `wrapper.path` is empty),
+`seat_attach` (an org page adding the wrapper as a delegate) or `vote`.
+
+The signer proves the wrapper still REQUIRES its vote before asking you. It does not prove which person
+the wrapper's other entry belongs to: bind `wrapper.page` to your enrolled subject yourself, on every
+request, and deny a page you did not enrol.
 
 ### Pinned contracts, self-calls, governance and acceptances (Phase 6)
 

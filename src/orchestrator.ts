@@ -9,10 +9,12 @@ import { Resolver } from './resolver.js';
 import { Logger } from './logger.js';
 import { VoteBackend, VoteResult, DirectVoteBackend } from './vote/backend.js';
 import { Notifier, NotifyEvent, NULL_NOTIFIER } from './notify.js';
-import { PendingRef, PolicyRequest, Receipt, ResolvedTx, SigningRequest } from './types.js';
+import { AttachmentKind, PendingRef, PolicyRequest, Receipt, ResolvedTx, SigningRequest } from './types.js';
 import { headerDeadlinePassed } from './accumulate/header.js';
 import { withDisplay } from './display.js';
-import { bookOf, resolveWrapperPaths, workKey } from './delegation/path.js';
+import { bookOf, resolveWrapperPaths, sameUrl, workKey } from './delegation/path.js';
+import { WrapperRegistry, wrapperOwning } from './registry/wrappers.js';
+import { PageState } from './ops/rotate.js';
 import { AuthorityVote } from './accumulate/client.js';
 import { WrapperCheck, targetsWrapper } from './delegation/wrapper.js';
 
@@ -94,7 +96,39 @@ export interface WrapperModeOptions {
   checkWrapper?(wrapperBook: string): Promise<WrapperCheck>;
   /** The same, for a transaction ON the wrapper: is it still valid after the change executes? */
   checkWrapperChange?(wrapperBook: string, tx: ResolvedTx): Promise<WrapperCheck>;
+  /**
+   * Enrolment (wrapper runbook, change 6): the registry to recognise a wrapper being created and to record
+   * seats, and a page reader to confirm a seat on chain. Absent = enrolment votes are not recognised and
+   * every vote's seat is refused (fail closed).
+   */
+  registry?: WrapperRegistry;
+  readPage?(url: string): Promise<PageState>;
 }
+
+/**
+ * Does this UpdateKeyPage make `book` a NEW OWNER of the page — an `add` whose entry delegates to it, or an
+ * `update` whose new entry does (`chain/update_key_page.go:362-378`)? Matched EXACTLY: the network accepts
+ * a new owner's authority signature only when it names that very URL (`chain/utils.go:24`), so an entry
+ * naming a page of the book would wait forever for a signature nobody can send.
+ */
+function addsDelegate(tx: ResolvedTx, book: string): boolean {
+  return tx.governance?.kind === 'updateKeyPage' && tx.governance.operations.some((op) =>
+    (op.type === 'add' && typeof op.delegate === 'string' && sameUrl(op.delegate, book))
+    || (op.type === 'update' && typeof op.newDelegate === 'string' && sameUrl(op.newDelegate, book)));
+}
+
+/** The same test on a raw body, for discovery (before the resolver has produced governance facts). */
+function bodyAddsDelegate(body: { type: string; [k: string]: unknown } | undefined, book: string): boolean {
+  if (body?.type !== 'updateKeyPage' || !Array.isArray(body['operation'])) return false;
+  return (body['operation'] as Array<Record<string, any>>).some((op) =>
+    (op?.type === 'add' && typeof op?.entry?.delegate === 'string' && sameUrl(op.entry.delegate, book))
+    || (op?.type === 'update' && typeof op?.newEntry?.delegate === 'string' && sameUrl(op.newEntry.delegate, book)));
+}
+
+/** At most this many enrolment rows are checked per settlement pass, so a backlog cannot stall anything. */
+const SETTLE_BATCH = 50;
+/** A signed enrolment tx the node keeps reporting as not found is given up on after this many passes. */
+const SETTLE_MAX_MISSING = 20;
 
 /** The receipt's key fields: `workKey` only when it differs from the hash, so existing receipts keep their shape. */
 function receiptKey(tx: { txHash: string; workKey?: string }): { txHash: string; workKey?: string } {
@@ -213,9 +247,21 @@ export class Orchestrator {
       }
       principal = p.principal;
     }
+    // Wrapper CREATION (change 6): the principal is a page of a wrapper the enrolment service registered,
+    // and the body adds our book as a delegate. We vote as a new owner, directly on our page — there is no
+    // path yet, because the entry that would make one is what this transaction creates. Everything is
+    // re-checked from chain state in `run` before the engine is asked.
+    const work: PendingRef[] = [];
+    const owner = w.registry ? await wrapperOwning(w.registry, principal) : undefined;
+    if (owner?.status === 'enrolling' && !sameUrl(principal, owner.wrapperBook)) {
+      const p = await accumulate.getPendingTx(ref.txHash, principal);
+      if (p.found && bodyAddsDelegate(p.body, w.ourBook)) {
+        work.push({ txHash: ref.txHash, signerUrl: w.ourPage, principal, delegators: [], kind: 'wrapper_create', wrapperBook: owner.wrapperBook });
+      }
+    }
     if (!accumulate.getAuthoritySignatures) {
       logger.error({ tx: ref.txHash }, 'wrapper mode needs a client that reads authority signatures; signing nothing');
-      return [];
+      return work;
     }
     // Read at each wrapper book's partition: that is where a person's book's vote through the wrapper is
     // recorded, and only after the network checked the delegation (see src/delegation/path.ts). One
@@ -239,10 +285,105 @@ export class Orchestrator {
       paths = await resolveWrapperPaths(votes, w);
     } catch (e) {
       logger.warn({ tx: ref.txHash, err: (e as Error).message }, 'wrapper mode: enrolment could not be confirmed; signing nothing this cycle');
-      return [];
+      return work;
     }
-    if (!paths.length) logger.debug({ tx: ref.txHash }, 'no person has approved through an enrolled wrapper yet');
-    return paths.map((p) => ({ txHash: ref.txHash, signerUrl: w.ourPage, principal, delegators: p.path, wrapperBook: bookOf(p.wrapperPage) }));
+    if (!paths.length && !work.length) logger.debug({ tx: ref.txHash }, 'no person has approved through an enrolled wrapper yet');
+    return [...work, ...paths.map((p) => ({ txHash: ref.txHash, signerUrl: w.ourPage, principal, delegators: p.path, wrapperBook: bookOf(p.wrapperPage) }))];
+  }
+
+  /**
+   * Is the org page this vote travels to really holding the wrapper as a delegate? Wrapper runbook,
+   * change 6, step 5.
+   *
+   * Read on EVERY vote, not only for an unrecorded seat: a seat the org removed would otherwise be
+   * discovered only when the vote counted toward nothing. The page is `path[1]`, the hop after the
+   * wrapper. A path with no such hop is not a seat at all and is refused: in this model a wrapper sits on
+   * org PAGES as a delegate. A wrapper made a direct authority of an account (or added by
+   * `UpdateAccountAuth`) is outside it, and is refused rather than voted through unchecked.
+   *   - on chain and recorded      → go on;
+   *   - on chain, not recorded     → record it (reconciled) and go on;
+   *   - not on chain               → remove it if recorded, and refuse;
+   *   - unreadable                 → refuse for now, retryable.
+   */
+  private async reconcileSeat(book: string, path: string[], txHash: string): Promise<WrapperCheck> {
+    const w = this.d.wrapper!;
+    const orgPage = path[1];
+    if (!orgPage) return { ok: false, reason: `the path ${path.join(' > ')} names no org page for the wrapper to sit on` };
+    if (!w.registry || !w.readPage) return { ok: false, reason: 'no seat registry is wired' };
+    let st: PageState;
+    try {
+      st = await w.readPage(orgPage);
+    } catch (e) {
+      return { ok: false, reason: `cannot read ${orgPage}: ${(e as Error).message}`, unreadable: true };
+    }
+    const onChain = st.entries.some((e) => e.delegate !== null && sameUrl(e.delegate, book));
+    const entry = await w.registry.get(book);
+    const recorded = !!entry?.seats.some((s) => sameUrl(s.orgPage, orgPage));
+    if (!onChain) {
+      if (recorded) await w.registry.removeSeat(book, orgPage);
+      return { ok: false, reason: `${orgPage} does not hold ${book} as a delegate` };
+    }
+    if (!recorded && entry) {
+      await w.registry.addSeat(book, { orgPage, attachedTx: '', attachedAt: this.now() });
+      this.d.logger.info({ tx: txHash, wrapper: book, orgPage }, 'seat found on chain that the registry had not recorded; reconciled');
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Bring the registry up to date with enrolment transactions we voted on. Wrapper runbook, change 6.
+   *
+   * ONLY after the transaction executed on chain — never on our vote alone, which is one signature of
+   * several and proves nothing about the outcome. Called by the poller every cycle.
+   *   wrapper_create executed → the wrapper becomes active, if the chain now shows a valid wrapper;
+   *   seat_attach executed    → the seat is recorded, once the org page really holds the wrapper;
+   *   expired                 → settled as failed; nothing recorded.
+   */
+  async settleEnrolments(): Promise<void> {
+    const w = this.d.wrapper;
+    if (!w?.registry) return;
+    const { store, accumulate, logger } = this.d;
+    const rows = (await store.listRecent(100_000, ['signed'])).map((r) => r.request)
+      .filter((r) => (r.kind === 'wrapper_create' || r.kind === 'seat_attach') && !r.settled && r.principal)
+      .slice(0, SETTLE_BATCH);
+    for (const r of rows) {
+      const key = r.workKey ?? r.txHash;
+      const p = await accumulate.getPendingTx(r.txHash, r.principal!);
+      if (p.unavailable) continue;
+      if (!p.found) {
+        const n = (r.settleAttempts ?? 0) + 1;
+        await store.update(key, n >= SETTLE_MAX_MISSING ? { settled: 'failed', settleAttempts: n } : { settleAttempts: n });
+        continue;
+      }
+      if (p.expired || p.failed) { await store.update(key, { settled: 'failed' }); continue; }
+      if (!p.executed) continue;
+      if (r.kind === 'wrapper_create') {
+        const book = bookOf(r.principal!);
+        const entry = await w.registry.get(book);
+        const check = w.checkWrapper ? await w.checkWrapper(book) : { ok: false as const, reason: 'no wrapper check is wired' };
+        if (!entry || !check.ok) {
+          if (!check.ok && check.unreadable) continue;
+          logger.error({ tx: r.txHash, wrapper: book, reason: !check.ok ? check.reason : 'not registered' }, 'wrapper creation executed but the wrapper does not pass the check; NOT activating it');
+          await store.update(key, { settled: 'refused' });
+          continue;
+        }
+        await w.registry.upsert({ ...entry, status: 'active', enrolledAt: this.now() });
+        logger.info({ tx: r.txHash, wrapper: book }, 'wrapper creation executed; wrapper is now active');
+      } else {
+        const book = bookOf(r.delegators![0]!);
+        if (!w.readPage) continue;
+        let st: PageState;
+        try { st = await w.readPage(r.principal!); } catch { continue; }
+        if (!st.entries.some((e) => e.delegate !== null && sameUrl(e.delegate, book))) {
+          logger.error({ tx: r.txHash, wrapper: book, orgPage: r.principal }, 'seat attach executed but the org page does not hold the wrapper; not recording a seat');
+          await store.update(key, { settled: 'refused' });
+          continue;
+        }
+        await w.registry.addSeat(book, { orgPage: r.principal!, attachedTx: r.txHash, attachedAt: this.now() });
+        logger.info({ tx: r.txHash, wrapper: book, orgPage: r.principal }, 'seat attach executed; seat recorded');
+      }
+      await store.update(key, { settled: 'executed' });
+    }
   }
 
   /**
@@ -262,7 +403,7 @@ export class Orchestrator {
     // A wrapper vote's path is derived from chain state by `handleAll`, never assumed. A bare reference
     // here in wrapper mode would sign directly on our page, which counts toward nothing (or toward the
     // wrong thing), so it is refused as a programming error rather than guessed at.
-    if (this.d.wrapper && !ref.delegators?.length) {
+    if (this.d.wrapper && !ref.delegators?.length && !(ref.kind === 'wrapper_create' && ref.delegators)) {
       throw new Error('wrapper mode: a transaction is handled per delegation path — call handleAll');
     }
     const { store, logger } = this.d;
@@ -292,6 +433,7 @@ export class Orchestrator {
       txHash: ref.txHash, signerUrl: ref.signerUrl, status: 'discovered',
       ...(ref.delegators ? { delegators: ref.delegators } : {}),
       ...(ref.principal ? { principal: ref.principal } : {}),
+      ...(ref.kind ? { kind: ref.kind } : {}),
       attempts: 0, createdAt: this.now(), updatedAt: this.now(),
     };
     try {
@@ -349,12 +491,32 @@ export class Orchestrator {
     // Wrapper runbook, change 5: our vote only means something while the wrapper requires it. Checked
     // here, per path, before the engine is asked — there is nothing to decide about a wrapper that can be
     // satisfied without us, and asking would prompt a person's live check for a vote that proves nothing.
-    if (this.d.wrapper && ref.delegators?.length) {
-      const book = bookOf(ref.delegators[0]!);
+    let kind: AttachmentKind | undefined;
+    if (this.d.wrapper) {
       const w = this.d.wrapper;
-      const check = targetsWrapper(tx.account, book)
-        ? (w.checkWrapperChange ? await w.checkWrapperChange(book, tx) : { ok: false as const, reason: 'no check for changes to the wrapper is wired' })
-        : (w.checkWrapper ? await w.checkWrapper(book) : { ok: false as const, reason: 'no wrapper check is wired' });
+      const creating = ref.kind === 'wrapper_create';
+      const book = creating ? (ref.wrapperBook ?? bookOf(tx.account)) : bookOf(ref.delegators![0]!);
+      // A seat attach is ONE hop: the wrapper is the new owner of the page the transaction changes. A longer
+      // path to a page that happens to add the wrapper is an ordinary vote and gets the seat check.
+      kind = creating ? 'wrapper_create'
+        : !targetsWrapper(tx.account, book) && ref.delegators!.length === 1 && addsDelegate(tx, book) ? 'seat_attach' : 'vote';
+      await store.update(key, { kind });
+      let check: WrapperCheck;
+      if (creating) {
+        // Re-derived, not trusted from discovery: a registered wrapper, this page of it, a body that adds
+        // our book — and the wrapper as it will be AFTER the change must pass the full check.
+        const entry = w.registry ? await wrapperOwning(w.registry, tx.account) : undefined;
+        check = !entry || entry.status !== 'enrolling' || !sameUrl(entry.wrapperBook, book) || !targetsWrapper(tx.account, book) || sameUrl(tx.account, book)
+          ? { ok: false, reason: `${tx.account} is not a page of a wrapper being enrolled` }
+          : !addsDelegate(tx, w.ourBook)
+            ? { ok: false, reason: 'the transaction does not add Trust Stamp as a delegate' }
+            : w.checkWrapperChange ? await w.checkWrapperChange(book, tx) : { ok: false, reason: 'no check for changes to the wrapper is wired' };
+      } else if (targetsWrapper(tx.account, book)) {
+        check = w.checkWrapperChange ? await w.checkWrapperChange(book, tx) : { ok: false, reason: 'no check for changes to the wrapper is wired' };
+      } else {
+        check = w.checkWrapper ? await w.checkWrapper(book) : { ok: false, reason: 'no wrapper check is wired' };
+        if (check.ok && kind === 'vote') check = await this.reconcileSeat(book, ref.delegators!, tx.txHash);
+      }
       if (!check.ok) {
         // Could not READ the wrapper: no vote, and ask again next poll — an outage is not a verdict.
         if (check.unreadable) {
@@ -414,6 +576,8 @@ export class Orchestrator {
       ...(tx.acceptance ? { acceptance: tx.acceptance } : {}),
       // Wrapper mode: which person's wrapper this vote is for. Each path is its own question to the engine.
       ...(ref.delegators?.length ? { wrapper: { page: ref.delegators[0]!, path: [...ref.delegators] } } : {}),
+      ...(kind === 'wrapper_create' ? { wrapper: { page: tx.account, path: [] } } : {}),
+      ...(kind ? { attachmentKind: kind } : {}),
       // Policy TTL for THIS request. Not the on-chain deadline, which is `header.expiresAt`.
       expiresAt: new Date(this.now() + this.opt.policyTtlSeconds * 1000).toISOString(),
     }, { labels: this.d.displayLabels });
