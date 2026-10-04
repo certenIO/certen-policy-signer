@@ -11,9 +11,9 @@
  *   Q   (step 7) Bob, with Q/id the same shape; O/book/1 becomes 3-of-3.
  *   Z   (step 9) a subscriber whose book name sorts BEFORE T's — the UpdateKey re-index question.
  *
- * T is named so its book sorts before P's and Q's (lowercase URL order): the signer's wrapper check
- * requires Trust Stamp's entry to be every wrapper page's FIRST entry (see src/delegation/wrapper.ts for
- * why), and refuses a wrapper that does not satisfy it.
+ * T is named so its book sorts AFTER P's and Q's (lowercase URL order), as acc://truststamp.acme does
+ * after acc://alice.acme. Entry order is not a condition of the signer's wrapper check; step 9 shows the
+ * core UpdateKey re-index that order exposes (src/delegation/wrapper.ts), which is accumulate-core's to fix.
  *
  * What it proves, each as an assertion observed on chain (evidence in scripts/verify/out/):
  *   2  wrapper creation co-signed DIRECTLY as a new owner; the result is a valid 2-of-2; registry active.
@@ -178,8 +178,8 @@ async function bypassStep(f: any, T: { adi: string; book: string; page: string; 
     const Z = await createOrg(f, control ? `acc://z${ts}.acme` : `acc://a0${ts}.acme`, 0x75, '200000');
     assert(step, `the subscriber sorts ${control ? 'after' : 'before'} Trust Stamp (${Z.book} vs ${T.book})`, control ? Z.book.toLowerCase() > T.book.toLowerCase() : Z.book.toLowerCase() < T.book.toLowerCase());
     const WZ = await createWrapperBook(f, Z);
-    // The signer under test REFUSES this wrapper (Trust Stamp would not be the first entry), so the
-    // script co-signs its creation as T itself — it holds K_ts because it generated it.
+    // The script co-signs this wrapper's creation as T itself (it holds K_ts because it generated it), so
+    // step 9 runs on its own without the signer under test.
     const zCreate = await initiate(new core.Transaction({ header: { principal: WZ.wPage }, body: creationBody(Z.book, T.book, WZ.temp) }), WZ.wPage, WZ.temp, 'Z wrapper creation');
     await cosign(Z.key.seed, Z.page, zCreate, WZ.wPage, [], 'Z as new owner');
     await cosign(T.key.seed, T.page, zCreate, WZ.wPage, [], 'T as new owner (by the script)');
@@ -187,7 +187,7 @@ async function bypassStep(f: any, T: { adi: string; book: string; page: string; 
     const zBefore = await readPage(raw as any, WZ.wPage);
     evidence.queries[control ? 'controlWrapperBefore' : 'zWrapperBefore'] = zBefore;
     const zCheck = await checkWrapper(chainWrapperReader(raw as any), WZ.wBook, T.book);
-    assert(step, control ? 'the signer check ACCEPTS this wrapper' : 'the signer check refuses this wrapper', control ? zCheck.ok : !zCheck.ok, zCheck);
+    assert(step, 'the signer check accepts this wrapper (entry order is not checked)', zCheck.ok, zCheck);
     // A data account governed only by the Z wrapper. Naming WZ as its authority needs WZ's own approval,
     // which is Z's and T's votes through [WZ/1] (the script holds both keys).
     const zData = `${Z.adi}/zdata`;
@@ -254,12 +254,12 @@ async function main() {
   // ── 1. world ────────────────────────────────────────────────────────────────────────────────────
   line('[1] Provisioning T (Trust Stamp), P (Alice), O (the org) from the faucet…');
   const f = await fundLite();
-  const T = await createOrg(f, `acc://a${ts}ts.acme`, 0x71, '200000');
+  const T = await createOrg(f, `acc://t${ts}ts.acme`, 0x71, '200000');
   const P = await createOrg(f, `acc://p${ts}.acme`, 0x72, '200000');
   const O = await createPrincipal(f, `acc://o${ts}.acme`, 0x73, '200000');
   evidence.world = { T: T.book, P: P.book, O: O.book, oData: O.dataAccount };
   line(`      T ${T.page}\n      P ${P.page}\n      O ${O.page}  data ${O.dataAccount}`);
-  assert('1', `Trust Stamp's book sorts before Alice's (${T.book} < ${P.book})`, T.book.toLowerCase() < P.book.toLowerCase());
+  assert('1', `Trust Stamp's book sorts after Alice's, as truststamp.acme does after alice.acme (${T.book} > ${P.book})`, T.book.toLowerCase() > P.book.toLowerCase());
 
   // The signer under test.
   const deny = new Set<string>();
@@ -291,9 +291,6 @@ observability: { log_level: "info" }
     const W = await createWrapperBook(f, P);
     const reg = await admin(healthPort, 'POST', '/v1/admin/wrappers', { wrapper_book: W.wBook, subject_id: 'alice', subscriber_book: P.book });
     assert('2', 'the wrapper is registered as ENROLLING', reg.status === 201 && reg.json?.wrapper?.status === 'enrolling', reg);
-    // The naming rule, at registration: a subscriber book that sorts before Trust Stamp's is refused there.
-    const early = await admin(healthPort, 'POST', '/v1/admin/wrappers', { wrapper_book: `acc://a0${ts}.acme/id`, subject_id: 'eve', subscriber_book: `acc://a0${ts}.acme/book` });
-    assert('2', 'a subscriber book sorting before the Trust Stamp book is refused at registration (422 wrapper_order)', early.status === 422 && early.json?.error === 'wrapper_order', early);
     const createTx = await initiate(new core.Transaction({ header: { principal: W.wPage }, body: creationBody(P.book, T.book, W.temp) }), W.wPage, W.temp, 'wrapper creation');
     evidence.txids.wrapperCreate = `${createTx}@${W.wPage}`;
     line(`      creation tx ${createTx}`);

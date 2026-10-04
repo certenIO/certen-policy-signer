@@ -29,8 +29,8 @@ import { AddressInfo } from 'node:net';
 
 const silent = pino({ level: 'silent' });
 const TX = 'ab'.repeat(32);
-const T = 'acc://a-ts.acme/book';           // sorts before every subscriber book below
-const TS_PAGE = 'acc://a-ts.acme/book/1';
+const T = 'acc://truststamp.acme/book';     // sorts AFTER the subscriber books below; order is not checked
+const TS_PAGE = 'acc://truststamp.acme/book/1';
 const B = 'acc://p.acme/id';
 const B1 = 'acc://p.acme/id/1';
 const ALICE_BOOK = 'acc://p.acme/book';
@@ -282,14 +282,20 @@ describe('registering an enrolling wrapper', () => {
     server.close();
   });
 
-  it('refuses a subscriber book that sorts before Trust Stamp\'s, with a reason, before anything is on chain', async () => {
+  it('registers a subscriber book that sorts before Trust Stamp\'s: entry order is not a condition', async () => {
     const reg = new MemoryWrapperRegistry();
     const { server, call } = await serve(reg);
-    // T here is acc://a-ts.acme/book, and acc://a-a.acme/book sorts before it ('a' < 't').
-    const early = await call('POST', { wrapper_book: 'acc://a-a.acme/id', subject_id: 'eve', subscriber_book: 'acc://a-a.acme/book' });
-    expect(early.status).toBe(422);
-    expect(early.json).toMatchObject({ error: 'wrapper_order' });
-    expect(early.json.reason).toMatch(/sorts before acc:\/\/a-ts\.acme\/book/);
+    const r = await call('POST', { wrapper_book: 'acc://alice.acme/id', subject_id: 'alice', subscriber_book: 'acc://alice.acme/book' });
+    expect(r.status).toBe(201);
+    expect(await reg.list()).toHaveLength(1);
+    server.close();
+  });
+
+  it('refuses our own book as the subscriber book', async () => {
+    const reg = new MemoryWrapperRegistry();
+    const { server, call } = await serve(reg);
+    const r = await call('POST', { wrapper_book: 'acc://x.acme/id', subject_id: 'x', subscriber_book: 'acc://TrustStamp.acme/book' });
+    expect(r.status).toBe(400);
     expect(await reg.list()).toEqual([]);
     server.close();
   });
@@ -397,19 +403,7 @@ describe('review follow-ups', () => {
   });
 });
 
-describe('the naming rule', () => {
-  it('wrapperOrderProblem: a subscriber book must sort after Trust Stamp\'s, as a lowercase URL', async () => {
-    const { wrapperOrderProblem } = await import('../src/delegation/wrapper.js');
-    expect(wrapperOrderProblem('acc://0truststamp.acme/book', 'acc://alice.acme/book')).toBeUndefined();
-    expect(wrapperOrderProblem('acc://0truststamp.acme/book', 'acc://ZED.acme/book')).toBeUndefined();
-    // The runbook's original name does not sort first against ordinary subscriber names…
-    expect(wrapperOrderProblem('acc://truststamp.acme/book', 'acc://alice.acme/book')).toMatch(/sorts before acc:\/\/truststamp\.acme\/book/);
-    // …and no name beats every possible one: these still sort before the recommended name, and are refused.
-    expect(wrapperOrderProblem('acc://0truststamp.acme/book', 'acc://0-x.acme/book')).toMatch(/sorts before/);
-    expect(wrapperOrderProblem('acc://0truststamp.acme/book', 'acc://00x.acme/book')).toMatch(/sorts before/);
-    expect(wrapperOrderProblem('acc://0truststamp.acme/book', 'ACC://0TRUSTSTAMP.acme/book')).toMatch(/cannot be Trust Stamp's own book/);
-  });
-
+describe('the subscriber book', () => {
   it('the creation vote requires exactly the subscriber book that was registered', async () => {
     const d = setup();
     await d.registry.upsert({ ...(await d.registry.get(B))!, subscriberBook: 'acc://p2.acme/book' });

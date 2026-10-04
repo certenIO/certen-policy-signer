@@ -48,7 +48,7 @@
  * You write a data entry to YOUR OWN data account, and name the user's key book as an ADDITIONAL
  * AUTHORITY in the transaction header:
  *
- *      principal:              acc://0truststamp.acme/enrollments   <- yours. you own it, you pay.
+ *      principal:              acc://truststamp.acme/enrollments   <- yours. you own it, you pay.
  *      header.authorities:   [ acc://alice.acme/book ]              <- theirs. must also approve.
  *      header.expire.atTime:   now + windowMs                       <- unsigned in time => fails
  *
@@ -126,15 +126,11 @@ export const CONFIG = {
 
   /**
    * Your data account. Enrollment records are written here. You must own and fund it.
-   *
-   * The identity is named `0truststamp` on purpose: in the wrapper model (`attachment_model: wrapper`)
-   * Trust Stamp's book must sort BEFORE every subscriber's book, as a lowercase URL, or a subscriber could
-   * satisfy their wrapper without you. A leading `0` sorts before every name starting with a letter.
    */
-  dataAccount: process.env.TS_DATA_ACCOUNT ?? 'acc://0truststamp.acme/enrollments',
+  dataAccount: process.env.TS_DATA_ACCOUNT ?? 'acc://truststamp.acme/enrollments',
 
   /** Your key page — the signer that initiates and PAYS for each enrollment. */
-  signerUrl: process.env.TS_SIGNER_URL ?? 'acc://0truststamp.acme/book/1',
+  signerUrl: process.env.TS_SIGNER_URL ?? 'acc://truststamp.acme/book/1',
 
   /** Your Ed25519 private key, hex. 64 bytes (seed||public) or 32 bytes (seed). */
   privateKeyHex: process.env.TS_PRIVATE_KEY ?? '',

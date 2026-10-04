@@ -52,11 +52,10 @@ describe('checkWrapper', () => {
     expect(await checkWrapper(reader(VALID()), B, T)).toEqual({ ok: true });
   });
 
-  it("refuses the runbook's own naming, where Trust Stamp's book sorts after the subscriber's", async () => {
+  it("accepts a wrapper whatever its entry order: Trust Stamp's book may sort after the subscriber's", async () => {
     const s2 = VALID();
     s2.pages[B1] = page(2, { delegate: 'acc://alice.acme/book' }, { delegate: 'acc://truststamp.acme/book' });
-    const r = await checkWrapper(reader(s2), B, 'acc://truststamp.acme/book');
-    expect(!r.ok && r.reason).toMatch(/not the page's first entry .*UpdateKey/);
+    expect(await checkWrapper(reader(s2), B, 'acc://truststamp.acme/book')).toEqual({ ok: true });
   });
 
   it('refuses a T entry that also carries a key hash', async () => {
@@ -189,9 +188,9 @@ describe('changes to the wrapper itself', () => {
     expect(!r.ok && r.reason).toMatch(/can be met without/);
   });
 
-  it('UpdateKeyPage adding a keyless delegate that sorts BEFORE T: refused (it would take index 0)', async () => {
+  it('UpdateKeyPage adding a keyless delegate that sorts BEFORE T, threshold raised to match: allowed (order is not checked)', async () => {
     const r = await change(VALID(), 'updateKeyPage', ukp({ type: 'add', entry: { delegate: 'acc://0aaa.acme/book' } }, { type: 'setThreshold', threshold: 3 }));
-    expect(!r.ok && r.reason).toMatch(/not the page's first entry/);
+    expect(r).toEqual({ ok: true });
   });
 
   it('reject/response thresholds and allowed lists pass through, but not past what the network allows', async () => {
@@ -244,7 +243,7 @@ describe('changes to the wrapper itself', () => {
     expect(await change(s2, 'updateKey')).toEqual({ ok: true });
   });
 
-  it("THE BYPASS this guards against: with T sorting after Alice, her UpdateKey moves her vote's index into T's place", () => {
+  it("the core UpdateKey re-index, documented not guarded: with T sorting after Alice, her UpdateKey moves her vote's index into T's place", () => {
     // Runbook naming: acc://truststamp.acme/book sorts AFTER acc://alice.acme/book.
     const TS = 'acc://truststamp.acme/book';
     const AL = 'acc://alice.acme/book';
