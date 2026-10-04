@@ -249,7 +249,7 @@ describe('registering an enrolling wrapper', () => {
   async function serve(registry?: MemoryWrapperRegistry) {
     const server = createServer({
       orchestrator: {} as never, store: new MemoryStore(), keyring: {} as never, accumulate: {} as never, pause: { paused: false }, logger: silent,
-      adminApiKey: 'k', ...(registry ? { wrapperRegistry: registry } : {}),
+      adminApiKey: 'k', ...(registry ? { wrapperRegistry: registry, wrapperOurBook: T } : {}),
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const port = (server.address() as AddressInfo).port;
@@ -262,19 +262,35 @@ describe('registering an enrolling wrapper', () => {
     return { server, call };
   }
 
-  it('registers as ENROLLING (never active), needs the admin key, and validates the book', async () => {
+  it('registers as ENROLLING (never active), needs the admin key, and validates the books', async () => {
     const reg = new MemoryWrapperRegistry();
     const { server, call } = await serve(reg);
-    expect((await call('POST', { wrapper_book: B, subject_id: 'alice' }, 'wrong')).status).toBe(401);
-    expect((await call('POST', { wrapper_book: B1, subject_id: 'alice' })).status).toBe(400);   // a page, not a book
-    expect((await call('POST', { wrapper_book: B })).status).toBe(400);                         // no subject
-    const ok = await call('POST', { wrapper_book: B, subject_id: 'alice' });
+    const body = { wrapper_book: B, subject_id: 'alice', subscriber_book: ALICE_BOOK };
+    expect((await call('POST', body, 'wrong')).status).toBe(401);
+    expect((await call('POST', { ...body, wrapper_book: B1 })).status).toBe(400);              // a page, not a book
+    expect((await call('POST', { ...body, subject_id: undefined })).status).toBe(400);         // no subject
+    expect((await call('POST', { ...body, subscriber_book: undefined })).status).toBe(400);    // no subscriber book
+    expect((await call('POST', { ...body, subscriber_book: ALICE })).status).toBe(400);        // a page, not a book
+    const ok = await call('POST', body);
     expect(ok.status).toBe(201);
-    expect(ok.json.wrapper).toMatchObject({ wrapperBook: B, wrapperPage: B1, status: 'enrolling' });
-    expect((await call('POST', { wrapper_book: B, subject_id: 'mallory' })).status).toBe(409);  // cannot re-point while enrolling
+    expect(ok.json.wrapper).toMatchObject({ wrapperBook: B, wrapperPage: B1, subscriberBook: ALICE_BOOK, status: 'enrolling' });
+    expect((await call('POST', { ...body, subject_id: 'mallory' })).status).toBe(409);         // cannot re-point while enrolling
+    expect((await call('POST', { ...body, subscriber_book: 'acc://p2.acme/book' })).status).toBe(409);
     await reg.upsert({ ...(await reg.get(B))!, status: 'active' });
-    expect((await call('POST', { wrapper_book: B, subject_id: 'mallory' })).status).toBe(409);  // cannot reset an active wrapper
+    expect((await call('POST', { ...body, subject_id: 'mallory' })).status).toBe(409);         // cannot reset an active wrapper
     expect((await call('GET')).json.wrappers).toHaveLength(1);
+    server.close();
+  });
+
+  it('refuses a subscriber book that sorts before Trust Stamp\'s, with a reason, before anything is on chain', async () => {
+    const reg = new MemoryWrapperRegistry();
+    const { server, call } = await serve(reg);
+    // T here is acc://a-ts.acme/book, and acc://a-a.acme/book sorts before it ('a' < 't').
+    const early = await call('POST', { wrapper_book: 'acc://a-a.acme/id', subject_id: 'eve', subscriber_book: 'acc://a-a.acme/book' });
+    expect(early.status).toBe(422);
+    expect(early.json).toMatchObject({ error: 'wrapper_order' });
+    expect(early.json.reason).toMatch(/sorts before acc:\/\/a-ts\.acme\/book/);
+    expect(await reg.list()).toEqual([]);
     server.close();
   });
 
@@ -378,5 +394,36 @@ describe('review follow-ups', () => {
     const [row] = await d.o.handleAll({ txHash: TX, signerUrl: TS_PAGE, principal: 'acc://o.acme/other/1' });
     expect(row!.kind).toBe('vote');
     expect(row!.status).toBe('signed');
+  });
+});
+
+describe('the naming rule', () => {
+  it('wrapperOrderProblem: a subscriber book must sort after Trust Stamp\'s, as a lowercase URL', async () => {
+    const { wrapperOrderProblem } = await import('../src/delegation/wrapper.js');
+    expect(wrapperOrderProblem('acc://0truststamp.acme/book', 'acc://alice.acme/book')).toBeUndefined();
+    expect(wrapperOrderProblem('acc://0truststamp.acme/book', 'acc://ZED.acme/book')).toBeUndefined();
+    // The runbook's original name does not sort first against ordinary subscriber names…
+    expect(wrapperOrderProblem('acc://truststamp.acme/book', 'acc://alice.acme/book')).toMatch(/sorts before acc:\/\/truststamp\.acme\/book/);
+    // …and no name beats every possible one: these still sort before the recommended name, and are refused.
+    expect(wrapperOrderProblem('acc://0truststamp.acme/book', 'acc://0-x.acme/book')).toMatch(/sorts before/);
+    expect(wrapperOrderProblem('acc://0truststamp.acme/book', 'acc://00x.acme/book')).toMatch(/sorts before/);
+    expect(wrapperOrderProblem('acc://0truststamp.acme/book', 'ACC://0TRUSTSTAMP.acme/book')).toMatch(/cannot be Trust Stamp's own book/);
+  });
+
+  it('the creation vote requires exactly the subscriber book that was registered', async () => {
+    const d = setup();
+    await d.registry.upsert({ ...(await d.registry.get(B))!, subscriberBook: 'acc://p2.acme/book' });
+    d.acc.addPending(TX, { body: { type: 'updateKeyPage', operation: CREATE_OPS }, principal: B1 });   // seats p.acme/book instead
+    const [row] = await d.o.handleAll({ txHash: TX, signerUrl: TS_PAGE, principal: B1, wrapperBook: B });
+    expect(row!.status).toBe('rejected');
+    expect(row!.lastError).toMatch(/does not add the registered subscriber book acc:\/\/p2\.acme\/book/);
+    expect(d.acc.submissions).toHaveLength(0);
+  });
+
+  it('…and a creation that seats the registered book is co-signed', async () => {
+    const d = setup();
+    await d.registry.upsert({ ...(await d.registry.get(B))!, subscriberBook: ALICE_BOOK });
+    d.acc.addPending(TX, { body: { type: 'updateKeyPage', operation: CREATE_OPS }, principal: B1 });
+    expect((await d.o.handleAll({ txHash: TX, signerUrl: TS_PAGE, principal: B1, wrapperBook: B })).map((r) => r.status)).toEqual(['signed']);
   });
 });

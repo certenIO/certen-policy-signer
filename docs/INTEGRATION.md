@@ -240,6 +240,14 @@ The signer proves the wrapper still REQUIRES its vote before asking you. It does
 the wrapper's other entry belongs to: bind `wrapper.page` to your enrolled subject yourself, on every
 request, and deny a page you did not enrol.
 
+**Naming rule.** Trust Stamp's book URL must sort before every subscriber's own book URL (lowercase string
+order), so name the identity to sort first — `acc://0truststamp.acme`, not `acc://truststamp.acme`. If a
+subscriber's book sorts first, its owner can run `UpdateKey` on the wrapper page (no version bump; the entry
+re-sorts) and vote twice, meeting the 2-of-2 without you — reproduced on Kermit. Register each wrapper with
+`POST /v1/admin/wrappers {"wrapper_book", "subject_id", "subscriber_book"}` before building it: a subscriber
+book that sorts too early is refused there (`422`, `error: "wrapper_order"`, with the reason), and the
+creation vote later requires exactly that subscriber book.
+
 ### Pinned contracts, self-calls, governance and acceptances (Phase 6)
 
 `decoders.evm_abi[]` pins a contract by `(chain_id, address)` to a JSON ABI (`abi_file`, relative to the

@@ -31,6 +31,12 @@ export interface WrapperEntry {
   wrapperPage: string;
   /** The live-check subject this wrapper is enrolled to. Opaque here. */
   subjectId: string;
+  /**
+   * The subscriber's own book: the wrapper's other delegate, beside Trust Stamp's. Recorded at
+   * registration so the creation vote can require that exact book (a creation that seats anyone else is
+   * refused). Absent on entries registered before it was recorded.
+   */
+  subscriberBook?: string;
   enrolledAt: number;
   seats: Seat[];
   /**

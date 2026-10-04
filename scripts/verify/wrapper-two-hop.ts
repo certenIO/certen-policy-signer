@@ -289,8 +289,11 @@ observability: { log_level: "info" }
     // ── 2. wrapper creation ─────────────────────────────────────────────────────────────────────────
     line('[2] Wrapper creation: P/id with a temporary key, then one UpdateKeyPage…');
     const W = await createWrapperBook(f, P);
-    const reg = await admin(healthPort, 'POST', '/v1/admin/wrappers', { wrapper_book: W.wBook, subject_id: 'alice' });
+    const reg = await admin(healthPort, 'POST', '/v1/admin/wrappers', { wrapper_book: W.wBook, subject_id: 'alice', subscriber_book: P.book });
     assert('2', 'the wrapper is registered as ENROLLING', reg.status === 201 && reg.json?.wrapper?.status === 'enrolling', reg);
+    // The naming rule, at registration: a subscriber book that sorts before Trust Stamp's is refused there.
+    const early = await admin(healthPort, 'POST', '/v1/admin/wrappers', { wrapper_book: `acc://a0${ts}.acme/id`, subject_id: 'eve', subscriber_book: `acc://a0${ts}.acme/book` });
+    assert('2', 'a subscriber book sorting before the Trust Stamp book is refused at registration (422 wrapper_order)', early.status === 422 && early.json?.error === 'wrapper_order', early);
     const createTx = await initiate(new core.Transaction({ header: { principal: W.wPage }, body: creationBody(P.book, T.book, W.temp) }), W.wPage, W.temp, 'wrapper creation');
     evidence.txids.wrapperCreate = `${createTx}@${W.wPage}`;
     line(`      creation tx ${createTx}`);
@@ -396,7 +399,7 @@ observability: { log_level: "info" }
       line('\n[7] Bob: Q/id, seated on O/book/1, which becomes 3-of-3…');
       const Q = await createOrg(f, `acc://q${ts}.acme`, 0x74, '200000');
       const WQ = await createWrapperBook(f, Q);
-      await admin(healthPort, 'POST', '/v1/admin/wrappers', { wrapper_book: WQ.wBook, subject_id: 'bob' });
+      await admin(healthPort, 'POST', '/v1/admin/wrappers', { wrapper_book: WQ.wBook, subject_id: 'bob', subscriber_book: Q.book });
       const qCreate = await initiate(new core.Transaction({ header: { principal: WQ.wPage }, body: creationBody(Q.book, T.book, WQ.temp) }), WQ.wPage, WQ.temp, 'Q wrapper creation');
       await cosign(Q.key.seed, Q.page, qCreate, WQ.wPage, [], 'Bob as new owner');
       assert('7', "Bob's wrapper creation executes", (await waitStatus(qCreate, WQ.wPage, ['delivered', 'failed', 'expired'], 150)) === 'delivered');

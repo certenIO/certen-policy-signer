@@ -42,9 +42,9 @@ export interface WrapperPath {
 }
 
 export interface ResolvePathOptions {
-  /** Trust Stamp's book, e.g. `acc://truststamp.acme/book`. Signatures made under it are ours, not a human's. */
+  /** Trust Stamp's book, e.g. `acc://0truststamp.acme/book` (named to sort first). Signatures made under it are ours, not a human's. */
   ourBook: string;
-  /** Trust Stamp's page, e.g. `acc://truststamp.acme/book/1`. */
+  /** Trust Stamp's page, e.g. `acc://0truststamp.acme/book/1`. */
   ourPage: string;
   /** Registry + on-chain check. Only a page this returns true for can start a path. */
   isEnrolledWrapperPage(page: string): Promise<boolean>;
