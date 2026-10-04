@@ -113,7 +113,7 @@ class FakeChain implements IntakeChain {
   pages = new Map<string, { version: number; threshold: number; keys: Entry[] }>();
   pending = new Map<string, { principal: string; body: any; executed?: boolean }>();
   submitted: any[] = [];
-  sigs = new Map<string, Array<{ type: string; publicKeyHash: string; delegators: string[]; signer?: string }>>();
+  sigs = new Map<string, Array<{ type: string; publicKeyHash: string; delegators: string[]; hops: string[]; signer?: string }>>();
   land = true;
   readPage = async (page: string): Promise<PageState> => {
     const p = this.pages.get(page.toLowerCase());
@@ -131,15 +131,17 @@ class FakeChain implements IntakeChain {
   async submit(envelope: any) {
     this.submitted.push(envelope);
     let s = envelope.signatures[0];
+    // Read the way RawAccumulateClient does: `delegators` outermost first, `hops` in hop order.
     const delegators: string[] = [];
-    while (s.type === 'delegated') { delegators.unshift(String(s.delegator)); s = s.signature; }
+    while (s.type === 'delegated') { delegators.push(String(s.delegator)); s = s.signature; }
+    const hops = [...delegators].reverse();
     const hash = String(s.transactionHash);
     // A newly originated transaction (a proposal) becomes pending at its principal.
     const t0 = envelope.transaction?.[0];
     if (t0?.header?.initiator && !this.pending.has(hash)) this.pending.set(hash, { principal: String(t0.header.principal), body: t0.body });
     if (this.land) {
       const list = this.sigs.get(hash) ?? [];
-      list.push({ type: s.type, publicKeyHash: createHash('sha256').update(Buffer.from(s.publicKey, 'hex')).digest('hex'), delegators, signer: String(s.signer) });
+      list.push({ type: s.type, publicKeyHash: createHash('sha256').update(Buffer.from(s.publicKey, 'hex')).digest('hex'), delegators, hops, signer: String(s.signer) });
       this.sigs.set(hash, list);
     }
     return { ok: true };

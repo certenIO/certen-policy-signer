@@ -9,9 +9,14 @@ import { Resolver } from './resolver.js';
 import { Logger } from './logger.js';
 import { VoteBackend, VoteResult, DirectVoteBackend } from './vote/backend.js';
 import { Notifier, NotifyEvent, NULL_NOTIFIER } from './notify.js';
-import { PendingRef, PolicyRequest, Receipt, ResolvedTx, SigningRequest } from './types.js';
+import { AttachmentKind, PendingRef, PolicyRequest, Receipt, ResolvedTx, SigningRequest } from './types.js';
 import { headerDeadlinePassed } from './accumulate/header.js';
 import { withDisplay } from './display.js';
+import { bookOf, resolveWrapperPaths, sameUrl, workKey } from './delegation/path.js';
+import { WrapperRegistry, wrapperOwning } from './registry/wrappers.js';
+import { PageState } from './ops/rotate.js';
+import { AuthorityVote } from './accumulate/client.js';
+import { WrapperCheck, targetsWrapper } from './delegation/wrapper.js';
 
 export interface OrchestratorOptions {
   submitRejectVote?: boolean;   // default false: deny => withhold signature (tx expires)
@@ -22,6 +27,8 @@ export interface OrchestratorOptions {
   guard?: (tx: { account: string; summary: string; value?: string; values?: string[]; unpricedLegs?: number }) => boolean;
   isPaused?: () => boolean;     // SR8 emergency kill switch
   delegators?: string[];        // delegate attachment model: user page(s) delegating to our book
+  /** Wrapper runbook, change 4: refuse an approval whose evidence has no valid `signatureData`. */
+  requireSignatureData?: boolean;
 }
 
 /**
@@ -63,8 +70,69 @@ export interface OrchestratorDeps {
   configVersion?: string;
   /** `decoders.labels`, shown beside addresses in the Phase 7 display (`PolicyRequest.display`). */
   displayLabels?: Record<string, string>;
+  /**
+   * Wrapper mode (`attachment_model: wrapper`, wrapper runbook change 2). Present = this signer is a
+   * delegate on enrolled wrapper pages, and every vote's path is derived per transaction from the human
+   * signatures on it. Absent = every existing mode, unchanged.
+   */
+  wrapper?: WrapperModeOptions;
   options?: OrchestratorOptions;
   now?: () => number; // injectable clock (ms) for tests
+}
+
+export interface WrapperModeOptions {
+  /** Our book (`acc://truststamp.acme/book`) and page (`…/book/1`). */
+  ourBook: string;
+  ourPage: string;
+  /** Registry + on-chain check: may a path start at this page? Throws = unknown, and nothing is signed. */
+  isEnrolledWrapperPage(page: string): Promise<boolean>;
+  /** Every enrolled wrapper book: where to read when a reference carries no `wrapperBook` hint. */
+  wrapperBooks(): Promise<string[]>;
+  /**
+   * The on-chain invariant (wrapper runbook, change 5): does this wrapper book still require our vote?
+   * Checked for every path before the engine is asked. Absent = not checked (tests of other concerns only;
+   * index.ts always wires it).
+   */
+  checkWrapper?(wrapperBook: string): Promise<WrapperCheck>;
+  /** The same, for a transaction ON the wrapper: is it still valid after the change executes? */
+  checkWrapperChange?(wrapperBook: string, tx: ResolvedTx): Promise<WrapperCheck>;
+  /**
+   * Enrolment (wrapper runbook, change 6): the registry to recognise a wrapper being created and to record
+   * seats, and a page reader to confirm a seat on chain. Absent = enrolment votes are not recognised and
+   * every vote's seat is refused (fail closed).
+   */
+  registry?: WrapperRegistry;
+  readPage?(url: string): Promise<PageState>;
+}
+
+/**
+ * Does this UpdateKeyPage make `book` a NEW OWNER of the page — an `add` whose entry delegates to it, or an
+ * `update` whose new entry does (`chain/update_key_page.go:362-378`)? Matched EXACTLY: the network accepts
+ * a new owner's authority signature only when it names that very URL (`chain/utils.go:24`), so an entry
+ * naming a page of the book would wait forever for a signature nobody can send.
+ */
+function addsDelegate(tx: ResolvedTx, book: string): boolean {
+  return tx.governance?.kind === 'updateKeyPage' && tx.governance.operations.some((op) =>
+    (op.type === 'add' && typeof op.delegate === 'string' && sameUrl(op.delegate, book))
+    || (op.type === 'update' && typeof op.newDelegate === 'string' && sameUrl(op.newDelegate, book)));
+}
+
+/** The same test on a raw body, for discovery (before the resolver has produced governance facts). */
+function bodyAddsDelegate(body: { type: string; [k: string]: unknown } | undefined, book: string): boolean {
+  if (body?.type !== 'updateKeyPage' || !Array.isArray(body['operation'])) return false;
+  return (body['operation'] as Array<Record<string, any>>).some((op) =>
+    (op?.type === 'add' && typeof op?.entry?.delegate === 'string' && sameUrl(op.entry.delegate, book))
+    || (op?.type === 'update' && typeof op?.newEntry?.delegate === 'string' && sameUrl(op.newEntry.delegate, book)));
+}
+
+/** At most this many enrolment rows are checked per settlement pass, so a backlog cannot stall anything. */
+const SETTLE_BATCH = 50;
+/** A signed enrolment tx the node keeps reporting as not found is given up on after this many passes. */
+const SETTLE_MAX_MISSING = 20;
+
+/** The receipt's key fields: `workKey` only when it differs from the hash, so existing receipts keep their shape. */
+function receiptKey(tx: { txHash: string; workKey?: string }): { txHash: string; workKey?: string } {
+  return { txHash: tx.txHash, ...(tx.workKey && tx.workKey !== tx.txHash ? { workKey: tx.workKey } : {}) };
 }
 
 export class Orchestrator {
@@ -81,6 +149,7 @@ export class Orchestrator {
       guard: d.options?.guard,
       isPaused: d.options?.isPaused,
       delegators: d.options?.delegators,
+      requireSignatureData: d.options?.requireSignatureData,
     };
     this.now = d.now ?? Date.now;
     this.notifier = d.notifier ?? NULL_NOTIFIER;
@@ -140,30 +209,231 @@ export class Orchestrator {
     }
   }
 
-  /** Handle one pending-tx reference. Idempotent + single-flight per txHash. */
-  async handle(ref: PendingRef): Promise<SigningRequest> {
-    const { store, logger } = this.d;
-    const existing = await store.get(ref.txHash);
-    if (existing && ['signed', 'rejected', 'expired'].includes(existing.status)) {
-      logger.debug({ tx: ref.txHash, status: existing.status }, 'idempotent skip');
-      return existing;
+  /**
+   * Every unit of work a pending-tx reference stands for, each handled once. What a trigger (poller,
+   * push, retry) calls.
+   *
+   * Outside wrapper mode that is the reference itself, and this is exactly `handle`. In wrapper mode one
+   * transaction can need a Trust Stamp vote on several paths — Alice's wrapper and Bob's — so the paths
+   * are derived from the signatures on chain and each is handled as its own unit, in sequence (each
+   * consumes our page's `lastUsedOn`, and two votes at once would race into a bad-version retry).
+   */
+  async handleAll(ref: PendingRef): Promise<SigningRequest[]> {
+    if (!this.d.wrapper) return [await this.handle(ref)];
+    const out: SigningRequest[] = [];
+    for (const work of await this.wrapperWork(ref)) out.push(await this.handle(work));
+    return out;
+  }
+
+  /**
+   * The wrapper paths this transaction needs us on, as work items. Wrapper runbook, change 2.
+   *
+   * Fail closed at every step, and quietly: a transaction whose principal or signatures cannot be read
+   * this cycle yields NO work, and the next poll asks again. Signing on a path guessed from partial
+   * information is the one outcome that must not happen; waiting a cycle costs nothing.
+   *
+   * Trust Stamp's own page and book never show this work (a delegate gets no signature request, and the
+   * vote is routed to the wrapper's book), so "nothing found for us" is the normal state, not a fault.
+   */
+  private async wrapperWork(ref: PendingRef): Promise<PendingRef[]> {
+    const { accumulate, logger } = this.d;
+    const w = this.d.wrapper!;
+    let principal = ref.principal;
+    if (!principal) {
+      const p = await accumulate.getPendingTx(ref.txHash, ref.signerUrl);
+      if (!p.found || !p.principal) {
+        logger.debug({ tx: ref.txHash, unavailable: !!p.unavailable }, 'wrapper mode: principal unknown and not readable; nothing to do this cycle');
+        return [];
+      }
+      principal = p.principal;
     }
-    if (!store.tryLock(ref.txHash)) {
-      logger.debug({ tx: ref.txHash }, 'already in-flight');
-      return existing ?? (await this.ensure(ref));
+    // Wrapper CREATION (change 6): the principal is a page of a wrapper the enrolment service registered,
+    // and the body adds our book as a delegate. We vote as a new owner, directly on our page — there is no
+    // path yet, because the entry that would make one is what this transaction creates. Everything is
+    // re-checked from chain state in `run` before the engine is asked.
+    const work: PendingRef[] = [];
+    const owner = w.registry ? await wrapperOwning(w.registry, principal) : undefined;
+    if (owner?.status === 'enrolling' && !sameUrl(principal, owner.wrapperBook)) {
+      const p = await accumulate.getPendingTx(ref.txHash, principal);
+      if (p.found && bodyAddsDelegate(p.body, w.ourBook)) {
+        work.push({ txHash: ref.txHash, signerUrl: w.ourPage, principal, delegators: [], kind: 'wrapper_create', wrapperBook: owner.wrapperBook });
+      }
     }
+    if (!accumulate.getAuthoritySignatures) {
+      logger.error({ tx: ref.txHash }, 'wrapper mode needs a client that reads authority signatures; signing nothing');
+      return work;
+    }
+    // Read at each wrapper book's partition: that is where a person's book's vote through the wrapper is
+    // recorded, and only after the network checked the delegation (see src/delegation/path.ts). One
+    // unreadable book skips that book's paths and nothing else — each path stands on its own record.
+    const books = ref.wrapperBook ? [ref.wrapperBook] : await w.wrapperBooks();
+    const votes: AuthorityVote[] = [];
+    for (const book of books) {
+      const res = await accumulate.getAuthoritySignatures(ref.txHash, book);
+      if (res.unavailable) {
+        logger.warn({ tx: ref.txHash, book, err: res.unavailable }, 'wrapper mode: could not read the votes at this wrapper; leaving it for the next poll');
+        continue;
+      }
+      if (res.delivered) {
+        await this.closeDelivered(ref.txHash);
+        return [];
+      }
+      votes.push(...res.votes);
+    }
+    let paths;
     try {
-      return await this.run(ref);
-    } finally {
-      store.unlock(ref.txHash);
+      paths = await resolveWrapperPaths(votes, w);
+    } catch (e) {
+      logger.warn({ tx: ref.txHash, err: (e as Error).message }, 'wrapper mode: enrolment could not be confirmed; signing nothing this cycle');
+      return work;
+    }
+    if (!paths.length && !work.length) logger.debug({ tx: ref.txHash }, 'no person has approved through an enrolled wrapper yet');
+    return [...work, ...paths.map((p) => ({ txHash: ref.txHash, signerUrl: w.ourPage, principal, delegators: p.path, wrapperBook: bookOf(p.wrapperPage) }))];
+  }
+
+  /**
+   * Is the org page this vote travels to really holding the wrapper as a delegate? Wrapper runbook,
+   * change 6, step 5.
+   *
+   * Read on EVERY vote, not only for an unrecorded seat: a seat the org removed would otherwise be
+   * discovered only when the vote counted toward nothing. The page is `path[1]`, the hop after the
+   * wrapper. A path with no such hop is not a seat at all and is refused: in this model a wrapper sits on
+   * org PAGES as a delegate. A wrapper made a direct authority of an account (or added by
+   * `UpdateAccountAuth`) is outside it, and is refused rather than voted through unchecked.
+   *   - on chain and recorded      → go on;
+   *   - on chain, not recorded     → record it (reconciled) and go on;
+   *   - not on chain               → remove it if recorded, and refuse;
+   *   - unreadable                 → refuse for now, retryable.
+   */
+  private async reconcileSeat(book: string, path: string[], txHash: string): Promise<WrapperCheck> {
+    const w = this.d.wrapper!;
+    const orgPage = path[1];
+    if (!orgPage) return { ok: false, reason: `the path ${path.join(' > ')} names no org page for the wrapper to sit on` };
+    if (!w.registry || !w.readPage) return { ok: false, reason: 'no seat registry is wired' };
+    let st: PageState;
+    try {
+      st = await w.readPage(orgPage);
+    } catch (e) {
+      return { ok: false, reason: `cannot read ${orgPage}: ${(e as Error).message}`, unreadable: true };
+    }
+    const onChain = st.entries.some((e) => e.delegate !== null && sameUrl(e.delegate, book));
+    const entry = await w.registry.get(book);
+    const recorded = !!entry?.seats.some((s) => sameUrl(s.orgPage, orgPage));
+    if (!onChain) {
+      if (recorded) await w.registry.removeSeat(book, orgPage);
+      return { ok: false, reason: `${orgPage} does not hold ${book} as a delegate` };
+    }
+    if (!recorded && entry) {
+      await w.registry.addSeat(book, { orgPage, attachedTx: '', attachedAt: this.now() });
+      this.d.logger.info({ tx: txHash, wrapper: book, orgPage }, 'seat found on chain that the registry had not recorded; reconciled');
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Bring the registry up to date with enrolment transactions we voted on. Wrapper runbook, change 6.
+   *
+   * ONLY after the transaction executed on chain — never on our vote alone, which is one signature of
+   * several and proves nothing about the outcome. Called by the poller every cycle.
+   *   wrapper_create executed → the wrapper becomes active, if the chain now shows a valid wrapper;
+   *   seat_attach executed    → the seat is recorded, once the org page really holds the wrapper;
+   *   expired                 → settled as failed; nothing recorded.
+   */
+  async settleEnrolments(): Promise<void> {
+    const w = this.d.wrapper;
+    if (!w?.registry) return;
+    const { store, accumulate, logger } = this.d;
+    const rows = (await store.listRecent(100_000, ['signed'])).map((r) => r.request)
+      .filter((r) => (r.kind === 'wrapper_create' || r.kind === 'seat_attach') && !r.settled && r.principal)
+      .slice(0, SETTLE_BATCH);
+    for (const r of rows) {
+      const key = r.workKey ?? r.txHash;
+      const p = await accumulate.getPendingTx(r.txHash, r.principal!);
+      if (p.unavailable) continue;
+      if (!p.found) {
+        const n = (r.settleAttempts ?? 0) + 1;
+        await store.update(key, n >= SETTLE_MAX_MISSING ? { settled: 'failed', settleAttempts: n } : { settleAttempts: n });
+        continue;
+      }
+      if (p.expired || p.failed) { await store.update(key, { settled: 'failed' }); continue; }
+      if (!p.executed) continue;
+      if (r.kind === 'wrapper_create') {
+        const book = bookOf(r.principal!);
+        const entry = await w.registry.get(book);
+        const check = w.checkWrapper ? await w.checkWrapper(book) : { ok: false as const, reason: 'no wrapper check is wired' };
+        if (!entry || !check.ok) {
+          if (!check.ok && check.unreadable) continue;
+          logger.error({ tx: r.txHash, wrapper: book, reason: !check.ok ? check.reason : 'not registered' }, 'wrapper creation executed but the wrapper does not pass the check; NOT activating it');
+          await store.update(key, { settled: 'refused' });
+          continue;
+        }
+        await w.registry.upsert({ ...entry, status: 'active', enrolledAt: this.now() });
+        logger.info({ tx: r.txHash, wrapper: book }, 'wrapper creation executed; wrapper is now active');
+      } else {
+        const book = bookOf(r.delegators![0]!);
+        if (!w.readPage) continue;
+        let st: PageState;
+        try { st = await w.readPage(r.principal!); } catch { continue; }
+        if (!st.entries.some((e) => e.delegate !== null && sameUrl(e.delegate, book))) {
+          logger.error({ tx: r.txHash, wrapper: book, orgPage: r.principal }, 'seat attach executed but the org page does not hold the wrapper; not recording a seat');
+          await store.update(key, { settled: 'refused' });
+          continue;
+        }
+        await w.registry.addSeat(book, { orgPage: r.principal!, attachedTx: r.txHash, attachedAt: this.now() });
+        logger.info({ tx: r.txHash, wrapper: book, orgPage: r.principal }, 'seat attach executed; seat recorded');
+      }
+      await store.update(key, { settled: 'executed' });
     }
   }
 
-  private async ensure(ref: PendingRef): Promise<SigningRequest> {
-    const s = await this.d.store.get(ref.txHash);
+  /**
+   * The transaction executed. Any path of ours still open on it is finished — the resolver records an
+   * executed transaction as `signed` the same way when it finds one gone, so these rows read alike. Left
+   * open they would sit in every non-terminal list forever, since no trigger would reach them again.
+   */
+  private async closeDelivered(txHash: string): Promise<void> {
+    for (const r of await this.d.store.listNonTerminal()) {
+      if (r.txHash !== txHash) continue;
+      await this.d.store.update(r.workKey ?? r.txHash, { status: 'signed', lastError: undefined });
+    }
+  }
+
+  /** Handle one unit of work. Idempotent + single-flight per work key (the tx hash, or tx + path). */
+  async handle(ref: PendingRef): Promise<SigningRequest> {
+    // A wrapper vote's path is derived from chain state by `handleAll`, never assumed. A bare reference
+    // here in wrapper mode would sign directly on our page, which counts toward nothing (or toward the
+    // wrong thing), so it is refused as a programming error rather than guessed at.
+    if (this.d.wrapper && !ref.delegators?.length && !(ref.kind === 'wrapper_create' && ref.delegators)) {
+      throw new Error('wrapper mode: a transaction is handled per delegation path — call handleAll');
+    }
+    const { store, logger } = this.d;
+    const key = workKey(ref.txHash, ref.delegators);
+    const existing = await store.get(key);
+    if (existing && ['signed', 'rejected', 'expired'].includes(existing.status)) {
+      logger.debug({ tx: ref.txHash, key, status: existing.status }, 'idempotent skip');
+      return existing;
+    }
+    if (!store.tryLock(key)) {
+      logger.debug({ tx: ref.txHash, key }, 'already in-flight');
+      return existing ?? (await this.ensure(ref, key));
+    }
+    try {
+      return await this.run(ref, key);
+    } finally {
+      store.unlock(key);
+    }
+  }
+
+  private async ensure(ref: PendingRef, key: string): Promise<SigningRequest> {
+    const s = await this.d.store.get(key);
     if (s) return s;
     const req: SigningRequest = {
+      // Only a path-keyed row carries a workKey, so every other row keeps exactly the shape it had.
+      ...(key !== ref.txHash ? { workKey: key } : {}),
       txHash: ref.txHash, signerUrl: ref.signerUrl, status: 'discovered',
+      ...(ref.delegators ? { delegators: ref.delegators } : {}),
+      ...(ref.principal ? { principal: ref.principal } : {}),
+      ...(ref.kind ? { kind: ref.kind } : {}),
       attempts: 0, createdAt: this.now(), updatedAt: this.now(),
     };
     try {
@@ -171,16 +441,16 @@ export class Orchestrator {
       return req;
     } catch {
       // lost a create race — return the row the winner created
-      return (await this.d.store.get(ref.txHash))!;
+      return (await this.d.store.get(key))!;
     }
   }
 
-  private async run(ref: PendingRef): Promise<SigningRequest> {
+  private async run(ref: PendingRef, key: string): Promise<SigningRequest> {
     const { store, resolver, logger } = this.d;
     // Which page this work belongs to decides which engine answers for it and under which ceiling.
     const rules = this.rulesFor(ref.signerUrl);
-    const priorStatus = (await store.get(ref.txHash))?.status; // was this tx already known? (gates the discovery log)
-    await this.ensure(ref);
+    const priorStatus = (await store.get(key))?.status; // was this work already known? (gates the discovery log)
+    await this.ensure(ref, key);
 
     // 1. Resolve
     const r = await resolver.resolve(ref);
@@ -188,15 +458,15 @@ export class Orchestrator {
     // retryable so the next poll asks again once the node is back.
     if (r.kind === 'unavailable') {
       logger.warn({ tx: ref.txHash, err: r.error }, 'could not resolve pending tx; leaving it for the next poll');
-      return store.update(ref.txHash, { lastError: `resolve: ${r.error}` });
+      return store.update(key, { lastError: `resolve: ${r.error}` });
     }
     if (r.kind === 'gone') {
       const status = r.reason === 'executed' ? 'signed' : 'expired';
       logger.info({ tx: ref.txHash, reason: r.reason }, 'tx gone before signing');
-      return store.update(ref.txHash, { status });
+      return store.update(key, { status });
     }
-    const tx = r.tx;
-    await store.update(ref.txHash, {
+    const tx = { ...r.tx, ...(key !== r.tx.txHash ? { workKey: key } : {}) };
+    await store.update(key, {
       status: 'awaiting_policy', account: tx.account, signerVersion: tx.signerVersion,
       actionSummary: tx.summary.action, operationId: tx.operationId,
     });
@@ -217,6 +487,53 @@ export class Orchestrator {
     // right before signing (the engine may have taken a while).
     const dead = this.deadlineRefusal(tx);
     if (dead) return this.refuseDeadline(tx, dead);
+
+    // Wrapper runbook, change 5: our vote only means something while the wrapper requires it. Checked
+    // here, per path, before the engine is asked — there is nothing to decide about a wrapper that can be
+    // satisfied without us, and asking would prompt a person's live check for a vote that proves nothing.
+    let kind: AttachmentKind | undefined;
+    if (this.d.wrapper) {
+      const w = this.d.wrapper;
+      const creating = ref.kind === 'wrapper_create';
+      const book = creating ? (ref.wrapperBook ?? bookOf(tx.account)) : bookOf(ref.delegators![0]!);
+      // A seat attach is ONE hop: the wrapper is the new owner of the page the transaction changes. A longer
+      // path to a page that happens to add the wrapper is an ordinary vote and gets the seat check.
+      kind = creating ? 'wrapper_create'
+        : !targetsWrapper(tx.account, book) && ref.delegators!.length === 1 && addsDelegate(tx, book) ? 'seat_attach' : 'vote';
+      await store.update(key, { kind });
+      let check: WrapperCheck;
+      if (creating) {
+        // Re-derived, not trusted from discovery: a registered wrapper, this page of it, a body that adds
+        // our book — and the wrapper as it will be AFTER the change must pass the full check.
+        const entry = w.registry ? await wrapperOwning(w.registry, tx.account) : undefined;
+        check = !entry || entry.status !== 'enrolling' || !sameUrl(entry.wrapperBook, book) || !targetsWrapper(tx.account, book) || sameUrl(tx.account, book)
+          ? { ok: false, reason: `${tx.account} is not a page of a wrapper being enrolled` }
+          : !addsDelegate(tx, w.ourBook)
+            ? { ok: false, reason: 'the transaction does not add Trust Stamp as a delegate' }
+            : w.checkWrapperChange ? await w.checkWrapperChange(book, tx) : { ok: false, reason: 'no check for changes to the wrapper is wired' };
+      } else if (targetsWrapper(tx.account, book)) {
+        check = w.checkWrapperChange ? await w.checkWrapperChange(book, tx) : { ok: false, reason: 'no check for changes to the wrapper is wired' };
+      } else {
+        check = w.checkWrapper ? await w.checkWrapper(book) : { ok: false, reason: 'no wrapper check is wired' };
+        if (check.ok && kind === 'vote') check = await this.reconcileSeat(book, ref.delegators!, tx.txHash);
+      }
+      if (!check.ok) {
+        // Could not READ the wrapper: no vote, and ask again next poll — an outage is not a verdict.
+        if (check.unreadable) {
+          logger.warn({ tx: tx.txHash, key, wrapper: book, err: check.reason }, 'wrapper state could not be confirmed; not signing this cycle');
+          return store.update(key, { lastError: `wrapper_unreadable: ${check.reason}` });
+        }
+        const reason = `wrapper_invariant: ${check.reason}`;
+        logger.warn({ tx: tx.txHash, key, wrapper: book, reason }, 'wrapper does not require our vote (or would not after this change); refusing to sign');
+        await this.saveReceipt({
+          ...receiptKey(tx), operationId: tx.operationId, reason,
+          ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
+          policyEvidence: { blockedBy: 'wrapper_invariant', wrapper: book, detail: check.reason },
+        });
+        this.notify('decision.denied', tx, { reason });
+        return store.update(key, { status: 'rejected', lastError: reason });
+      }
+    }
 
     // 2. Decide
     const policyReq: PolicyRequest = withDisplay({
@@ -257,12 +574,18 @@ export class Orchestrator {
       ...(tx.summary.targetKnown !== undefined ? { targetKnown: tx.summary.targetKnown } : noContractCall(tx) ? { targetKnown: true } : {}),
       ...(tx.governance ? { governance: tx.governance } : {}),
       ...(tx.acceptance ? { acceptance: tx.acceptance } : {}),
+      // Wrapper mode: which person's wrapper this vote is for. Each path is its own question to the engine.
+      ...(ref.delegators?.length ? { wrapper: { page: ref.delegators[0]!, path: [...ref.delegators] } } : {}),
+      ...(kind === 'wrapper_create' ? { wrapper: { page: tx.account, path: [] } } : {}),
+      ...(kind ? { attachmentKind: kind } : {}),
       // Policy TTL for THIS request. Not the on-chain deadline, which is `header.expiresAt`.
       expiresAt: new Date(this.now() + this.opt.policyTtlSeconds * 1000).toISOString(),
     }, { labels: this.d.displayLabels });
-    await store.update(ref.txHash, { policyRequestId: policyReq.requestId });
+    await store.update(key, { policyRequestId: policyReq.requestId });
     // Kept so a decision service can read back exactly what it was asked (`/relay/pending/:hash`, 6.4).
-    await store.savePolicyRequest(policyReq);
+    // Under the work key: two wrapper paths on one tx are two questions, and one must not overwrite the
+    // other. Outside wrapper mode the key is the hash, so the relay route reads it as before.
+    await store.savePolicyRequest(policyReq, key);
 
     // The decision request, carried off chain to the operator's own policy engine. It holds the decoded
     // action plus every gate-relevant amount; the reply drives accept / reject / withhold.
@@ -273,9 +596,9 @@ export class Orchestrator {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logger.warn({ tx: ref.txHash, err: msg }, 'policy decision failed');
-      return store.update(ref.txHash, {
+      return store.update(key, {
         status: 'awaiting_policy', lastError: `policy: ${msg}`,
-        attempts: (await store.get(ref.txHash))!.attempts + 1,
+        attempts: (await store.get(key))!.attempts + 1,
       });
     }
 
@@ -289,7 +612,7 @@ export class Orchestrator {
         { tx: ref.txHash, reason: decision.reason },
         'policy engine has not decided yet; withholding signature and will retry',
       );
-      return store.update(ref.txHash, { status: 'awaiting_policy', lastError: undefined });
+      return store.update(key, { status: 'awaiting_policy', lastError: undefined });
     }
 
     // SR8 emergency pause — checked BEFORE the deny branch, because a Reject vote is still a SIGNATURE.
@@ -297,12 +620,12 @@ export class Orchestrator {
     // meant a "paused" wallet went on signing and submitting rejections. Pause means sign NOTHING.
     if (this.opt.isPaused?.()) {
       logger.warn({ tx: ref.txHash, decision: decision.decision }, 'signing paused; withholding signature');
-      return store.update(ref.txHash, { status: 'awaiting_policy', lastError: 'paused' });
+      return store.update(key, { status: 'awaiting_policy', lastError: 'paused' });
     }
 
     if (decision.decision === 'deny') {
       logger.info({ tx: ref.txHash, reason: decision.reason }, 'policy denied');
-      await store.update(ref.txHash, { status: 'denied', decision: 'deny' });
+      await store.update(key, { status: 'denied', decision: 'deny' });
       // A reject vote that could not be submitted is a FAILURE, exactly as an approve vote is — the
       // result was being discarded here. That mattered: `rejected` is terminal, so the tx was never
       // retried, while the receipt below recorded `vote: reject` for a vote that never reached the
@@ -312,17 +635,17 @@ export class Orchestrator {
       if (rules.submitRejectVote) {
         const lateReject = this.deadlineRefusal(tx);
         if (lateReject) return this.refuseDeadline(tx, lateReject, decision);
-        const res = await this.signAndSubmit(tx, 'reject');
+        const res = await this.signAndSubmit(tx, 'reject', undefined, signatureEvidence(decision.evidence));
         if (!res.ok) {
           logger.error({ tx: ref.txHash, err: res.error }, 'reject vote submission failed');
           this.notify('signature.failed', tx, { reason: decision.reason, error: res.error });
-          return store.update(ref.txHash, { status: 'error', lastError: res.error });
+          return store.update(key, { status: 'error', lastError: res.error });
         }
         rejectVote = res;
       }
-      const final = await store.update(ref.txHash, { status: 'rejected' });
+      const final = await store.update(key, { status: 'rejected' });
       await this.saveReceipt({
-        txHash: tx.txHash, operationId: tx.operationId, decision: 'deny',
+        ...receiptKey(tx), operationId: tx.operationId, decision: 'deny',
         vote: rules.submitRejectVote ? 'reject' : undefined,
         reason: decision.reason,
         // Whose re-authentication this was about. The receipts are the audit trail, and a year later
@@ -346,12 +669,28 @@ export class Orchestrator {
       // Keep the engine's reason and evidence on the record: the receipt must show that the engine
       // approved and WE refused, not merely that something was blocked.
       await this.saveReceipt({
-        txHash: tx.txHash, operationId: tx.operationId, decision: 'approve',
+        ...receiptKey(tx), operationId: tx.operationId, decision: 'approve',
         reason: decision.reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
         policyEvidence: { ...(decision.evidence ?? {}), blockedBy: 'local_guard', values: tx.summary.values },
       });
-      return store.update(ref.txHash, { status: 'rejected', lastError: 'local_guard_block' });
+      return store.update(key, { status: 'rejected', lastError: 'local_guard_block' });
+    }
+
+    // Wrapper runbook, change 4: the evidence this vote commits to. With `require_signature_data` an
+    // approval that brings no valid digest is not signed — a vote that cannot be tied back to the live
+    // check it stands for is a claim nobody can verify. Malformed counts as absent (see
+    // `signatureEvidence`), so a garbled digest refuses here rather than being signed as something else.
+    const evidence = signatureEvidence(decision.evidence);
+    if (this.opt.requireSignatureData && !evidence.data) {
+      logger.warn({ tx: ref.txHash }, 'approved, but the decision carries no valid signatureData and it is required; not signing');
+      await this.saveReceipt({
+        ...receiptKey(tx), operationId: tx.operationId, decision: 'approve',
+        reason: decision.reason,
+        ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
+        policyEvidence: { ...(decision.evidence ?? {}), blockedBy: 'signature_data_missing' },
+      });
+      return store.update(key, { status: 'rejected', lastError: 'signature_data_missing' });
     }
 
     // 3. Sign + submit (approve). The deadline is re-read against the clock now: an approval that arrived
@@ -359,14 +698,14 @@ export class Orchestrator {
     const lateApprove = this.deadlineRefusal(tx);
     if (lateApprove) return this.refuseDeadline(tx, lateApprove, decision);
 
-    await store.update(ref.txHash, { status: 'approved', decision: 'approve', assertionRef: decision.assertion ? sha256Hex(decision.assertion) : undefined });
+    await store.update(key, { status: 'approved', decision: 'approve', assertionRef: decision.assertion ? sha256Hex(decision.assertion) : undefined });
     // Whose key signs. T29: when the policy engine names the approver, THEIR key signs — so the
     // signature on chain is the person's rather than the organisation's cast in their name. Absent,
     // the organisation signs as itself, exactly as before.
-    const res = await this.castForApprovers(tx, 'approve', approverKeyRefs(decision.evidence));
+    const res = await this.castForApprovers(tx, 'approve', approverKeyRefs(decision.evidence), evidence);
     if (res.ok) {
       await this.saveReceipt({
-        txHash: tx.txHash, operationId: tx.operationId, decision: 'approve', vote: 'approve',
+        ...receiptKey(tx), operationId: tx.operationId, decision: 'approve', vote: 'approve',
         signatureHash: res.signatureHash, submittedAt: this.now(), accumulateResult: 'ok',
         reason: decision.reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
@@ -375,13 +714,13 @@ export class Orchestrator {
         ...(res.signedBy ? { signedBy: res.signedBy } : {}),
       });
       this.notify('decision.approved', tx, { reason: decision.reason });
-      return store.update(ref.txHash, { status: 'signed', timestampMicros: res.timestamp });
+      return store.update(key, { status: 'signed', timestampMicros: res.timestamp });
     }
     // A vote we decided to cast but could not is a real failure — say so. It used to be recorded in the
     // store and nowhere else, so an operator watching the logs saw the policy decision and then silence.
     logger.error({ tx: ref.txHash, err: res.error }, 'vote submission failed');
     this.notify('signature.failed', tx, { reason: decision.reason, error: res.error });
-    return store.update(ref.txHash, { status: 'error', lastError: res.error });
+    return store.update(key, { status: 'error', lastError: res.error });
   }
 
   /**
@@ -419,7 +758,7 @@ export class Orchestrator {
       refusal.reason,
     );
     await this.saveReceipt({
-      txHash: tx.txHash, operationId: tx.operationId,
+      ...receiptKey(tx), operationId: tx.operationId,
       ...(decision && (decision.decision === 'approve' || decision.decision === 'deny') ? { decision: decision.decision } : {}),
       reason: refusal.reason,
       ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
@@ -431,7 +770,7 @@ export class Orchestrator {
       },
     });
     const status = refusal.lastError === 'header_deadline_passed' ? 'expired' : 'rejected';
-    return this.d.store.update(tx.txHash, { status, lastError: refusal.lastError });
+    return this.d.store.update(tx.workKey ?? tx.txHash, { status, lastError: refusal.lastError });
   }
 
   /**
@@ -439,9 +778,9 @@ export class Orchestrator {
    * or GATEWAY (the Certen api-gateway hands us the bytes; we sign; we hand the signature back). The
    * decision above this line is identical either way: the policy engine gates both.
    */
-  private async signAndSubmit(tx: ResolvedTx, vote: 'approve' | 'reject', keyRef?: string): Promise<VoteResult> {
-    await this.d.store.update(tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
-    return this.votes.cast(tx, vote, keyRef === undefined ? {} : { keyRef });
+  private async signAndSubmit(tx: ResolvedTx, vote: 'approve' | 'reject', keyRef?: string, evidence: SignatureEvidence = {}): Promise<VoteResult> {
+    await this.d.store.update(tx.workKey ?? tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
+    return this.votes.cast(tx, vote, { ...(keyRef === undefined ? {} : { keyRef }), ...evidence, ...pathOf(tx) });
   }
 
   /**
@@ -467,23 +806,24 @@ export class Orchestrator {
     tx: ResolvedTx,
     vote: 'approve' | 'reject',
     refs: string[],
+    evidence: SignatureEvidence = {},
   ): Promise<VoteResult> {
     // Nobody named: one vote, the organisation's own key, exactly as before T29.
-    if (refs.length === 0) return this.signAndSubmit(tx, vote);
+    if (refs.length === 0) return this.signAndSubmit(tx, vote, undefined, evidence);
 
     // From one ref upward the loop below handles it, so a named approver this wallet cannot sign for
     // is RECORDED as a failed vote rather than thrown out of the pipeline. One ref and two refs
     // failing the same way is the point: a misconfigured ref is an operational fact about one
     // transaction, not an exception for the poll loop to cope with.
 
-    await this.d.store.update(tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
+    await this.d.store.update(tx.workKey ?? tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
     let first: VoteResult | undefined;
     let firstError: string | undefined;
 
     for (const ref of refs) {
       let res: VoteResult;
       try {
-        res = await this.votes.cast(tx, vote, { keyRef: ref });
+        res = await this.votes.cast(tx, vote, { keyRef: ref, ...evidence, ...pathOf(tx) });
       } catch (e) {
         // A ref this wallet holds no key for throws rather than substituting the organisation's key.
         // That is the T29 refusal working; it is not a reason to abandon the approvers it CAN sign for.
@@ -553,6 +893,42 @@ export function approverKeyRefs(evidence: Record<string, unknown> | undefined): 
   if (refs.length) return refs;
   const single = approverKeyRef(evidence);
   return single ? [single] : [];
+}
+
+/** The per-vote path, only when this work has one: absent leaves the backend's boot-time path in force. */
+function pathOf(tx: ResolvedTx): { delegators?: string[] } {
+  return tx.delegators ? { delegators: tx.delegators } : {};
+}
+
+/** What a signature commits to, read off the decision. Both fields absent is the ordinary case. */
+export interface SignatureEvidence {
+  memo?: string;
+  data?: Uint8Array;
+}
+
+/**
+ * The digest and memo the policy engine wants IN the signature. Wrapper runbook, change 4.
+ *
+ * Carried in `evidence`, the decision's free-form record, so this needs no contract change (invariant
+ * F-9), the same route `approverKeyRef` takes. Read strictly, and anything malformed is ABSENT:
+ *
+ *   signatureData: hex (an optional 0x is tolerated), exactly 32 bytes. A digest of any other length
+ *                  is not the digest of anything we agreed on, and truncating or padding one would sign
+ *                  a value the engine never produced.
+ *   signatureMemo: a non-empty string of at most 256 characters.
+ *
+ * Absent is safe by construction: the signature is then built exactly as before, and with
+ * `require_signature_data` the approval is refused rather than signed without its evidence.
+ */
+export function signatureEvidence(evidence: Record<string, unknown> | undefined): SignatureEvidence {
+  const out: SignatureEvidence = {};
+  const raw = evidence?.['signatureData'];
+  if (typeof raw === 'string' && /^(0x)?[0-9a-fA-F]{64}$/.test(raw)) {
+    out.data = new Uint8Array(Buffer.from(raw.replace(/^0x/, ''), 'hex'));
+  }
+  const memo = evidence?.['signatureMemo'];
+  if (typeof memo === 'string' && memo.length > 0 && memo.length <= 256) out.memo = memo;
+  return out;
 }
 
 /** True when the transaction provably carries no contract call: acceptance and governance facts, or a non-WriteData body. */

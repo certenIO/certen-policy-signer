@@ -94,6 +94,19 @@ export interface VoteResult {
  */
 export interface CastOptions {
   keyRef?: string;
+  /**
+   * Evidence the signature commits to (wrapper runbook, change 4): `data` and `memo` go INTO the key
+   * signature's metadata, so they are signed with the vote. Read from the decision's evidence by
+   * `signatureEvidence`; absent means the signature is built exactly as before.
+   */
+  memo?: string;
+  data?: Uint8Array;
+  /**
+   * The delegation path for THIS vote, hop order. Wrapper runbook, change 2: a wrapper's path differs
+   * per transaction, so it cannot be fixed at boot. When given (even empty) it wins over the backend's
+   * boot-time `delegators`; absent, the boot-time value applies exactly as before.
+   */
+  delegators?: string[];
 }
 
 export interface VoteBackend {
@@ -142,10 +155,14 @@ export class DirectVoteBackend implements VoteBackend {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const publicKey = await signer.publicKey();
       const timestamp = computeTimestamp(lastUsedOn, this.now() * 1000);
-      const delegators = this.opts.delegators;
+      const delegators = castOpts.delegators ?? this.opts.delegators;
       // The key declares its own algorithm; the metadata must say the same thing, because the type is
       // inside the hash that gets signed. Never assume Ed25519 here — a PKI key on the page is normal.
-      const pre = buildPreimage(hexToBytes(tx.txHash), { publicKey, signatureType: signer.signatureType, signerUrl: tx.signerUrl, signerVersion, timestamp, vote, delegators });
+      const pre = buildPreimage(hexToBytes(tx.txHash), {
+        publicKey, signatureType: signer.signatureType, signerUrl: tx.signerUrl, signerVersion, timestamp, vote, delegators,
+        ...(castOpts.memo ? { memo: castOpts.memo } : {}),
+        ...(castOpts.data ? { data: castOpts.data } : {}),
+      });
       // The key source is told which transaction this is (a per-signature credential names it to whoever
       // releases it). A key source that cannot sign — a custodian refusal, a device error — produces NO
       // signature: the vote is withheld and recorded as a signing failure, never retried around.

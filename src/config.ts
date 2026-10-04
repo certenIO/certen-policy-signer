@@ -212,7 +212,10 @@ const Schema = z.object({
       policy: PolicyOverrideSchema.optional(),
       behavior: BehaviorOverrideSchema.optional(),
     })).optional(),
-    attachment_model: z.enum(['authority', 'delegate', 'per_tx']).default('authority'),
+    // `wrapper` (Trust Stamp, wrapper runbook): this signer is a delegate on enrolled subscribers' wrapper
+    // pages, and each vote's delegation path is derived per transaction from the human signature on it.
+    // `delegator_url` is meaningless there and refused alongside it.
+    attachment_model: z.enum(['authority', 'delegate', 'per_tx', 'wrapper']).default('authority'),
     delegator_url: z.string().nullish(),
     // SR6: refuse to start unless our public key is verifiably on the signer page. Setting this true
     // downgrades that to a warning — only for pages whose key hashes the node will not expose.
@@ -312,12 +315,24 @@ const Schema = z.object({
       signature_header: z.string().default('x-signer-signature'),
       bind: z.string().default('0.0.0.0:8081'),
     }).default({}),
-    poller: z.object({ enabled: z.boolean().default(true), interval_seconds: z.number().default(20) }).default({}),
+    poller: z.object({
+      enabled: z.boolean().default(true),
+      interval_seconds: z.number().default(20),
+      // Wrapper mode (wrapper runbook, change 1): how many wrapper books' pending lists are read at once,
+      // and where the enrolment registry lives. The path defaults to `wrappers.json` beside `store.path`.
+      wrapper_concurrency: z.number().int().positive().default(8),
+      wrapper_registry_path: z.string().optional(),
+    }).default({}),
   }).default({})),
   behavior: section(z.object({
     submit_reject_vote: z.boolean().default(false),
     max_bad_version_retries: z.number().default(3),
     value_ceiling: z.string().optional(), // SR4 local guard (optional)
+    // Wrapper runbook, change 4. When true, an approval whose evidence carries no valid `signatureData`
+    // (hex, exactly 32 bytes) is not signed: a Trust Stamp vote must commit to the live check it stands
+    // for, and one without the digest is an unverifiable claim. Default false keeps every existing
+    // deployment as it was.
+    require_signature_data: z.boolean().default(false),
   }).default({})),
   // Admin routes are served on the SAME listener as health (there is one HTTP server, on `health.bind`).
   // There is no separate admin port, so `api_key` — not a bind address — is what protects them:
@@ -597,6 +612,19 @@ export function loadConfig(path: string): Config {
   if (cfg.gateway.api_key) cfg.gateway.api_key = resolveSecret(cfg.gateway.api_key);
   if (cfg.gateway.enabled && (!cfg.gateway.url || !cfg.gateway.api_key || !cfg.gateway.identity)) {
     throw new Error('gateway.enabled requires gateway.url, gateway.api_key and gateway.identity');
+  }
+  // Wrapper mode derives the path per transaction. A `delegator_url` next to it would leave a reader
+  // wondering which one signs; refuse rather than pick. The gateway cannot build a delegated signature at
+  // all, and the mode serves exactly one page of ours (the path resolver and the keyring both assume it).
+  if (cfg.wallet.attachment_model === 'wrapper') {
+    if (cfg.wallet.delegator_url) throw new Error('config: wallet.delegator_url must not be set with attachment_model: wrapper — the path is derived per transaction');
+    if (cfg.gateway.enabled) throw new Error('config: attachment_model: wrapper cannot vote through gateway.enabled — the gateway cannot build a delegated signature');
+    if ((cfg.wallet.scopes?.length ?? 0) > 1) throw new Error('config: attachment_model: wrapper serves exactly one page; wallet.scopes has more than one');
+  }
+  // The gateway builds the preimage and has no field for signature data, so every approval would be
+  // refused at signing time. Say so now rather than on the first transaction.
+  if (cfg.gateway.enabled && cfg.behavior.require_signature_data) {
+    throw new Error('config: behavior.require_signature_data cannot be met through gateway.enabled — the gateway cannot put data in the signature');
   }
   if (cfg.policy?.hmac_secret) cfg.policy.hmac_secret = resolveSecret(cfg.policy.hmac_secret);
 

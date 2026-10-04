@@ -101,7 +101,11 @@ export interface RotateResult {
  */
 export async function readPage(acc: RawAccumulateClient, page: string): Promise<PageState> {
   const rec: any = await acc.query(page);
-  const account = rec?.account ?? rec?.data ?? rec;
+  return pageStateOf(rec?.account ?? rec?.data ?? rec);
+}
+
+/** A key page account record (as the v3 query returns it) as a `PageState`. Split out so the wrapper check reads pages the same way. */
+export function pageStateOf(account: any): PageState {
   const entries: PageEntry[] = (account?.keys ?? []).map((k: any) => ({
     keyHash: k?.publicKeyHash ? String(k.publicKeyHash).toLowerCase() : null,
     delegate: k?.delegate ? String(k.delegate) : null,

@@ -1,4 +1,5 @@
 /** Entry point: wire modules from config, run the startup self-check, start servers + poller. */
+import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseArgs, helpText, VERSION, BIN } from './cli.js';
 import { loadConfig, parseBind, effectiveScopeRules, isIntakeOnly, Config } from './config.js';
@@ -14,7 +15,9 @@ import { applyKeyPageOp } from './ops/keypage.js';
 import { readPage } from './ops/rotate.js';
 import { GatewayClient, GatewayVoteBackend } from './vote/adapters/certen-gateway.js';
 import { buildNotifier, MultiNotifier, NotifyConfig } from './notify.js';
-import { Orchestrator, ScopeRules } from './orchestrator.js';
+import { Orchestrator, ScopeRules, WrapperModeOptions } from './orchestrator.js';
+import { FileWrapperRegistry, MemoryWrapperRegistry, WrapperRegistry, isRegisteredWrapperPage } from './registry/wrappers.js';
+import { chainWrapperReader, checkWrapper, checkWrapperChange } from './delegation/wrapper.js';
 import { Poller } from './poller.js';
 import { createServer, PauseController, HealthSource } from './server.js';
 import { bytesToHex } from './accumulate/signing.js';
@@ -165,6 +168,29 @@ async function main() {
   const delegators = cfg.wallet.attachment_model === 'delegate' && cfg.wallet.delegator_url
     ? [cfg.wallet.delegator_url]
     : undefined;
+  // Wrapper mode (wrapper runbook): the enrolment registry names the wrapper books we serve; discovery
+  // reads their pending lists and the orchestrator derives each vote's path from the votes recorded there.
+  let wrapperRegistry: WrapperRegistry | undefined;
+  let wrapperMode: WrapperModeOptions | undefined;
+  if (cfg.wallet.attachment_model === 'wrapper') {
+    const regPath = cfg.trigger.poller.wrapper_registry_path ?? (cfg.store.path ? join(dirname(cfg.store.path), 'wrappers.json') : undefined);
+    wrapperRegistry = regPath ? new FileWrapperRegistry(regPath) : new MemoryWrapperRegistry();
+    if (!regPath) logger.warn('wrapper mode with no store.path or wrapper_registry_path — the enrolment registry is IN MEMORY and lost on restart');
+    const reg = wrapperRegistry;
+    const wrapperReader = chainWrapperReader(accumulate as RawAccumulateClient);
+    wrapperMode = {
+      ourBook: scopes[0].book, ourPage: scopes[0].page,
+      isEnrolledWrapperPage: (page) => isRegisteredWrapperPage(reg, page),
+      wrapperBooks: async () => (await reg.list()).map((e) => e.wrapperBook),
+      // The invariant, read live before every vote: Trust Stamp's book on every page, at a threshold
+      // nobody can meet without it, and the wrapper governed by itself alone.
+      checkWrapper: (book) => checkWrapper(wrapperReader, book, scopes[0].book),
+      checkWrapperChange: (book, tx) => checkWrapperChange(wrapperReader, book, scopes[0].book, tx),
+      registry: reg,
+      readPage: (url) => wrapperReader.readPage(url),
+    };
+    logger.info({ page: scopes[0].page, registry: regPath ?? '(memory)', wrappers: (await reg.list()).length }, 'attachment model: WRAPPER delegate');
+  }
 
   // --- per-scope rules: a fleet rarely shares one rulebook ---
   //
@@ -229,6 +255,7 @@ async function main() {
   const orchestrator = new Orchestrator({
     accumulate, keyring, policy, store, resolver, logger, votes,
     notifier, orgId: cfg.wallet.org_id, scopeRules, configVersion: cfg.configVersion, displayLabels: cfg.decoders.labels,
+    ...(wrapperMode ? { wrapper: wrapperMode } : {}),
     options: {
       submitRejectVote: cfg.behavior.submit_reject_vote,
       maxBadVersionRetries: cfg.behavior.max_bad_version_retries,
@@ -236,8 +263,24 @@ async function main() {
       guard,
       isPaused: () => pause.paused,
       delegators,
+      requireSignatureData: cfg.behavior.require_signature_data,
     },
   });
+
+  // Wrapper mode: enrolment settlement on its OWN timer, always on — not a step of a successful poll cycle,
+  // so a push-only deployment or a run of failing cycles still brings the registry up to date once the
+  // enrolment transactions execute (wrapper runbook, change 6).
+  if (wrapperMode) {
+    const settleEvery = Math.max(5, cfg.trigger.poller.interval_seconds) * 1000;
+    let settling = false;
+    setInterval(() => {
+      if (settling) return;
+      settling = true;
+      orchestrator.settleEnrolments()
+        .catch((e) => logger.warn({ err: (e as Error).message }, 'enrolment settlement failed; will retry'))
+        .finally(() => { settling = false; });
+    }, settleEvery).unref();
+  }
 
   // --- SR6 startup self-check: EACH scope's public key MUST be verifiably on its on-chain page ---
   // Fail-closed, per scope. A wallet that cannot prove it holds a key on a page it claims to sign for is
@@ -288,6 +331,7 @@ async function main() {
         logger.child({ scope: scope.page }), Date.now,
         gatewayClient ? () => gatewayClient!.listPending() : undefined,   // supplement, never a replacement
         scope.book,
+        wrapperRegistry ? { registry: wrapperRegistry, concurrency: cfg.trigger.poller.wrapper_concurrency } : undefined,
       ))
     : [];
   // Unhealthy if ANY scope's discovery loop is stalled; lastSuccess is the oldest success across them.
@@ -355,6 +399,7 @@ async function main() {
   const server = createServer({
     relay, relayClients, officerIntake: officerIntake?.handle, configVersion: cfg.configVersion,
     orchestrator, store, keyring, accumulate, pause, logger, poller: pollerHealth,
+    ...(wrapperRegistry ? { wrapperRegistry } : {}),
     webhookHmacSecret: cfg.trigger.webhook.enabled ? cfg.trigger.webhook.hmac_secret : undefined,
     webhookSignatureHeader: cfg.trigger.webhook.signature_header,
     adminApiKey: cfg.admin.api_key,

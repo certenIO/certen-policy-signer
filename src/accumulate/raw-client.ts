@@ -5,9 +5,10 @@
  */
 import axios, { AxiosInstance } from 'axios';
 import { createHash } from 'node:crypto';
-import { AccumulateClient, ChainSignature, PendingTxResult, SignerInfo, SubmitResult, TxSignatures } from './client.js';
+import { AccumulateClient, AuthorityVote, AuthorityVotes, ChainSignature, PendingTxResult, SignerInfo, SubmitResult, TxSignatures } from './client.js';
 import { Logger } from '../logger.js';
 import { extractTxHeader } from './header.js';
+import { toHopOrder } from './signing.js';
 
 /**
  * Every signature message in a v3 transaction record, however deeply the node nests them.
@@ -41,14 +42,36 @@ function collectSignatureMessages(node: unknown, out: Record<string, unknown>[],
 }
 
 /**
+ * Like `collectSignatureMessages`, but keeps each message's record-level `historical` flag — the node's
+ * statement that the signature no longer counts.
+ */
+function collectSignatureRecords(node: unknown, out: Array<{ message: Record<string, unknown>; historical: boolean }>, depth = 0): void {
+  if (!node || typeof node !== 'object' || depth > 8) return;
+  if (Array.isArray(node)) {
+    for (const c of node) collectSignatureRecords(c, out, depth + 1);
+    return;
+  }
+  const n = node as Record<string, unknown>;
+  const message = n['message'] as Record<string, unknown> | undefined;
+  if (message && typeof message === 'object' && message['signature']) out.push({ message, historical: n['historical'] === true });
+  for (const key of ['records', 'signatures', 'value']) {
+    const child = n[key];
+    if (child && typeof child === 'object') collectSignatureRecords(child, out, depth + 1);
+  }
+}
+
+/**
  * Unwrap a delegated signature to the key that actually signed, recording the authorities on the way.
  *
  * A delegated signature nests — `{ type: 'delegated', delegator, signature: { … } }`, possibly several
  * deep. The public key is at the bottom; the delegators are the path taken to reach it. Both matter:
  * the key hash is what a page entry holds, and the delegators are what ties a signature to a seat the
  * roster recorded.
+ *
+ * The list comes back OUTERMOST FIRST, the order it is met walking in. That is the reverse of the
+ * network's hop order; `toHopOrder` converts, and anything that signs must use the converted form.
  */
-function unwrapDelegation(sig: Record<string, unknown>): { inner: Record<string, unknown>; delegators: string[] } {
+export function unwrapDelegation(sig: Record<string, unknown>): { inner: Record<string, unknown>; delegators: string[] } {
   const delegators: string[] = [];
   let inner = sig;
   for (let i = 0; i < 8; i++) {
@@ -95,6 +118,9 @@ export class RawAccumulateClient implements AccumulateClient {
       const status: string = (rec?.status ?? '').toString();
       const executed = /delivered|executed/i.test(status);
       const expired = /expired/i.test(status);
+      // A final error status (the transaction ran and failed). Not used to retire a vote — the resolver
+      // never reads it — only to stop waiting on enrolment settlement for a transaction that will not execute.
+      const failed = !executed && !expired && /fail|error|reject/i.test(status);
       const principal = rawTransaction?.header?.principal ?? '';
       return {
         found: true,
@@ -106,6 +132,7 @@ export class RawAccumulateClient implements AccumulateClient {
         header: extractTxHeader(rawTransaction, String(principal)),
         executed,
         expired,
+        ...(failed ? { failed } : {}),
       };
     } catch (e) {
       // "The chain has no such record" and "we could not reach the chain" are different answers, and the
@@ -171,11 +198,58 @@ export class RawAccumulateClient implements AccumulateClient {
         type: String(inner['type'] ?? 'unknown'),
         publicKeyHash: createHash('sha256').update(Buffer.from(publicKey, 'hex')).digest('hex'),
         delegators,
+        hops: toHopOrder(delegators),
         ...(typeof signerUrl === 'string' && signerUrl ? { signer: signerUrl } : {}),
       });
     }
 
     return { status, delivered: /delivered|executed/i.test(status), signatures };
+  }
+
+  /**
+   * The authority signatures recorded on a transaction at `account`'s partition. Wrapper runbook, change 2.
+   *
+   * Asked at `acc://<hash>@<account>` because that routes to the account's partition, and a partition
+   * lists only the signers whose signatures it executed (`internal/api/v3/load.go:184`,
+   * `internal/database/signatures.go:112-117`). Reading at the principal would miss every signer on
+   * another BVN — a wrapper on a different partition from the org would simply never be seen.
+   *
+   * A vote that cannot be read is DROPPED, never defaulted (`readVote`): an unreadable vote treated as an
+   * accept is the one wrong answer that would make us co-sign something a person refused.
+   */
+  async getAuthoritySignatures(txHash: string, account: string): Promise<AuthorityVotes> {
+    const hash = txHash.replace(/^0x/, '');
+    let rec: any;
+    try {
+      rec = await this.query(`acc://${hash}@${account.replace(/^acc:\/\//, '')}`);
+    } catch (e) {
+      const msg = (e as Error).message ?? String(e);
+      this.logger.debug({ tx: hash, account, err: msg }, 'getAuthoritySignatures: could not read the transaction');
+      return { delivered: false, votes: [], unavailable: msg };
+    }
+    const status = String(rec?.status ?? '');
+    const records: Array<{ message: Record<string, unknown>; historical: boolean }> = [];
+    collectSignatureRecords(rec?.signatures ?? [], records);
+    const votes: AuthorityVote[] = [];
+    const seen = new Set<string>();
+    for (const { message, historical } of records) {
+      const s = message['signature'] as Record<string, unknown> | undefined;
+      if (!s || s['type'] !== 'authority') continue;
+      const origin = s['origin'];
+      const authority = s['authority'];
+      if (typeof origin !== 'string' || !origin || typeof authority !== 'string' || !authority) continue;
+      const delegators = Array.isArray(s['delegator']) ? (s['delegator'] as unknown[]) : [];
+      if (!delegators.every((d) => typeof d === 'string' && d)) continue;   // a malformed path is no path
+      // `suggest` and anything unrecognised read as undefined and are dropped: neither is an approval.
+      const vote = readVote(s['vote']);
+      if (!vote) continue;
+      const v: AuthorityVote = { origin, authority, delegators: delegators as string[], vote, historical };
+      const k = JSON.stringify(v);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      votes.push(v);
+    }
+    return { delivered: /delivered|executed/i.test(status), votes };
   }
 
   async getSignerInfo(signerUrl: string): Promise<SignerInfo> {
@@ -192,15 +266,25 @@ export class RawAccumulateClient implements AccumulateClient {
 
   async listPendingForSigner(signerUrl: string): Promise<string[]> {
     try {
-      const res: any = await this.query(signerUrl, { queryType: 'pending', range: { expand: true } });
-      const records: any[] = res?.records ?? res?.value ?? [];
-      return records
-        .map((r: any) => String(r?.id ?? r?.value?.id ?? r?.txID ?? '').replace(/^acc:\/\//, '').split('@')[0])
-        .filter(Boolean);
+      return (await this.listPendingForAccount(signerUrl)).map((p) => p.txHash);
     } catch (e) {
       this.logger.warn({ signer: signerUrl, err: (e as Error).message }, 'listPendingForSigner failed');
       return [];
     }
+  }
+
+  /**
+   * The same `pending` query, keeping the principal. The txID is `acc://<hash>@<principal>`; this used to
+   * be split and the principal thrown away, and in the wrapper model the principal is the only place the
+   * transaction can be read. Throws when the list cannot be read (see the interface).
+   */
+  async listPendingForAccount(url: string): Promise<Array<{ txHash: string; principal: string }>> {
+    const res: any = await this.query(url, { queryType: 'pending', range: { expand: true } });
+    const records: any[] = res?.records ?? res?.value ?? [];
+    return records
+      .map((r: any) => splitTxId(String(r?.id ?? r?.value?.id ?? r?.txID ?? '')))
+      .filter((p) => p.hash)
+      .map((p) => ({ txHash: p.hash, principal: p.principal ? `acc://${p.principal}` : '' }));
   }
 
   /**

@@ -5,6 +5,8 @@ import { bytesToHex } from './accumulate/signing.js';
 import { KeyPageOp, KeyPageResult } from './ops/keypage.js';
 import { PageState } from './ops/rotate.js';
 import { Orchestrator } from './orchestrator.js';
+import { bookOf } from './delegation/path.js';
+import { WrapperRegistry } from './registry/wrappers.js';
 import { Store } from './store/store.js';
 import { Keyring } from './signer/keyring.js';
 import { AccumulateClient } from './accumulate/client.js';
@@ -34,6 +36,8 @@ export interface HealthSource {
 }
 
 export interface ServerDeps {
+  /** Wrapper mode: the enrolment registry behind `/v1/admin/wrappers`. Absent => that route is 404. */
+  wrapperRegistry?: WrapperRegistry;
   orchestrator: Orchestrator;
   store: Store;
   keyring: Keyring;
@@ -174,10 +178,18 @@ export function createServer(d: ServerDeps): http.Server {
         if (!verifyHmac(d.webhookHmacSecret, sig as string, body)) {
           return json(res, 401, { error: 'bad signature' });
         }
-        const { tx_hash, signer_url } = JSON.parse(body || '{}');
+        const { tx_hash, signer_url, principal, wrapper_book } = JSON.parse(body || '{}');
         if (!tx_hash || !signer_url) return json(res, 400, { error: 'tx_hash and signer_url required' });
         metrics.inc('wallet_pending_seen_total');
-        d.orchestrator.handle({ txHash: tx_hash, signerUrl: signer_url }).catch((e) => d.logger.error({ err: e.message }, 'handle failed'));
+        // `principal` and `wrapper_book` are ROUTING HINTS (wrapper runbook, change 1): where to read the
+        // transaction and the votes. Nothing is taken on their word — the path is derived from the votes
+        // recorded at that wrapper book, and a wrong hint finds none. A hint that is not an acc:// URL is
+        // dropped rather than passed on.
+        const hint = (v: unknown) => (typeof v === 'string' && /^acc:\/\/[^\s]+$/i.test(v) ? v : undefined);
+        const p = hint(principal);
+        const wb = hint(wrapper_book);
+        d.orchestrator.handleAll({ txHash: tx_hash, signerUrl: signer_url, ...(p ? { principal: p } : {}), ...(wb ? { wrapperBook: wb } : {}) })
+          .catch((e) => d.logger.error({ err: e.message }, 'handle failed'));
         return json(res, 202, { accepted: true, tx_hash });
       }
       // NOTE: there is no /v1/decisions callback. Async policy mode is not implemented (the config rejects
@@ -217,21 +229,49 @@ export function createServer(d: ServerDeps): http.Server {
         return json(res, 200, { requests: await d.store.listRecent(limit, statuses) });
       }
 
-      // GET /v1/requests/:tx
-      let m = /^\/v1\/requests\/([a-f0-9]{64})$/.exec(path);
+      // GET /v1/requests/:key — the tx hash, or `<hash>:<16 hex>` for one wrapper path's vote.
+      let m = /^\/v1\/requests\/([a-f0-9]{64}(?::[a-f0-9]{16})?)$/.exec(path);
       if (method === 'GET' && m) {
         const reqRow = await d.store.get(m[1]);
         const receipt = await d.store.getReceipt(m[1]);
         if (!reqRow) return json(res, 404, { error: 'not found' });
         return json(res, 200, { request: reqRow, receipt });
       }
-      // POST /v1/requests/:tx/retry
-      m = /^\/v1\/requests\/([a-f0-9]{64})\/retry$/.exec(path);
+      // POST /v1/requests/:key/retry
+      m = /^\/v1\/requests\/([a-f0-9]{64}(?::[a-f0-9]{16})?)\/retry$/.exec(path);
       if (method === 'POST' && m) {
         const reqRow = await d.store.get(m[1]);
         if (!reqRow) return json(res, 404, { error: 'not found' });
-        d.orchestrator.handle({ txHash: m[1], signerUrl: reqRow.signerUrl }).catch(() => {});
+        // The transaction, not the stored path: in wrapper mode the paths are re-derived from chain state,
+        // so a retry can never replay a path the chain no longer supports.
+        d.orchestrator.handleAll({
+          txHash: reqRow.txHash, signerUrl: reqRow.signerUrl, ...(reqRow.principal ? { principal: reqRow.principal } : {}),
+          // Where to read, not what to sign: the path is re-derived from the votes recorded there.
+          ...(reqRow.delegators?.length ? { wrapperBook: bookOf(reqRow.delegators[0]!) } : {}),
+        }).catch(() => {});
         return json(res, 202, { retrying: m[1] });
+      }
+      // GET|POST /v1/admin/wrappers — the enrolment registry (wrapper mode). POST registers a wrapper as
+      // ENROLLING, before its creation transaction is submitted, so discovery watches it and the creation
+      // vote is recognised. It never makes a wrapper active: that happens only when the creation executes
+      // on chain and the result passes the wrapper check (wrapper runbook, change 6).
+      if (path === '/v1/admin/wrappers' && (method === 'GET' || method === 'POST')) {
+        if (!d.wrapperRegistry) return json(res, 404, { error: 'not in wrapper mode' });
+        if (method === 'GET') return json(res, 200, { wrappers: await d.wrapperRegistry.list() });
+        let b: any;
+        try { b = JSON.parse((await readBody(req)) || '{}'); } catch { return json(res, 400, { error: 'body must be JSON' }); }
+        const book = typeof b.wrapper_book === 'string' ? b.wrapper_book.replace(/\/+$/, '') : '';
+        if (!/^acc:\/\/[^\s/]+(\/[^\s/]+)+$/i.test(book) || /\/\d+$/.test(book)) return json(res, 400, { error: 'wrapper_book must be an acc:// key book URL' });
+        if (typeof b.subject_id !== 'string' || !b.subject_id || b.subject_id.length > 256) return json(res, 400, { error: 'subject_id required (at most 256 characters)' });
+        const existing = await d.wrapperRegistry.get(book);
+        if (existing && existing.status !== 'enrolling') return json(res, 409, { error: 'already an active wrapper', wrapper: existing });
+        // The subject is what every later vote through this wrapper stands for. Re-registering under a
+        // different subject is refused rather than silently re-pointed, even before activation.
+        if (existing && existing.subjectId !== b.subject_id) return json(res, 409, { error: 'already enrolling for a different subject', wrapper: existing });
+        const entry = { wrapperBook: book, wrapperPage: `${book}/1`, subjectId: b.subject_id, enrolledAt: 0, seats: [], status: 'enrolling' as const };
+        await d.wrapperRegistry.upsert(entry);
+        d.logger.info({ audit: 'wrapper_enrolling', wrapper: book, subject: b.subject_id }, 'wrapper registered as enrolling');
+        return json(res, 201, { wrapper: entry });
       }
       // GET /v1/config/version — the signer-config version stamped on every PolicyRequest and Receipt (6.3).
       if (method === 'GET' && path === '/v1/config/version') {

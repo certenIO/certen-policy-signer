@@ -21,6 +21,8 @@ export interface PendingTxResult {
   header?: ExtractedHeader;
   executed?: boolean;
   expired?: boolean;
+  /** The network recorded the transaction as FAILED (a final, non-success status). */
+  failed?: boolean;
 }
 
 export interface SignerInfo {
@@ -54,8 +56,24 @@ export interface ChainSignature {
    * two-line change nobody would think of as adopting chain code, and it is.
    */
   publicKeyHash: string;
-  /** The authorities a delegated signature passed through, outermost first. Empty when direct. */
+  /**
+   * The authorities a delegated signature passed through, OUTERMOST FIRST, the order a reader meets them
+   * unwrapping the wire form. Empty when direct.
+   *
+   * Kept in this order because the admin tx view and the console (`GET /v1/admin/tx-signatures`) already
+   * read it this way. Anything that SIGNS must use `hops` instead: `buildPreimage` wraps its first
+   * element innermost, so feeding it this list nests a two-hop signature backwards, and the network
+   * refuses it ("not a delegate of", `block/sig_authority.go:159`) or counts it toward nothing.
+   */
   delegators: string[];
+  /**
+   * The same path in HOP ORDER: first hop (the innermost wrapper, the page the key's own page delegates
+   * to) first. This is the network's order — `Delegator` after `unwrapDelegated` reverses the nesting
+   * (accumulate-core `block/sig_user.go:158-184`) — and the order `buildPreimage` takes. Always
+   * `delegators` reversed; a one-element path reads the same in both, which is why single-hop never
+   * showed the difference.
+   */
+  hops: string[];
   /** The key page the signature was made on, when the record names one. */
   signer?: string;
 }
@@ -93,11 +111,53 @@ export interface TxSignatures {
   unavailable?: string;
 }
 
+/**
+ * One AUTHORITY signature recorded on a transaction at some account's partition. Wrapper runbook, change 2.
+ *
+ * When a key page reaches its threshold through a delegation, the network sends the page's BOOK onward
+ * as an authority signature to `Delegator[0]`, the next page up (`block/sig_authority.go:151-200`). It is
+ * recorded on that next page only AFTER the network checked that the book really is a delegate there
+ * (`:157-160`, before `addSignature`). So unlike a key signature — recorded with whatever delegators it
+ * claims, and only on its signer's own partition — one of these on a wrapper page is proof that a human's
+ * book passed through that wrapper, read on the wrapper's partition.
+ */
+export interface AuthorityVote {
+  /** The page whose threshold was met, e.g. Alice's `acc://p.acme/book/1`. */
+  origin: string;
+  /** That page's book, e.g. `acc://p.acme/book`. */
+  authority: string;
+  /** The path as recorded, HOP ORDER: `delegators[0]` is the page it was recorded on. */
+  delegators: string[];
+  /** `suggest` and unreadable votes are dropped by the reader, never reported as one of these. */
+  vote: 'accept' | 'reject' | 'abstain';
+  /**
+   * The node marks a signature historical when it no longer counts (e.g. the page's version moved). A
+   * historical vote neither justifies ours nor proves we already voted.
+   */
+  historical: boolean;
+}
+
+export interface AuthorityVotes {
+  delivered: boolean;
+  votes: AuthorityVote[];
+  /** Set when the record could not be read. Never to be read as "nobody voted". */
+  unavailable?: string;
+}
+
 export interface AccumulateClient {
   getPendingTx(txHash: string, signerUrl: string): Promise<PendingTxResult>;
   getSignerInfo(signerUrl: string): Promise<SignerInfo>;
   /** Phase 1/2 discovery: txs in the signer page's on-chain Pending() index (principal/delegated authorities). */
   listPendingForSigner(signerUrl: string): Promise<string[]>;
+  /**
+   * Any account's pending list (v3 `pending` query), keeping each transaction's principal — the part of
+   * `acc://<hash>@<principal>` that says where the transaction can be read. Wrapper runbook, change 1:
+   * discovery reads each wrapper BOOK's list, which is where a delegated vote waits.
+   *
+   * THROWS when the list cannot be read, unlike `listPendingForSigner`: a caller counting failures per
+   * wrapper must be able to tell "nothing pending" from "could not ask".
+   */
+  listPendingForAccount(url: string): Promise<Array<{ txHash: string; principal: string }>>;
   /**
    * Phase 3 discovery: scan a key BOOK's signature chain for `signatureRequest` messages and
    * return the hashes of still-pending produced txs. Catches txs where this book is an ADDITIONAL
@@ -112,6 +172,11 @@ export interface AccumulateClient {
    * care — is still a valid `AccumulateClient`. A caller must handle its absence.
    */
   getTxSignatures?(txHash: string, principal: string): Promise<TxSignatures>;
+  /**
+   * The authority signatures on a transaction as recorded at `account`'s partition (`acc://<hash>@<account>`).
+   * Wrapper mode reads this at each wrapper book. Optional for the same reason as `getTxSignatures`.
+   */
+  getAuthoritySignatures?(txHash: string, account: string): Promise<AuthorityVotes>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -124,6 +189,7 @@ export interface MockPending {
   principal: string;
   executed?: boolean;
   expired?: boolean;
+  failed?: boolean;
 }
 
 export class MockAccumulateClient implements AccumulateClient {
@@ -150,11 +216,16 @@ export class MockAccumulateClient implements AccumulateClient {
       header: extractTxHeader(rawTransaction, p.principal),
       executed: p.executed,
       expired: p.expired,
+      ...(p.failed ? { failed: true } : {}),
     };
   }
   async getSignerInfo(): Promise<SignerInfo> { return { ...this.signer }; }
-  async listPendingForSigner(): Promise<string[]> {
+  async listPendingForSigner(_signerUrl?: string): Promise<string[]> {
     return [...this.pending.entries()].filter(([, p]) => !p.executed && !p.expired).map(([h]) => h);
+  }
+  /** Every live pending tx, with its principal: the mock does not model per-account lists. */
+  async listPendingForAccount(_url?: string): Promise<Array<{ txHash: string; principal: string }>> {
+    return [...this.pending.entries()].filter(([, p]) => !p.executed && !p.expired).map(([txHash, p]) => ({ txHash, principal: p.principal }));
   }
   /** Mock has no signature chain; discovery is exercised via listPendingForSigner. */
   async listPendingViaSignatureChain(): Promise<string[]> { return []; }
