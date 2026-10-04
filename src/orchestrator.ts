@@ -14,6 +14,7 @@ import { headerDeadlinePassed } from './accumulate/header.js';
 import { withDisplay } from './display.js';
 import { bookOf, resolveWrapperPaths, workKey } from './delegation/path.js';
 import { AuthorityVote } from './accumulate/client.js';
+import { WrapperCheck, targetsWrapper } from './delegation/wrapper.js';
 
 export interface OrchestratorOptions {
   submitRejectVote?: boolean;   // default false: deny => withhold signature (tx expires)
@@ -85,6 +86,14 @@ export interface WrapperModeOptions {
   isEnrolledWrapperPage(page: string): Promise<boolean>;
   /** Every enrolled wrapper book: where to read when a reference carries no `wrapperBook` hint. */
   wrapperBooks(): Promise<string[]>;
+  /**
+   * The on-chain invariant (wrapper runbook, change 5): does this wrapper book still require our vote?
+   * Checked for every path before the engine is asked. Absent = not checked (tests of other concerns only;
+   * index.ts always wires it).
+   */
+  checkWrapper?(wrapperBook: string): Promise<WrapperCheck>;
+  /** The same, for a transaction ON the wrapper: is it still valid after the change executes? */
+  checkWrapperChange?(wrapperBook: string, tx: ResolvedTx): Promise<WrapperCheck>;
 }
 
 /** The receipt's key fields: `workKey` only when it differs from the hash, so existing receipts keep their shape. */
@@ -336,6 +345,33 @@ export class Orchestrator {
     // right before signing (the engine may have taken a while).
     const dead = this.deadlineRefusal(tx);
     if (dead) return this.refuseDeadline(tx, dead);
+
+    // Wrapper runbook, change 5: our vote only means something while the wrapper requires it. Checked
+    // here, per path, before the engine is asked — there is nothing to decide about a wrapper that can be
+    // satisfied without us, and asking would prompt a person's live check for a vote that proves nothing.
+    if (this.d.wrapper && ref.delegators?.length) {
+      const book = bookOf(ref.delegators[0]!);
+      const w = this.d.wrapper;
+      const check = targetsWrapper(tx.account, book)
+        ? (w.checkWrapperChange ? await w.checkWrapperChange(book, tx) : { ok: false as const, reason: 'no check for changes to the wrapper is wired' })
+        : (w.checkWrapper ? await w.checkWrapper(book) : { ok: false as const, reason: 'no wrapper check is wired' });
+      if (!check.ok) {
+        // Could not READ the wrapper: no vote, and ask again next poll — an outage is not a verdict.
+        if (check.unreadable) {
+          logger.warn({ tx: tx.txHash, key, wrapper: book, err: check.reason }, 'wrapper state could not be confirmed; not signing this cycle');
+          return store.update(key, { lastError: `wrapper_unreadable: ${check.reason}` });
+        }
+        const reason = `wrapper_invariant: ${check.reason}`;
+        logger.warn({ tx: tx.txHash, key, wrapper: book, reason }, 'wrapper does not require our vote (or would not after this change); refusing to sign');
+        await this.saveReceipt({
+          ...receiptKey(tx), operationId: tx.operationId, reason,
+          ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
+          policyEvidence: { blockedBy: 'wrapper_invariant', wrapper: book, detail: check.reason },
+        });
+        this.notify('decision.denied', tx, { reason });
+        return store.update(key, { status: 'rejected', lastError: reason });
+      }
+    }
 
     // 2. Decide
     const policyReq: PolicyRequest = withDisplay({

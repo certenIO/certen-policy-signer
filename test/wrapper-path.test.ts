@@ -207,6 +207,7 @@ function wrapperSetup(enrolledPages: string[], decision: ConstructorParameters<t
     wrapper: {
       ourBook: TS_BOOK, ourPage: TS_PAGE, isEnrolledWrapperPage: enrolled(...enrolledPages),
       wrapperBooks: async () => enrolledPages.map((p) => p.replace(/\/\d+$/, '')),
+      checkWrapper: async () => ({ ok: true }),   // the invariant has its own suite (wrapper-invariant.test.ts)
     },
   });
   return { acc, store, policy, o };

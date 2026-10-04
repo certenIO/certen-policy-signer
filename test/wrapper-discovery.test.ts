@@ -77,7 +77,7 @@ describe('wrapper discovery', () => {
     const o = new Orchestrator({
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), TS_PAGE), policy: new MockPolicyClient({ decision: 'approve' }),
       store: new MemoryStore(), resolver: new Resolver(acc), logger: silent,
-      wrapper: { ourBook: TS_BOOK, ourPage: TS_PAGE, isEnrolledWrapperPage: (p) => isRegisteredWrapperPage(reg, p), wrapperBooks: async () => (await reg.list()).map((e) => e.wrapperBook) },
+      wrapper: { ourBook: TS_BOOK, ourPage: TS_PAGE, isEnrolledWrapperPage: (p) => isRegisteredWrapperPage(reg, p), wrapperBooks: async () => (await reg.list()).map((e) => e.wrapperBook), checkWrapper: async () => ({ ok: true }) },
     });
     await tick(new Poller(acc, o, TS_PAGE, 1000, silent, Date.now, undefined, TS_BOOK, { registry: reg, concurrency: 8 }));
     expect(acc.submissions).toHaveLength(1);
@@ -246,7 +246,7 @@ describe('push with routing hints', () => {
     const o = new Orchestrator({
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), TS_PAGE), policy: new MockPolicyClient({ decision: 'approve' }),
       store: new MemoryStore(), resolver: new Resolver(acc), logger: silent,
-      wrapper: { ourBook: TS_BOOK, ourPage: TS_PAGE, isEnrolledWrapperPage: async () => true, wrapperBooks: async () => [] },
+      wrapper: { ourBook: TS_BOOK, ourPage: TS_PAGE, isEnrolledWrapperPage: async () => true, wrapperBooks: async () => [], checkWrapper: async () => ({ ok: true }) },
     });
     expect(await o.handleAll({ txHash: TX, signerUrl: TS_PAGE, principal: PRINCIPAL, wrapperBook: 'acc://p.acme/id' })).toEqual([]);
     expect(acc.submissions).toHaveLength(0);

@@ -17,6 +17,7 @@ import { GatewayClient, GatewayVoteBackend } from './vote/adapters/certen-gatewa
 import { buildNotifier, MultiNotifier, NotifyConfig } from './notify.js';
 import { Orchestrator, ScopeRules, WrapperModeOptions } from './orchestrator.js';
 import { FileWrapperRegistry, MemoryWrapperRegistry, WrapperRegistry, isRegisteredWrapperPage } from './registry/wrappers.js';
+import { chainWrapperReader, checkWrapper, checkWrapperChange } from './delegation/wrapper.js';
 import { Poller } from './poller.js';
 import { createServer, PauseController, HealthSource } from './server.js';
 import { bytesToHex } from './accumulate/signing.js';
@@ -176,10 +177,15 @@ async function main() {
     wrapperRegistry = regPath ? new FileWrapperRegistry(regPath) : new MemoryWrapperRegistry();
     if (!regPath) logger.warn('wrapper mode with no store.path or wrapper_registry_path — the enrolment registry is IN MEMORY and lost on restart');
     const reg = wrapperRegistry;
+    const wrapperReader = chainWrapperReader(accumulate as RawAccumulateClient);
     wrapperMode = {
       ourBook: scopes[0].book, ourPage: scopes[0].page,
       isEnrolledWrapperPage: (page) => isRegisteredWrapperPage(reg, page),
       wrapperBooks: async () => (await reg.list()).map((e) => e.wrapperBook),
+      // The invariant, read live before every vote: Trust Stamp's book on every page, at a threshold
+      // nobody can meet without it, and the wrapper governed by itself alone.
+      checkWrapper: (book) => checkWrapper(wrapperReader, book, scopes[0].book),
+      checkWrapperChange: (book, tx) => checkWrapperChange(wrapperReader, book, scopes[0].book, tx),
     };
     logger.info({ page: scopes[0].page, registry: regPath ?? '(memory)', wrappers: (await reg.list()).length }, 'attachment model: WRAPPER delegate');
   }
