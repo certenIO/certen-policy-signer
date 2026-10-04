@@ -175,10 +175,18 @@ export function createServer(d: ServerDeps): http.Server {
         if (!verifyHmac(d.webhookHmacSecret, sig as string, body)) {
           return json(res, 401, { error: 'bad signature' });
         }
-        const { tx_hash, signer_url } = JSON.parse(body || '{}');
+        const { tx_hash, signer_url, principal, wrapper_book } = JSON.parse(body || '{}');
         if (!tx_hash || !signer_url) return json(res, 400, { error: 'tx_hash and signer_url required' });
         metrics.inc('wallet_pending_seen_total');
-        d.orchestrator.handleAll({ txHash: tx_hash, signerUrl: signer_url }).catch((e) => d.logger.error({ err: e.message }, 'handle failed'));
+        // `principal` and `wrapper_book` are ROUTING HINTS (wrapper runbook, change 1): where to read the
+        // transaction and the votes. Nothing is taken on their word — the path is derived from the votes
+        // recorded at that wrapper book, and a wrong hint finds none. A hint that is not an acc:// URL is
+        // dropped rather than passed on.
+        const hint = (v: unknown) => (typeof v === 'string' && /^acc:\/\/[^\s]+$/i.test(v) ? v : undefined);
+        const p = hint(principal);
+        const wb = hint(wrapper_book);
+        d.orchestrator.handleAll({ txHash: tx_hash, signerUrl: signer_url, ...(p ? { principal: p } : {}), ...(wb ? { wrapperBook: wb } : {}) })
+          .catch((e) => d.logger.error({ err: e.message }, 'handle failed'));
         return json(res, 202, { accepted: true, tx_hash });
       }
       // NOTE: there is no /v1/decisions callback. Async policy mode is not implemented (the config rejects

@@ -142,6 +142,7 @@ class CapturingClient implements AccumulateClient {
   async getPendingTx(): Promise<PendingTxResult> { return { found: true }; }
   async getSignerInfo(): Promise<SignerInfo> { return { version: 1, lastUsedOn: 0 }; }
   async listPendingForSigner(): Promise<string[]> { return []; }
+  async listPendingForAccount(): Promise<Array<{ txHash: string; principal: string }>> { return []; }
   async listPendingViaSignatureChain(): Promise<string[]> { return []; }
   async submit(envelope: unknown): Promise<SubmitResult> { this.envelopes.push(envelope); return { ok: true }; }
 }

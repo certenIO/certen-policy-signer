@@ -315,7 +315,14 @@ const Schema = z.object({
       signature_header: z.string().default('x-signer-signature'),
       bind: z.string().default('0.0.0.0:8081'),
     }).default({}),
-    poller: z.object({ enabled: z.boolean().default(true), interval_seconds: z.number().default(20) }).default({}),
+    poller: z.object({
+      enabled: z.boolean().default(true),
+      interval_seconds: z.number().default(20),
+      // Wrapper mode (wrapper runbook, change 1): how many wrapper books' pending lists are read at once,
+      // and where the enrolment registry lives. The path defaults to `wrappers.json` beside `store.path`.
+      wrapper_concurrency: z.number().int().positive().default(8),
+      wrapper_registry_path: z.string().optional(),
+    }).default({}),
   }).default({})),
   behavior: section(z.object({
     submit_reject_vote: z.boolean().default(false),

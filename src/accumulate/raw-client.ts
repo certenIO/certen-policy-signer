@@ -262,15 +262,25 @@ export class RawAccumulateClient implements AccumulateClient {
 
   async listPendingForSigner(signerUrl: string): Promise<string[]> {
     try {
-      const res: any = await this.query(signerUrl, { queryType: 'pending', range: { expand: true } });
-      const records: any[] = res?.records ?? res?.value ?? [];
-      return records
-        .map((r: any) => String(r?.id ?? r?.value?.id ?? r?.txID ?? '').replace(/^acc:\/\//, '').split('@')[0])
-        .filter(Boolean);
+      return (await this.listPendingForAccount(signerUrl)).map((p) => p.txHash);
     } catch (e) {
       this.logger.warn({ signer: signerUrl, err: (e as Error).message }, 'listPendingForSigner failed');
       return [];
     }
+  }
+
+  /**
+   * The same `pending` query, keeping the principal. The txID is `acc://<hash>@<principal>`; this used to
+   * be split and the principal thrown away, and in the wrapper model the principal is the only place the
+   * transaction can be read. Throws when the list cannot be read (see the interface).
+   */
+  async listPendingForAccount(url: string): Promise<Array<{ txHash: string; principal: string }>> {
+    const res: any = await this.query(url, { queryType: 'pending', range: { expand: true } });
+    const records: any[] = res?.records ?? res?.value ?? [];
+    return records
+      .map((r: any) => splitTxId(String(r?.id ?? r?.value?.id ?? r?.txID ?? '')))
+      .filter((p) => p.hash)
+      .map((p) => ({ txHash: p.hash, principal: p.principal ? `acc://${p.principal}` : '' }));
   }
 
   /**

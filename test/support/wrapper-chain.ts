@@ -26,6 +26,12 @@ export class WrapperChain extends MockAccumulateClient {
   /** Every (txHash, address) a transaction was read at, and every account votes were read at. */
   reads: Array<{ txHash: string; at: string }> = [];
   voteReads: string[] = [];
+  /** Pending txIDs per account, as the v3 `pending` query lists them. Our own page and book stay empty. */
+  pendingAt = new Map<string, Array<{ txHash: string; principal: string }>>();
+  /** Accounts whose pending query fails. */
+  failingPending = new Set<string>();
+  /** Every chain read a poll cycle made, by kind, for the capacity numbers. */
+  calls = { pendingForAccount: 0, pendingForSigner: 0, signatureChain: 0 };
   /** False = our submitted votes never show up on chain (isolates the store's own idempotency). */
   recordOurVotes = true;
 
@@ -42,6 +48,28 @@ export class WrapperChain extends MockAccumulateClient {
     const list = this.votesAt.get(at) ?? [];
     list.push({ origin: personPage, authority: bookOf(personPage), delegators: [...path], vote: 'accept', historical: false, ...over });
     this.votesAt.set(at, list);
+  }
+
+  /** A transaction waiting on `account`'s pending list (a wrapper book, when its page is short of threshold). */
+  pendingOn(account: string, txHash: string, principal: string) {
+    const list = this.pendingAt.get(account.toLowerCase()) ?? [];
+    list.push({ txHash, principal });
+    this.pendingAt.set(account.toLowerCase(), list);
+  }
+
+  override async listPendingForAccount(url: string): Promise<Array<{ txHash: string; principal: string }>> {
+    this.calls.pendingForAccount++;
+    if (this.failingPending.has(url.toLowerCase())) throw new Error(`pending query failed for ${url}`);
+    return [...(this.pendingAt.get(url.toLowerCase()) ?? [])];
+  }
+  /** A delegate's own page: always empty, as on the real network. */
+  override async listPendingForSigner(url: string): Promise<string[]> {
+    this.calls.pendingForSigner++;
+    return (this.pendingAt.get(url.toLowerCase()) ?? []).map((p) => p.txHash);
+  }
+  override async listPendingViaSignatureChain(): Promise<string[]> {
+    this.calls.signatureChain++;
+    return [];
   }
 
   override async getPendingTx(txHash: string, at?: string): Promise<PendingTxResult> {

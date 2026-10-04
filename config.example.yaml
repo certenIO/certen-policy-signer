@@ -210,6 +210,10 @@ trigger:
   poller:
     enabled: true
     interval_seconds: 20
+    # attachment_model: wrapper only. Each cycle reads every enrolled wrapper book's pending list (one read
+    # per wrapper, this many at once); the registry defaults to wrappers.json beside store.path.
+    # wrapper_concurrency: 8
+    # wrapper_registry_path: /var/lib/certen-signer/wrappers.json
   webhook:
     # Push instead of poll. Requires hmac_secret: without one the route returns 403 rather than
     # existing unauthenticated.

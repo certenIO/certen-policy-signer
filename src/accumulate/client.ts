@@ -148,6 +148,15 @@ export interface AccumulateClient {
   /** Phase 1/2 discovery: txs in the signer page's on-chain Pending() index (principal/delegated authorities). */
   listPendingForSigner(signerUrl: string): Promise<string[]>;
   /**
+   * Any account's pending list (v3 `pending` query), keeping each transaction's principal — the part of
+   * `acc://<hash>@<principal>` that says where the transaction can be read. Wrapper runbook, change 1:
+   * discovery reads each wrapper BOOK's list, which is where a delegated vote waits.
+   *
+   * THROWS when the list cannot be read, unlike `listPendingForSigner`: a caller counting failures per
+   * wrapper must be able to tell "nothing pending" from "could not ask".
+   */
+  listPendingForAccount(url: string): Promise<Array<{ txHash: string; principal: string }>>;
+  /**
    * Phase 3 discovery: scan a key BOOK's signature chain for `signatureRequest` messages and
    * return the hashes of still-pending produced txs. Catches txs where this book is an ADDITIONAL
    * (transaction-header) authority — which under Baikonur are NOT written to any Pending() index.
@@ -207,8 +216,12 @@ export class MockAccumulateClient implements AccumulateClient {
     };
   }
   async getSignerInfo(): Promise<SignerInfo> { return { ...this.signer }; }
-  async listPendingForSigner(): Promise<string[]> {
+  async listPendingForSigner(_signerUrl?: string): Promise<string[]> {
     return [...this.pending.entries()].filter(([, p]) => !p.executed && !p.expired).map(([h]) => h);
+  }
+  /** Every live pending tx, with its principal: the mock does not model per-account lists. */
+  async listPendingForAccount(_url?: string): Promise<Array<{ txHash: string; principal: string }>> {
+    return [...this.pending.entries()].filter(([, p]) => !p.executed && !p.expired).map(([txHash, p]) => ({ txHash, principal: p.principal }));
   }
   /** Mock has no signature chain; discovery is exercised via listPendingForSigner. */
   async listPendingViaSignatureChain(): Promise<string[]> { return []; }

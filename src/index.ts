@@ -1,4 +1,5 @@
 /** Entry point: wire modules from config, run the startup self-check, start servers + poller. */
+import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseArgs, helpText, VERSION, BIN } from './cli.js';
 import { loadConfig, parseBind, effectiveScopeRules, isIntakeOnly, Config } from './config.js';
@@ -14,7 +15,8 @@ import { applyKeyPageOp } from './ops/keypage.js';
 import { readPage } from './ops/rotate.js';
 import { GatewayClient, GatewayVoteBackend } from './vote/adapters/certen-gateway.js';
 import { buildNotifier, MultiNotifier, NotifyConfig } from './notify.js';
-import { Orchestrator, ScopeRules } from './orchestrator.js';
+import { Orchestrator, ScopeRules, WrapperModeOptions } from './orchestrator.js';
+import { FileWrapperRegistry, MemoryWrapperRegistry, WrapperRegistry, isRegisteredWrapperPage } from './registry/wrappers.js';
 import { Poller } from './poller.js';
 import { createServer, PauseController, HealthSource } from './server.js';
 import { bytesToHex } from './accumulate/signing.js';
@@ -165,10 +167,21 @@ async function main() {
   const delegators = cfg.wallet.attachment_model === 'delegate' && cfg.wallet.delegator_url
     ? [cfg.wallet.delegator_url]
     : undefined;
-  // Wrapper mode needs the enrolment registry to know which wrapper pages it serves. Until that is wired,
-  // refuse to start rather than run a wrapper signer that recognises no wrapper and signs nothing.
+  // Wrapper mode (wrapper runbook): the enrolment registry names the wrapper books we serve; discovery
+  // reads their pending lists and the orchestrator derives each vote's path from the votes recorded there.
+  let wrapperRegistry: WrapperRegistry | undefined;
+  let wrapperMode: WrapperModeOptions | undefined;
   if (cfg.wallet.attachment_model === 'wrapper') {
-    throw new Error('attachment_model: wrapper is not wired to an enrolment registry yet; refusing to start');
+    const regPath = cfg.trigger.poller.wrapper_registry_path ?? (cfg.store.path ? join(dirname(cfg.store.path), 'wrappers.json') : undefined);
+    wrapperRegistry = regPath ? new FileWrapperRegistry(regPath) : new MemoryWrapperRegistry();
+    if (!regPath) logger.warn('wrapper mode with no store.path or wrapper_registry_path — the enrolment registry is IN MEMORY and lost on restart');
+    const reg = wrapperRegistry;
+    wrapperMode = {
+      ourBook: scopes[0].book, ourPage: scopes[0].page,
+      isEnrolledWrapperPage: (page) => isRegisteredWrapperPage(reg, page),
+      wrapperBooks: async () => (await reg.list()).map((e) => e.wrapperBook),
+    };
+    logger.info({ page: scopes[0].page, registry: regPath ?? '(memory)', wrappers: (await reg.list()).length }, 'attachment model: WRAPPER delegate');
   }
 
   // --- per-scope rules: a fleet rarely shares one rulebook ---
@@ -234,6 +247,7 @@ async function main() {
   const orchestrator = new Orchestrator({
     accumulate, keyring, policy, store, resolver, logger, votes,
     notifier, orgId: cfg.wallet.org_id, scopeRules, configVersion: cfg.configVersion, displayLabels: cfg.decoders.labels,
+    ...(wrapperMode ? { wrapper: wrapperMode } : {}),
     options: {
       submitRejectVote: cfg.behavior.submit_reject_vote,
       maxBadVersionRetries: cfg.behavior.max_bad_version_retries,
@@ -294,6 +308,7 @@ async function main() {
         logger.child({ scope: scope.page }), Date.now,
         gatewayClient ? () => gatewayClient!.listPending() : undefined,   // supplement, never a replacement
         scope.book,
+        wrapperRegistry ? { registry: wrapperRegistry, concurrency: cfg.trigger.poller.wrapper_concurrency } : undefined,
       ))
     : [];
   // Unhealthy if ANY scope's discovery loop is stalled; lastSuccess is the oldest success across them.
