@@ -8,6 +8,26 @@ export const VOTE_CODE: Record<Vote, number> = { approve: 0, reject: 1, abstain:
 export interface PendingRef {
   txHash: string;      // hex, 64 chars
   signerUrl: string;   // acc://<org>.acme/book/1
+  /**
+   * The transaction's principal, when the discoverer knows it. Wrapper runbook, change 2.
+   *
+   * A pending txID is `acc://<hash>@<principal>`, and the transaction is read at that address. Without
+   * it the resolver asks for `<hash>@<signerUrl>`, which in the wrapper model is Trust Stamp's page — an
+   * account the transaction never touches, possibly on another partition.
+   */
+  principal?: string;
+  /**
+   * Wrapper mode only: the delegation path to sign through, HOP ORDER (first hop first). Set by the
+   * orchestrator from `resolveWrapperPaths`, never by a trigger — a push or poll names a transaction,
+   * and the path is always re-derived from the signatures on chain. `[]` is a direct vote on our page.
+   */
+  delegators?: string[];
+  /**
+   * Wrapper mode, a ROUTING HINT only: the wrapper book the transaction was found pending on. It says
+   * where to read the votes, nothing more — every path is still derived from the authority signatures
+   * recorded there, and a wrong hint simply finds none. Absent, every enrolled wrapper book is read.
+   */
+  wrapperBook?: string;
 }
 
 /**
@@ -237,6 +257,10 @@ export interface ResolvedTx {
   headerExpiryUnreadable?: string;
   rawTransaction: unknown;        // opaque tx object to re-submit in the envelope
   lastUsedOn: number;             // micros, for timestamp derivation
+  /** The store key this work runs under (internal). Absent means `txHash`. */
+  workKey?: string;
+  /** Wrapper mode: the delegation path this vote travels, hop order (internal; see `PendingRef`). */
+  delegators?: string[];
 }
 
 /** Request sent to the org's policy engine. */
@@ -278,6 +302,13 @@ export interface PolicyRequest {
   calldataDecoded?: string | LegCall[];
   /** Accumulate body type of the transaction (`writeData`, `updateKeyPage`, `updateAccountAuth`, …). */
   bodyType?: string;
+  /**
+   * Wrapper mode only (wrapper runbook, change 2): WHICH enrolled wrapper this vote is for, and the path
+   * it travels in hop order (`path[0] === page`). One transaction can need Trust Stamp on several
+   * wrappers at once — Alice's and Bob's — and each is its own request with its own answer, because each
+   * stands for a different person's live check. Absent outside wrapper mode.
+   */
+  wrapper?: { page: string; path: string[] };
   /** `sha256:` + hex of the canonical JSON of this signer's effective config, secrets removed. */
   configVersion?: string;
   /** Assets moved or referenced by decoded legs. See `LegAsset`. */
@@ -365,7 +396,15 @@ export const REQUEST_STATUSES = [
 export type RequestStatus = (typeof REQUEST_STATUSES)[number];
 
 export interface SigningRequest {
+  /**
+   * The store key: `txHash`, or `txHash:<16 hex>` for a vote on one delegation path (see `workKey` in
+   * src/delegation/path.ts). Absent on records written before paths existed, which are keyed by txHash.
+   */
+  workKey?: string;
   txHash: string;
+  /** Wrapper mode: the path this vote travels, hop order, and the principal the tx was read at. */
+  delegators?: string[];
+  principal?: string;
   operationId?: string;
   account?: string;
   signerUrl: string;
@@ -384,6 +423,8 @@ export interface SigningRequest {
 
 export interface Receipt {
   txHash: string;
+  /** Matches the request's `workKey`. Two votes on one tx (two wrapper paths) are two receipts. */
+  workKey?: string;
   operationId?: string;
   decision?: 'approve' | 'deny';
   /**

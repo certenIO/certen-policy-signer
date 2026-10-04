@@ -217,6 +217,10 @@ POST <policy.url>    content-type: application/json
     "expiresAt":   "2026-07-26T13:00:00Z",         // the ON-CHAIN deadline (header.expire.atTime); absent if none
     "memo":        "PO-1043"                       // submitter free text, display only; absent if none
   },
+  "wrapper": {                        // attachment_model: wrapper only — WHICH subscriber's wrapper this vote is for
+    "page": "acc://alice.acme/id/1",                 // the enrolled wrapper page; one request per wrapper on the tx
+    "path": ["acc://alice.acme/id/1", "acc://acme.acme/treasury/1"]  // the path the vote travels, first hop first
+  },
   "display":       [["Principal", "acc://acme.acme/orders"], ["Body type", "writeData"], ["Payer", "acc://acme.acme"]],  // Phase 7: what a human is shown
   "summaryHash":   "77533e7e…",       // tcl-summary/v1 of `display` (lowercase hex); tx hash and vote are NOT inside
   "expiresAt":     "2026-07-26T12:00:00Z"         // THIS REQUEST's validity (policy TTL) — not the on-chain deadline

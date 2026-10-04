@@ -109,6 +109,39 @@ export interface TxSignatures {
   unavailable?: string;
 }
 
+/**
+ * One AUTHORITY signature recorded on a transaction at some account's partition. Wrapper runbook, change 2.
+ *
+ * When a key page reaches its threshold through a delegation, the network sends the page's BOOK onward
+ * as an authority signature to `Delegator[0]`, the next page up (`block/sig_authority.go:151-200`). It is
+ * recorded on that next page only AFTER the network checked that the book really is a delegate there
+ * (`:157-160`, before `addSignature`). So unlike a key signature — recorded with whatever delegators it
+ * claims, and only on its signer's own partition — one of these on a wrapper page is proof that a human's
+ * book passed through that wrapper, read on the wrapper's partition.
+ */
+export interface AuthorityVote {
+  /** The page whose threshold was met, e.g. Alice's `acc://p.acme/book/1`. */
+  origin: string;
+  /** That page's book, e.g. `acc://p.acme/book`. */
+  authority: string;
+  /** The path as recorded, HOP ORDER: `delegators[0]` is the page it was recorded on. */
+  delegators: string[];
+  /** `suggest` and unreadable votes are dropped by the reader, never reported as one of these. */
+  vote: 'accept' | 'reject' | 'abstain';
+  /**
+   * The node marks a signature historical when it no longer counts (e.g. the page's version moved). A
+   * historical vote neither justifies ours nor proves we already voted.
+   */
+  historical: boolean;
+}
+
+export interface AuthorityVotes {
+  delivered: boolean;
+  votes: AuthorityVote[];
+  /** Set when the record could not be read. Never to be read as "nobody voted". */
+  unavailable?: string;
+}
+
 export interface AccumulateClient {
   getPendingTx(txHash: string, signerUrl: string): Promise<PendingTxResult>;
   getSignerInfo(signerUrl: string): Promise<SignerInfo>;
@@ -128,6 +161,11 @@ export interface AccumulateClient {
    * care — is still a valid `AccumulateClient`. A caller must handle its absence.
    */
   getTxSignatures?(txHash: string, principal: string): Promise<TxSignatures>;
+  /**
+   * The authority signatures on a transaction as recorded at `account`'s partition (`acc://<hash>@<account>`).
+   * Wrapper mode reads this at each wrapper book. Optional for the same reason as `getTxSignatures`.
+   */
+  getAuthoritySignatures?(txHash: string, account: string): Promise<AuthorityVotes>;
 }
 
 /* ------------------------------------------------------------------ */

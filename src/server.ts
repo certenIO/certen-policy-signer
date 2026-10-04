@@ -5,6 +5,7 @@ import { bytesToHex } from './accumulate/signing.js';
 import { KeyPageOp, KeyPageResult } from './ops/keypage.js';
 import { PageState } from './ops/rotate.js';
 import { Orchestrator } from './orchestrator.js';
+import { bookOf } from './delegation/path.js';
 import { Store } from './store/store.js';
 import { Keyring } from './signer/keyring.js';
 import { AccumulateClient } from './accumulate/client.js';
@@ -177,7 +178,7 @@ export function createServer(d: ServerDeps): http.Server {
         const { tx_hash, signer_url } = JSON.parse(body || '{}');
         if (!tx_hash || !signer_url) return json(res, 400, { error: 'tx_hash and signer_url required' });
         metrics.inc('wallet_pending_seen_total');
-        d.orchestrator.handle({ txHash: tx_hash, signerUrl: signer_url }).catch((e) => d.logger.error({ err: e.message }, 'handle failed'));
+        d.orchestrator.handleAll({ txHash: tx_hash, signerUrl: signer_url }).catch((e) => d.logger.error({ err: e.message }, 'handle failed'));
         return json(res, 202, { accepted: true, tx_hash });
       }
       // NOTE: there is no /v1/decisions callback. Async policy mode is not implemented (the config rejects
@@ -217,20 +218,26 @@ export function createServer(d: ServerDeps): http.Server {
         return json(res, 200, { requests: await d.store.listRecent(limit, statuses) });
       }
 
-      // GET /v1/requests/:tx
-      let m = /^\/v1\/requests\/([a-f0-9]{64})$/.exec(path);
+      // GET /v1/requests/:key — the tx hash, or `<hash>:<16 hex>` for one wrapper path's vote.
+      let m = /^\/v1\/requests\/([a-f0-9]{64}(?::[a-f0-9]{16})?)$/.exec(path);
       if (method === 'GET' && m) {
         const reqRow = await d.store.get(m[1]);
         const receipt = await d.store.getReceipt(m[1]);
         if (!reqRow) return json(res, 404, { error: 'not found' });
         return json(res, 200, { request: reqRow, receipt });
       }
-      // POST /v1/requests/:tx/retry
-      m = /^\/v1\/requests\/([a-f0-9]{64})\/retry$/.exec(path);
+      // POST /v1/requests/:key/retry
+      m = /^\/v1\/requests\/([a-f0-9]{64}(?::[a-f0-9]{16})?)\/retry$/.exec(path);
       if (method === 'POST' && m) {
         const reqRow = await d.store.get(m[1]);
         if (!reqRow) return json(res, 404, { error: 'not found' });
-        d.orchestrator.handle({ txHash: m[1], signerUrl: reqRow.signerUrl }).catch(() => {});
+        // The transaction, not the stored path: in wrapper mode the paths are re-derived from chain state,
+        // so a retry can never replay a path the chain no longer supports.
+        d.orchestrator.handleAll({
+          txHash: reqRow.txHash, signerUrl: reqRow.signerUrl, ...(reqRow.principal ? { principal: reqRow.principal } : {}),
+          // Where to read, not what to sign: the path is re-derived from the votes recorded there.
+          ...(reqRow.delegators?.length ? { wrapperBook: bookOf(reqRow.delegators[0]!) } : {}),
+        }).catch(() => {});
         return json(res, 202, { retrying: m[1] });
       }
       // GET /v1/config/version — the signer-config version stamped on every PolicyRequest and Receipt (6.3).

@@ -96,7 +96,7 @@ export class Poller {
       const hashes = [...new Set([...viaPending, ...viaSigChain, ...viaGateway])];
       for (const txHash of hashes) {
         metrics.inc('wallet_pending_seen_total');
-        await this.orch.handle({ txHash, signerUrl: this.signerUrl }).catch((e) =>
+        await this.orch.handleAll({ txHash, signerUrl: this.signerUrl }).catch((e) =>
           this.logger.error({ tx: txHash, err: e.message }, 'poller handle failed'));
       }
       this.lastSuccessAt = this.now();

@@ -5,7 +5,7 @@
  */
 import axios, { AxiosInstance } from 'axios';
 import { createHash } from 'node:crypto';
-import { AccumulateClient, ChainSignature, PendingTxResult, SignerInfo, SubmitResult, TxSignatures } from './client.js';
+import { AccumulateClient, AuthorityVote, AuthorityVotes, ChainSignature, PendingTxResult, SignerInfo, SubmitResult, TxSignatures } from './client.js';
 import { Logger } from '../logger.js';
 import { extractTxHeader } from './header.js';
 import { toHopOrder } from './signing.js';
@@ -38,6 +38,25 @@ function collectSignatureMessages(node: unknown, out: Record<string, unknown>[],
     const child = n[key];
     if (Array.isArray(child)) for (const c of child) collectSignatureMessages(c, out, depth + 1);
     else if (child && typeof child === 'object') collectSignatureMessages(child, out, depth + 1);
+  }
+}
+
+/**
+ * Like `collectSignatureMessages`, but keeps each message's record-level `historical` flag — the node's
+ * statement that the signature no longer counts.
+ */
+function collectSignatureRecords(node: unknown, out: Array<{ message: Record<string, unknown>; historical: boolean }>, depth = 0): void {
+  if (!node || typeof node !== 'object' || depth > 8) return;
+  if (Array.isArray(node)) {
+    for (const c of node) collectSignatureRecords(c, out, depth + 1);
+    return;
+  }
+  const n = node as Record<string, unknown>;
+  const message = n['message'] as Record<string, unknown> | undefined;
+  if (message && typeof message === 'object' && message['signature']) out.push({ message, historical: n['historical'] === true });
+  for (const key of ['records', 'signatures', 'value']) {
+    const child = n[key];
+    if (child && typeof child === 'object') collectSignatureRecords(child, out, depth + 1);
   }
 }
 
@@ -181,6 +200,52 @@ export class RawAccumulateClient implements AccumulateClient {
     }
 
     return { status, delivered: /delivered|executed/i.test(status), signatures };
+  }
+
+  /**
+   * The authority signatures recorded on a transaction at `account`'s partition. Wrapper runbook, change 2.
+   *
+   * Asked at `acc://<hash>@<account>` because that routes to the account's partition, and a partition
+   * lists only the signers whose signatures it executed (`internal/api/v3/load.go:184`,
+   * `internal/database/signatures.go:112-117`). Reading at the principal would miss every signer on
+   * another BVN — a wrapper on a different partition from the org would simply never be seen.
+   *
+   * A vote that cannot be read is DROPPED, never defaulted (`readVote`): an unreadable vote treated as an
+   * accept is the one wrong answer that would make us co-sign something a person refused.
+   */
+  async getAuthoritySignatures(txHash: string, account: string): Promise<AuthorityVotes> {
+    const hash = txHash.replace(/^0x/, '');
+    let rec: any;
+    try {
+      rec = await this.query(`acc://${hash}@${account.replace(/^acc:\/\//, '')}`);
+    } catch (e) {
+      const msg = (e as Error).message ?? String(e);
+      this.logger.debug({ tx: hash, account, err: msg }, 'getAuthoritySignatures: could not read the transaction');
+      return { delivered: false, votes: [], unavailable: msg };
+    }
+    const status = String(rec?.status ?? '');
+    const records: Array<{ message: Record<string, unknown>; historical: boolean }> = [];
+    collectSignatureRecords(rec?.signatures ?? [], records);
+    const votes: AuthorityVote[] = [];
+    const seen = new Set<string>();
+    for (const { message, historical } of records) {
+      const s = message['signature'] as Record<string, unknown> | undefined;
+      if (!s || s['type'] !== 'authority') continue;
+      const origin = s['origin'];
+      const authority = s['authority'];
+      if (typeof origin !== 'string' || !origin || typeof authority !== 'string' || !authority) continue;
+      const delegators = Array.isArray(s['delegator']) ? (s['delegator'] as unknown[]) : [];
+      if (!delegators.every((d) => typeof d === 'string' && d)) continue;   // a malformed path is no path
+      // `suggest` and anything unrecognised read as undefined and are dropped: neither is an approval.
+      const vote = readVote(s['vote']);
+      if (!vote) continue;
+      const v: AuthorityVote = { origin, authority, delegators: delegators as string[], vote, historical };
+      const k = JSON.stringify(v);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      votes.push(v);
+    }
+    return { delivered: /delivered|executed/i.test(status), votes };
   }
 
   async getSignerInfo(signerUrl: string): Promise<SignerInfo> {

@@ -101,6 +101,12 @@ export interface CastOptions {
    */
   memo?: string;
   data?: Uint8Array;
+  /**
+   * The delegation path for THIS vote, hop order. Wrapper runbook, change 2: a wrapper's path differs
+   * per transaction, so it cannot be fixed at boot. When given (even empty) it wins over the backend's
+   * boot-time `delegators`; absent, the boot-time value applies exactly as before.
+   */
+  delegators?: string[];
 }
 
 export interface VoteBackend {
@@ -149,7 +155,7 @@ export class DirectVoteBackend implements VoteBackend {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const publicKey = await signer.publicKey();
       const timestamp = computeTimestamp(lastUsedOn, this.now() * 1000);
-      const delegators = this.opts.delegators;
+      const delegators = castOpts.delegators ?? this.opts.delegators;
       // The key declares its own algorithm; the metadata must say the same thing, because the type is
       // inside the hash that gets signed. Never assume Ed25519 here — a PKI key on the page is normal.
       const pre = buildPreimage(hexToBytes(tx.txHash), {

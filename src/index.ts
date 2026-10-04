@@ -165,6 +165,11 @@ async function main() {
   const delegators = cfg.wallet.attachment_model === 'delegate' && cfg.wallet.delegator_url
     ? [cfg.wallet.delegator_url]
     : undefined;
+  // Wrapper mode needs the enrolment registry to know which wrapper pages it serves. Until that is wired,
+  // refuse to start rather than run a wrapper signer that recognises no wrapper and signs nothing.
+  if (cfg.wallet.attachment_model === 'wrapper') {
+    throw new Error('attachment_model: wrapper is not wired to an enrolment registry yet; refusing to start');
+  }
 
   // --- per-scope rules: a fleet rarely shares one rulebook ---
   //

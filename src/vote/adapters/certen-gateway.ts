@@ -155,6 +155,11 @@ export class GatewayVoteBackend implements VoteBackend {
     // put a vote on chain that does NOT commit to the evidence the policy engine supplied, and nothing
     // downstream could tell. Refuse instead (wrapper runbook, change 4); config refuses the boot when
     // `require_signature_data` is combined with the gateway.
+    // Nor can it sign through a delegation path: its preimage is for a direct signature on its page.
+    if (castOpts.delegators?.length) {
+      this.logger.error({ tx: tx.txHash, via: 'gateway' }, 'a delegated vote was asked of the gateway, which cannot build one — refusing to sign');
+      return { ok: false, error: 'gateway backend cannot sign through a delegation path' };
+    }
     if (castOpts.memo || castOpts.data) {
       this.logger.error({ tx: tx.txHash, via: 'gateway' }, 'the decision supplied signature data the gateway cannot carry — refusing to sign');
       return { ok: false, error: 'gateway backend cannot carry signature memo/data' };

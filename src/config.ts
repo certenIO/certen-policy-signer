@@ -212,7 +212,10 @@ const Schema = z.object({
       policy: PolicyOverrideSchema.optional(),
       behavior: BehaviorOverrideSchema.optional(),
     })).optional(),
-    attachment_model: z.enum(['authority', 'delegate', 'per_tx']).default('authority'),
+    // `wrapper` (Trust Stamp, wrapper runbook): this signer is a delegate on enrolled subscribers' wrapper
+    // pages, and each vote's delegation path is derived per transaction from the human signature on it.
+    // `delegator_url` is meaningless there and refused alongside it.
+    attachment_model: z.enum(['authority', 'delegate', 'per_tx', 'wrapper']).default('authority'),
     delegator_url: z.string().nullish(),
     // SR6: refuse to start unless our public key is verifiably on the signer page. Setting this true
     // downgrades that to a warning — only for pages whose key hashes the node will not expose.
@@ -602,6 +605,14 @@ export function loadConfig(path: string): Config {
   if (cfg.gateway.api_key) cfg.gateway.api_key = resolveSecret(cfg.gateway.api_key);
   if (cfg.gateway.enabled && (!cfg.gateway.url || !cfg.gateway.api_key || !cfg.gateway.identity)) {
     throw new Error('gateway.enabled requires gateway.url, gateway.api_key and gateway.identity');
+  }
+  // Wrapper mode derives the path per transaction. A `delegator_url` next to it would leave a reader
+  // wondering which one signs; refuse rather than pick. The gateway cannot build a delegated signature at
+  // all, and the mode serves exactly one page of ours (the path resolver and the keyring both assume it).
+  if (cfg.wallet.attachment_model === 'wrapper') {
+    if (cfg.wallet.delegator_url) throw new Error('config: wallet.delegator_url must not be set with attachment_model: wrapper — the path is derived per transaction');
+    if (cfg.gateway.enabled) throw new Error('config: attachment_model: wrapper cannot vote through gateway.enabled — the gateway cannot build a delegated signature');
+    if ((cfg.wallet.scopes?.length ?? 0) > 1) throw new Error('config: attachment_model: wrapper serves exactly one page; wallet.scopes has more than one');
   }
   // The gateway builds the preimage and has no field for signature data, so every approval would be
   // refused at signing time. Say so now rather than on the first transaction.
