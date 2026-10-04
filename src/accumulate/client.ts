@@ -54,8 +54,24 @@ export interface ChainSignature {
    * two-line change nobody would think of as adopting chain code, and it is.
    */
   publicKeyHash: string;
-  /** The authorities a delegated signature passed through, outermost first. Empty when direct. */
+  /**
+   * The authorities a delegated signature passed through, OUTERMOST FIRST, the order a reader meets them
+   * unwrapping the wire form. Empty when direct.
+   *
+   * Kept in this order because the admin tx view and the console (`GET /v1/admin/tx-signatures`) already
+   * read it this way. Anything that SIGNS must use `hops` instead: `buildPreimage` wraps its first
+   * element innermost, so feeding it this list nests a two-hop signature backwards, and the network
+   * refuses it ("not a delegate of", `block/sig_authority.go:159`) or counts it toward nothing.
+   */
   delegators: string[];
+  /**
+   * The same path in HOP ORDER: first hop (the innermost wrapper, the page the key's own page delegates
+   * to) first. This is the network's order — `Delegator` after `unwrapDelegated` reverses the nesting
+   * (accumulate-core `block/sig_user.go:158-184`) — and the order `buildPreimage` takes. Always
+   * `delegators` reversed; a one-element path reads the same in both, which is why single-hop never
+   * showed the difference.
+   */
+  hops: string[];
   /** The key page the signature was made on, when the record names one. */
   signer?: string;
 }

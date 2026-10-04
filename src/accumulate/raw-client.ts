@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { AccumulateClient, ChainSignature, PendingTxResult, SignerInfo, SubmitResult, TxSignatures } from './client.js';
 import { Logger } from '../logger.js';
 import { extractTxHeader } from './header.js';
+import { toHopOrder } from './signing.js';
 
 /**
  * Every signature message in a v3 transaction record, however deeply the node nests them.
@@ -47,8 +48,11 @@ function collectSignatureMessages(node: unknown, out: Record<string, unknown>[],
  * deep. The public key is at the bottom; the delegators are the path taken to reach it. Both matter:
  * the key hash is what a page entry holds, and the delegators are what ties a signature to a seat the
  * roster recorded.
+ *
+ * The list comes back OUTERMOST FIRST, the order it is met walking in. That is the reverse of the
+ * network's hop order; `toHopOrder` converts, and anything that signs must use the converted form.
  */
-function unwrapDelegation(sig: Record<string, unknown>): { inner: Record<string, unknown>; delegators: string[] } {
+export function unwrapDelegation(sig: Record<string, unknown>): { inner: Record<string, unknown>; delegators: string[] } {
   const delegators: string[] = [];
   let inner = sig;
   for (let i = 0; i < 8; i++) {
@@ -171,6 +175,7 @@ export class RawAccumulateClient implements AccumulateClient {
         type: String(inner['type'] ?? 'unknown'),
         publicKeyHash: createHash('sha256').update(Buffer.from(publicKey, 'hex')).digest('hex'),
         delegators,
+        hops: toHopOrder(delegators),
         ...(typeof signerUrl === 'string' && signerUrl ? { signer: signerUrl } : {}),
       });
     }

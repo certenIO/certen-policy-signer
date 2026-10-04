@@ -46,6 +46,18 @@ export function computeTimestamp(lastUsedOnMicros: number, nowMicros: number): n
   return Math.max(lastUsedOnMicros + 2_000_000, nowMicros + 1_000_000);
 }
 
+/**
+ * Outermost-first delegators (the order `unwrapDelegation` and `ChainSignature.delegators` give) to hop
+ * order (first hop first), the order `buildPreimage` wraps in and the network stores.
+ *
+ * The network collects delegators walking the nesting from the outside, then reverses them "since the
+ * structure nesting is effectively inverted" (accumulate-core `block/sig_user.go:158-184`). This is that
+ * reversal. A copy, never in place: callers keep the outermost-first list for display.
+ */
+export function toHopOrder(outerFirst: string[]): string[] {
+  return [...outerFirst].reverse();
+}
+
 export interface PreimageParams {
   /** The key as its signature type carries it: raw for Ed25519, PKIX/SPKI DER for ECDSA, PKCS#1 for RSA. */
   publicKey: Uint8Array;
@@ -61,7 +73,7 @@ export interface PreimageParams {
   signerVersion: number;
   timestamp: number;       // micros
   vote: Vote;
-  /** Delegate model: outer->inner delegator page URLs wrapping the key signature. */
+  /** Delegate model: delegator page URLs in HOP ORDER (first hop = innermost wrapper), as the network stores them. */
   delegators?: string[];
 }
 
