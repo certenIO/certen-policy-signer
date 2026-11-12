@@ -26,6 +26,14 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Added
 
+- **Rotation-safe reader, read cache and chain relay routes (DAX-4S round 2).** The Grant head and the subject are read by the core's ONLINE
+  readers (no key page; the account authority rule and the account's main chain from its creation), the subject only through the
+  grantor's registry and its own `certen-acceptances`. `binding.registry_principals` is REMOVED (nothing to list) and `binding.grantor_book`
+  is required with `grantor_adi`. All node reads go through a cache keyed by account and main-chain length with a hard TTL of at most 30
+  seconds, bounded concurrency and back-off (`reader` block). Relay clients with scope `chain` get GET `/relay/data|authorities|history|keybook/:account`.
+  `PolicyRequest.binding` carries the ten members of the request to bind (a seat that requires binding only). `legCount` is derived from
+  the legs and always supplied (a two-leg intent is `multi_leg_unsupported`). The request mapping refuses what the strict decoder refuses
+  (checksum-case addresses, a missing 0x, a dirty address word). Pausing what is paused answers 200 `status: already_paused`.
 - **Decision binding (DAX-4S).** `binding` (top level or per scope) makes the signer accept a decision only when its certen.decision/v1
   `record` names the exact transaction about to be signed (the request hash is recomputed from the transaction, with the validator
   operation id recomputed from its four blobs), an authorised approver identity, this seat, the pinned policy hash, the head of the

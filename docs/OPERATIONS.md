@@ -258,6 +258,15 @@ again before **every** signature (a reject vote included) and survives a restart
 
 ### Decision binding (`binding`)
 
+The Accumulate facts behind a Grant (READER-MODEL-V2) are read through ONE cache shared with the Console relay routes: keyed by account
+and main-chain length (one chain-length query per account per evaluation says whether anything changed), a hard TTL of at most 30
+seconds (`reader.cache_ttl_seconds`, a revocation or supersede is visible within it), failures and incomplete answers never cached, one
+read in flight per fact, at most `reader.max_concurrency` node queries at once, exponential back-off after a node-side error. A steady
+state evaluation makes at most four node queries; `/metrics` shows `reader_node_queries_total`, `reader_cache_hits_total`,
+`reader_cache_misses_total`, `reader_cache_invalidations_total`, `reader_coalesced_total` and `reader_backoff_refusals_total`, and the
+journal entry that spends a nonce records the cost and the age of the facts it was bound on. The Grant is read from the grantor accounts
+only (`binding.grantor_adi`, `binding.grantor_book`); no key page is read, so a key rotation does not change a verdict.
+
 A scope with a `binding` block accepts a decision only when its `record` (certen.decision/v1) names the exact transaction about to be
 signed, an authorised approver, this seat, the pinned policy hash (when set) and an unspent nonce; a reply without one is refused. Every
 accepted nonce is written to the journal before the signature is made, so a decision cannot be used twice, a restart included. Refusals are

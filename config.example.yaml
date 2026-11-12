@@ -308,7 +308,8 @@ store:
 #   # policy_hash: "0x…"                   # pin of the seat's active rule set; omitted = the hash is recorded and NOT compared
 #   # require_grant: true                  # a Grant must be named by both the decision and the transaction
 #   # grantor_adi: "acc://grantor.acme"    # whose Grants this seat takes (needed whenever a transaction names one)
-#   # registry_principals: ["acc://principal.acme"]   # whose subject registries this seat reads
+#   # grantor_book: "acc://grantor.acme/book"   # the key book that must own the grantor accounts (certen-grants, certen-subjects)
+#   #   (a subject resolves ONLY through the grantor registry and its own certen-acceptances account: no registry list)
 
 health:
   bind: "0.0.0.0:8080"
@@ -325,7 +326,7 @@ admin:
   # Console decision service, sent as x-relay-client + x-api-key. Each key is its own secret (>= 16 chars,
   # not the admin, governance or relay token). Scopes: proof, tx, pending, governance (governance also
   # needs x-governance-key and only ever touches pages this signer holds).
-  # relay_clients:
+  # relay_clients:   # scope `chain` serves GET /relay/data|authorities|history|keybook/:account (read-only, v3 only, through the reader cache)
   #   - { name: "compliance-decision", key: "env:SIGNER_RELAY_KEY_COMPLIANCE", scopes: [proof, tx, pending] }
 
 # Officer intake (Phase 7; docs/OPERATIONS.md "Officer intake"). Personal signatures made on a person's own
