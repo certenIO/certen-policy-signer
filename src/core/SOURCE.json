@@ -1,0 +1,19 @@
+{
+  "commit": "54c70696c49a4e30cb3096cace8dc571bdfb0f40",
+  "dir": "packages/core/src",
+  "files": {
+    "bytes.ts": "a6e87147398be7fab345727dbef4f4cb1b953972dff446ccbe14d3caef61d7d7",
+    "jcs.ts": "d6f72cf0a5fa086d589bb2a193fe6640475730b70f650110916bfffdf1fb3993",
+    "grant-profile.ts": "32889282c6a290e307318f743df51ca55fbc938da2d52b10df9dc38062f4b9f1",
+    "registry-profile.ts": "7ac59237c6e4181404ae7703115c14e7216b944a2ba96cc07fe4d1ee975ce1ec",
+    "hashes.ts": "4c498d8569659b3a47a91b86ef34322163f0f11226dcb1ecb90b6e9eef1a63cd",
+    "envelope.ts": "d733e3170c86fe3526258a61db283fc7296e46fd3e8b4d3cb0ca20eed45380cb",
+    "grant.ts": "7b8970c56b7aa957b78dead2a7cd8c9fde3dd2ab62b333a95f1a815d64e13685",
+    "registry.ts": "e2cf0808b6bb2399490135a17a3ec43c09bb715c82f9bb9bebe9b8e306ada135",
+    "reader.ts": "35c8dd647a5c4e606e135f37120924d65d01b5fb4629e4d439377af310221d95",
+    "log.ts": "1c084c74850ea8e4d0ea6acf31d4058115faff903069946d30290fadd48feb9b",
+    "decision-identity.ts": "477872451e1cc69d979494ed67e4a69797273a6115c94eec9d8fe3e151001cdf",
+    "decision-binding.ts": "1f95fe51c000a8ca67afb7ab42b5307505b91333bc323ae289b90492ef62bc26",
+    "pause.ts": "84f63d0a2b9ebc6a3110fa97d2966ea5681c26794a646658c9ecb23422368426"
+  }
+}
