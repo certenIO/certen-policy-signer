@@ -51,6 +51,7 @@ export interface RigOpts {
   seat?: string;
   page?: string;
   keyring?: Keyring;
+  store?: MemoryStore;
 }
 export function rig(o: RigOpts) {
   const dir = o.dir ?? tmp();
@@ -62,7 +63,7 @@ export function rig(o: RigOpts) {
   const acc = new MockAccumulateClient();
   const tx = o.tx ?? TX;
   acc.addPending(tx, { body: o.body, principal: `${PRINCIPAL}/tokens` });
-  const store = new MemoryStore();
+  const store = o.store ?? new MemoryStore();
   const policy = new MockPolicyClient(o.reply);
   const orch = new Orchestrator({
     accumulate: acc, keyring: o.keyring ?? singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))), policy, store, resolver: new Resolver(acc), logger: silent,

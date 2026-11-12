@@ -10,6 +10,9 @@ import { DECISION_RECORD_MEMBER } from '../src/binding/verify.js';
 import { ADDR, APPROVER, GRANTOR, GRANT_HASH, H, KEY, POLICY, PRINCIPAL, SEAT, SUBJECT, fakeWorld, intentBody, leg, subjectClaim } from './support/binding-fixtures.js';
 import { NOW_S, RULES, SIGNER, TX, approveFor, rig, silent, tmp, type Body, type RigOpts } from './support/binding-rig.js';
 import { Orchestrator } from '../src/orchestrator.js';
+import { MemoryStore } from '../src/store/store.js';
+import type { PauseStore } from '../src/binding/pause-store.js';
+import type { SigningRequest } from '../src/types.js';
 import { Resolver } from '../src/resolver.js';
 import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
@@ -264,6 +267,43 @@ describe('the Grant and the subject join (DAX-4-A15, DE-06, DE-54, DE-61, DE-71,
   });
 });
 
+class HookStore extends MemoryStore {
+  onApproved: (() => Promise<void>) | undefined;
+  async update(key: string, patch: Partial<SigningRequest>) {
+    if (patch.status === 'approved' && this.onApproved) await this.onApproved();
+    return super.update(key, patch);
+  }
+}
+
+describe('the pause is read again at the moment of EACH signature', () => {
+  const op = { scope: 'seat' as const, id: SEAT, by: 'seat:fic-operator', reason: 'FICTIONAL: stop signing now' };
+  it('a pause set after every earlier check, just before the vote, still stops it (an unbound seat: no binding step in between)', async () => {
+    const store = new HookStore();
+    const r = rig({ body: BASE, rules: null, store, reply: () => ({ decision: 'approve', reason: 'legacy' }) });
+    store.onApproved = async () => { await r.pauses.set(op); };
+    const row = await r.handle();
+    expect(row.lastError).toBe('paused');
+    expect(r.acc.submissions).toHaveLength(0);
+  });
+
+  it('one decision that casts two named keys: a pause set between them stops the second key', async () => {
+    const calls: string[] = [];
+    let pauses: PauseStore | undefined;
+    const votes = {
+      async cast(_tx: unknown, _vote: string, opts?: { keyRef?: string }) {
+        calls.push(opts?.keyRef ?? '');
+        if (calls.length === 1) await pauses!.set(op); // the operator pauses while the first key is signing
+        return { ok: true, signatureHash: 'h-' + calls.length };
+      },
+    };
+    const r = rig({ body: BASE, rules: null, votes: votes as never, reply: () => ({ decision: 'approve', evidence: { approverKeyRefs: ['key-a', 'key-b'] } }) });
+    pauses = r.pauses;
+    const row = await r.handle();
+    expect(calls).toEqual(['key-a']); // the second signature was never made
+    expect(row.status).toBe('signed'); // the first landed: the item is correctly short of its threshold and left pending on chain
+  });
+});
+
 describe('the persisted pause comes first and spends nothing (DAX-4-A3 at the orchestrator)', () => {
   const op = { scope: 'seat' as const, id: SEAT, by: 'seat:fic-operator', reason: 'FICTIONAL: stop signing now' };
   it('a paused seat signs nothing, a reject vote included, and the decision is NOT consumed: it is valid after the resume', async () => {
@@ -290,6 +330,16 @@ describe('the persisted pause comes first and spends nothing (DAX-4-A3 at the or
     expect(row.lastError).toBe('paused');
     expect(r.acc.submissions).toHaveLength(0);
     expect(r.nonces.list()).toEqual([]);
+  });
+  it('the pause names the registry-RESOLVED subject, not the producer assertion: asserted agent-one, resolved agent-two, agent-two paused', async () => {
+    const ref = { grantId: 'fic-agent-pay', version: 1, grantHash: GRANT_HASH };
+    const body = intentBody({ grantRef: ref, subject: subjectClaim() }); // the intent ASSERTS agent-one
+    const resolved = { adi: 'acc://agent-two.fic-grantor.acme', type: 'agent' as const };
+    const r = rig({ body, rules: { requireGrant: true, grantorAdi: GRANTOR, registryPrincipals: [PRINCIPAL] }, world: fakeWorld({ resolved }), reply: approveFor(body, { grantHash: GRANT_HASH }) });
+    await r.pauses.set({ scope: 'subject', id: resolved.adi, by: 'seat:fic-operator', reason: 'FICTIONAL: stop this agent' });
+    expect((await r.handle()).lastError).toBe('paused'); // held by the resolved subject before any nonce is spent
+    expect(r.nonces.list()).toEqual([]);
+    expect(r.acc.submissions).toHaveLength(0);
   });
   it('a subject pause stops the registry-resolved subject of a Grant seat, and an unreadable pause state signs nothing', async () => {
     const world = fakeWorld();
