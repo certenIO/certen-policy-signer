@@ -222,6 +222,10 @@ POST <policy.url>    content-type: application/json
     "path": ["acc://alice.acme/id/1", "acc://acme.acme/treasury/1"]  // the path the vote travels, first hop first
   },
   "attachmentKind": "vote",           // attachment_model: wrapper only — "wrapper_create" | "seat_attach" | "vote" (see below)
+  "binding": {                        // DAX-4S: only for a scope with a `binding` block, and only when the transaction is ONE action (below)
+    "chainId": 84532, "kind": "erc20.transfer", "source": "0x…", "target": "0x…", "beneficiary": "0x…", "asset": "0x…", "amount": "1500000",
+    "executionCommitment": "0x…", "validatorOperationId": "0x…", "txHash": "0x…"
+  },
   "display":       [["Principal", "acc://acme.acme/orders"], ["Body type", "writeData"], ["Payer", "acc://acme.acme"]],  // Phase 7: what a human is shown
   "summaryHash":   "77533e7e…",       // tcl-summary/v1 of `display` (lowercase hex); tx hash and vote are NOT inside
   "expiresAt":     "2026-07-26T12:00:00Z"         // THIS REQUEST's validity (policy TTL) — not the on-chain deadline
@@ -259,6 +263,16 @@ asset produces the business summary `Pay $42,500.00 FDBUSD to Delta Equipment �
 `acc://…/acceptances` account with exactly one data element that is byte-for-byte the canonical JSON
 `{"amount":N,"category":S,"firm":S,"instructionHash":64hex}`. `bodyType` and `configVersion` are on every
 request; `configVersion` is also on every receipt and at `GET /v1/config/version` (admin).
+
+### Decision binding: `binding` and the reply `record` (DAX-4S)
+
+A scope configured with `binding` accepts a decision only when the reply carries `record`, a `certen.decision/v1` object (DECISION.md
+section 3) that names the exact transaction, an approver identity the seat lists, this seat, the pinned policy hash (when set), the Grant
+head and an unused nonce. The request tells the decision service what the signer will bind: `binding` is the ten members of the core's
+request hash, with `validatorOperationId` the validator's operation id recomputed from the four blobs of the pending transaction (never the
+intent_id, never the blob-3 intent_hash). It is ABSENT for a legacy scope and for a transaction that is not ONE bindable action (several
+legs, an unsupported call): such a decision is refused by name (`multi_leg_unsupported`, `presented_malformed`). The reply keeps `decision`,
+`reason` and `evidence` as before and gains `record`; a scope without `binding` ignores the member.
 
 ### Display and summary hash (Phase 7)
 
