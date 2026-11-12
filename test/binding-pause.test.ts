@@ -58,12 +58,16 @@ describe('scopes, who, why, resume rules (DE-24, DE-26, DE-27)', () => {
   });
 
   it('needs a named seat and a reason, by name', async () => {
-    const p = open(tmp());
+    const d = tmp();
+    const p = open(d);
     expect(await p.set({ scope: 'seat', id: SEATS[0]!, by: '', reason: WHY })).toMatchObject({ ok: false, reason: 'seat_required' });
     expect(await p.set({ scope: 'seat', id: SEATS[0]!, by: 'alice', reason: WHY })).toMatchObject({ ok: false, reason: 'seat_invalid' });
     expect(await p.set({ scope: 'seat', id: SEATS[0]!, by: BY, reason: 'short' })).toMatchObject({ ok: false, reason: 'reason_required' });
     ok(await p.set({ scope: 'seat', id: SEATS[0]!, by: BY, reason: WHY }));
-    expect(await p.set({ scope: 'seat', id: SEATS[0]!, by: BY, reason: WHY })).toMatchObject({ ok: false, reason: 'already_paused' });
+    // pausing what is paused is the idempotent answer (DE-78, pz-17), not a refusal: the first record (who, when) stays and nothing is journalled
+    expect(await p.set({ scope: 'seat', id: SEATS[0]!, by: 'seat:fic-second', reason: 'FICTIONAL: a second pause of the same seat' })).toMatchObject({ ok: true, status: 'already_paused' });
+    expect(p.snapshot().pauses[0]).toMatchObject({ by: BY, reason: WHY });
+    expect(new DecisionJournal({ path: join(d, 'j.jsonl'), logId: 'fic-signer' }).entries().filter((e) => e.kind === 'pause.set')).toHaveLength(1);
     expect(await p.resume({ scope: 'seat', id: SEATS[0]!, by: BY, reason: '' })).toMatchObject({ ok: false, reason: 'reason_required' });
     expect(sign(p)).toMatchObject({ ok: false, reason: 'paused' }); // none of the refusals changed anything
   });
@@ -73,7 +77,7 @@ describe('scopes, who, why, resume rules (DE-24, DE-26, DE-27)', () => {
     ok(await p.set({ scope: 'subject', id: SUBJECT, by: BY, reason: WHY }));
     ok(await p.setAllSeats(BY, WHY));
     expect(SEATS.map((s) => sign(p, s).ok)).toEqual([false, false]);
-    expect(await p.setAllSeats(BY, WHY)).toMatchObject({ ok: false, reason: 'already_paused' });
+    expect(await p.setAllSeats(BY, WHY)).toMatchObject({ ok: true, status: 'already_paused' });
     ok(await p.resumeAllSeats(BY, WHY));
     expect(SEATS.map((s) => sign(p, s).ok)).toEqual([true, true]);
     expect(sign(p, SEATS[0], SUBJECT)).toMatchObject({ ok: false, scope: 'subject' });

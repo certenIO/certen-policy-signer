@@ -72,7 +72,7 @@ describe('POST /v1/admin/pause and /resume (DE-26, DE-27)', () => {
   it('pauses one seat, then a subject; GET shows who and why; the wrong scope is not lifted by a resume; /healthz says paused', async () => {
     const { call, pause, url } = await start();
     expect((await call('POST', '/v1/admin/pause', { scope: 'seat', id: SEATS[0], by: BY, reason: WHY })).json.paused).toBe(true);
-    expect(await call('POST', '/v1/admin/pause', { scope: 'seat', id: SEATS[0], by: BY, reason: WHY })).toMatchObject({ status: 409, json: { error: 'already_paused' } });
+    expect(await call('POST', '/v1/admin/pause', { scope: 'seat', id: SEATS[0], by: BY, reason: WHY })).toMatchObject({ status: 200, json: { status: 'already_paused', paused: true } }); // idempotent (DE-78)
     await call('POST', '/v1/admin/pause', { scope: 'subject', id: 'acc://agent-one.fic-grantor.acme', by: BY, reason: WHY });
     const got = await call('GET', '/v1/admin/pause');
     expect(got.json.pauses.map((p: any) => [p.scope, p.id, p.by])).toEqual([['seat', SEATS[0], BY], ['subject', 'acc://agent-one.fic-grantor.acme', BY]]);
@@ -129,7 +129,7 @@ describe('config: binding and seats', () => {
     expect(derivedSeat('acc://Harbor-Treasury.acme/book/1')).toBe('seat:harbor-treasury.acme-book-1');
     expect(derivedSeat('acc://' + 'x'.repeat(100) + '.acme/book/1')).toMatch(/^seat:x{49}-[0-9a-f]{12}$/);
     const cfg = loadConfig(base(GOOD));
-    expect(effectiveSeats(cfg)).toEqual([{ page: 'acc://o.acme/book/1', seat: 'seat:o.acme-book-1', binding: expect.objectContaining({ max_window_seconds: 5400, require_grant: false, registry_principals: [] }) }]);
+    expect(effectiveSeats(cfg)).toEqual([{ page: 'acc://o.acme/book/1', seat: 'seat:o.acme-book-1', binding: expect.objectContaining({ max_window_seconds: 5400, require_grant: false }) }]);
     const named = loadConfig(base('', ', seat: "seat:fic-treasury"'));
     expect(effectiveSeats(named)[0]).toEqual({ page: 'acc://o.acme/book/1', seat: 'seat:fic-treasury' });
   });
@@ -146,9 +146,29 @@ describe('config: binding and seats', () => {
     expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, polcy_hash: "x" }`))).toThrow(); // a typo stops the boot
     expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}", "${KEY('a')}"], max_window_seconds: 5400 }`))).toThrow(/twice/);
     expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, require_grant: true }`))).toThrow(/grantor_adi/);
-    expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, require_grant: true, grantor_adi: "acc://g.acme", registry_principals: [] }`))).toThrow(/registry_principals/);
+    expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, require_grant: true, grantor_adi: "acc://g.acme" }`))).toThrow(/grantor_book/);
     expect(() => loadConfig(base('', ', seat: "Treasury"'))).toThrow(/seat:<name>/);
-    expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, require_grant: true, grantor_adi: "acc://g.acme", registry_principals: ["acc://p.acme"] }`))).not.toThrow();
+    expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, require_grant: true, grantor_adi: "acc://g.acme", grantor_book: "acc://g.acme/book" }`))).not.toThrow();
+  });
+
+  it('the grantor and the key book that owns its accounts come together; the book lies under the grantor ADI (READER-MODEL-V2)', () => {
+    const b = (extra: string) => base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, ${extra} }`);
+    expect(() => loadConfig(b('grantor_adi: "acc://g.acme"'))).toThrow(/given together/);
+    expect(() => loadConfig(b('grantor_book: "acc://g.acme/book"'))).toThrow(/given together/);
+    expect(() => loadConfig(b('grantor_adi: "acc://g.acme", grantor_book: "acc://other.acme/book"'))).toThrow(/under the grantor ADI/);
+    expect(() => loadConfig(b('grantor_adi: "acc://g.acme", grantor_book: "acc://g.acme"'))).toThrow(/under the grantor ADI/);
+    expect(() => loadConfig(b('grantor_adi: "acc://g.acme", grantor_book: "acc://g.acme/book"'))).not.toThrow();
+    expect(() => loadConfig(b('registry_principals: ["acc://p.acme"]'))).toThrow(); // the registry is the grantor's: there is nothing to list
+  });
+
+  it('the reader block: a hard TTL of at most 30 seconds, bounded concurrency; the relay scope chain exists', () => {
+    expect(loadConfig(base('')).reader).toEqual({ cache_ttl_seconds: 30, max_concurrency: 4, backoff_base_ms: 500, backoff_max_ms: 30000 });
+    expect(() => loadConfig(base('reader: { cache_ttl_seconds: 31 }'))).toThrow();
+    expect(() => loadConfig(base('reader: { cache_ttl_seconds: 0 }'))).toThrow();
+    expect(() => loadConfig(base('reader: { max_concurrency: 17 }'))).toThrow();
+    expect(() => loadConfig(base('reader: { ttl: 5 }'))).toThrow(); // a typo stops the boot
+    const withRelay = base('admin: { api_key: "fic-admin-key-0000", relay_clients: [{ name: "console", key: "console-client-key-0123456789", scopes: ["chain"] }] }');
+    expect(loadConfig(withRelay).admin.relay_clients?.[0]?.scopes).toEqual(['chain']);
   });
 
   it('a binding block changes the config version (the signer-config version on every receipt names the pin)', () => {

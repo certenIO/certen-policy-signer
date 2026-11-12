@@ -122,7 +122,7 @@ describe('adversarial attempts at the signer', () => {
   it('ADV-9 the producer lies about its Grant: a claim equal to the decision but not the head, and a subject asserted for another agent', async () => {
     const ref = { grantId: 'fic-agent-pay', version: 1, grantHash: GRANT_HASH };
     const body = intentBody({ grantRef: ref, subject: subjectClaim() });
-    const grantRules = { requireGrant: true, grantorAdi: 'acc://fic-grantor.acme', registryPrincipals: ['acc://fic-principal.acme'] };
+    const grantRules = { requireGrant: true, grantorAdi: 'acc://fic-grantor.acme', grantorBook: 'acc://fic-grantor.acme/book' };
     const stale = rig({ body, rules: grantRules, world: fakeWorld({ head: { hash: H('grant-v2'), subject: { adi: 'acc://agent-one.fic-grantor.acme', type: 'agent' } } }), reply: approveFor(body, { grantHash: GRANT_HASH }) });
     expect((await stale.handle()).lastError).toBe('binding: grant_superseded');
     // the intent ASSERTS agent-one, the registry resolves it to agent-two: the Grant is agent-one's

@@ -21,6 +21,8 @@ import { isAdiUrl } from './core/grant-profile.js';
 import { BindingOutcome, BindingRules, BindingRuntime, BoundDecision, verifyBinding } from './binding/verify.js';
 import { PauseGate } from './binding/pause-store.js';
 import { derivedSeat } from './binding/seats.js';
+import { buildPresentedRequest } from './binding/request.js';
+import { policyBindingOf } from './binding/policy-binding.js';
 
 /** The error a vote reports when the persisted pause stopped it at the moment of signing. */
 const PAUSED_AT_CAST = 'paused';
@@ -626,6 +628,11 @@ export class Orchestrator {
     }
 
     // 2. Decide
+    // DAX-4S: a seat that requires binding tells the decision service the exact request the signer will bind (the ten members of the
+    // core's request hash, the validator operation id among them), so a service with no chain access can build the same hash. A
+    // transaction the signer cannot express as ONE action carries no `binding`, and its decision is refused later by name.
+    const seat = this.seatOf(ref.signerUrl);
+    const presentedBinding = seat.binding ? buildPresentedRequest(tx) : undefined;
     const policyReq: PolicyRequest = withDisplay({
       requestId: randomUUID(),
       txHash: tx.txHash,
@@ -668,6 +675,7 @@ export class Orchestrator {
       ...(ref.delegators?.length ? { wrapper: { page: ref.delegators[0]!, path: [...ref.delegators] } } : {}),
       ...(kind === 'wrapper_create' ? { wrapper: { page: tx.account, path: [] } } : {}),
       ...(kind ? { attachmentKind: kind } : {}),
+      ...(presentedBinding?.ok && presentedBinding.value.legCount === 1 ? { binding: policyBindingOf(presentedBinding.value.request) } : {}),
       // Policy TTL for THIS request. Not the on-chain deadline, which is `header.expiresAt`.
       expiresAt: new Date(this.now() + this.opt.policyTtlSeconds * 1000).toISOString(),
     }, { labels: this.d.displayLabels });
@@ -709,7 +717,6 @@ export class Orchestrator {
     // With `submit_reject_vote: true` (what every shipped config sets), leaving this check further down
     // meant a "paused" wallet went on signing and submitting rejections. Pause means sign NOTHING.
     // Now the PERSISTED pause (seat and subject scopes), read from the file each time (DAX-4S, DECISION.md section 6).
-    const seat = this.seatOf(ref.signerUrl);
     const verb: 'approve' | 'reject' = decision.decision === 'deny' ? 'reject' : 'approve';
     const sign: SignCtx = { seat: seat.seat, subjects: [this.subjectAdi(tx.summary.subject?.adi)] };
     const stopped = this.pausedFor(sign, verb);

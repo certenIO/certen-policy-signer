@@ -19,6 +19,7 @@ export const ADDR = {
 export const SEAT = 'seat:fic-treasury';
 export const SUBJECT = { adi: 'acc://agent-one.fic-grantor.acme', type: 'agent' as const };
 export const GRANTOR = 'acc://fic-grantor.acme';
+export const GRANTOR_BOOK = 'acc://fic-grantor.acme/book';
 export const PRINCIPAL = 'acc://fic-principal.acme';
 export const POLICY = H('policy-v1');
 export const GRANT_HASH = H('grant-v1');
@@ -130,8 +131,13 @@ export function fakeWorld(over: Partial<Pick<FakeWorld, 'head' | 'resolved'>> = 
     head: over.head === undefined ? { hash: GRANT_HASH, subject: { ...SUBJECT } } : over.head,
     resolved: over.resolved === undefined ? { ...SUBJECT } : over.resolved,
     calls: [],
-    async grantHead() { w.calls.push('grantHead'); return w.head === null ? { ok: false, detail: 'unreadable' } : { ok: true, value: w.head }; },
-    async resolveSubject() { w.calls.push('resolveSubject'); return w.resolved === null ? { ok: false, detail: 'not_registered' } : { ok: true, value: w.resolved }; },
+    async establish(q) {
+      w.calls.push('establish');
+      if (w.head === null) return { head: { ok: false, detail: 'unreadable' }, subject: null };
+      const head = { ok: true as const, value: { ...w.head, grant: { fake: true } } };
+      if (q.asserted === null) return { head, subject: null };
+      return { head, subject: w.resolved === null ? { ok: false, detail: 'subject_unproven:not_registered' } : { ok: true, value: w.resolved } };
+    },
   };
   return w;
 }

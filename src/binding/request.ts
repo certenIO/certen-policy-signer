@@ -7,7 +7,8 @@
  * is taken from the policy reply, the Console or the producer's declared ids.
  *
  * What a request can be, and what it cannot (a refusal is a named `presented_malformed` detail, never a guess):
- *   - ONE leg. A multi-leg intent is several executions under one operation and cannot be bound by a one-leg request hash.
+ *   - ONE leg. A multi-leg intent is several executions under one operation and cannot be bound by a one-leg request hash: the
+ *     presented legCount is derived from the legs and the core refuses a legCount other than 1 as `multi_leg_unsupported` (DE-76).
  *   - kind `native.transfer` (empty calldata), `erc20.transfer` or `erc20.approve` (the calldata decoded exactly: one 32-byte
  *     word per parameter). `transferFrom`, any other selector and any call that forwards native value with calldata are refused.
  *   - `executionCommitment` is the value the intent STATES (`executionPayload.executionCommitment`); the signer does not
@@ -23,6 +24,8 @@ import { OperationIdError, validatorOperationId } from './operation-id.js';
 export interface PresentedRequest {
   /** the closed object the core hashes (`hashRequest`): ten members */
   request: Record<string, string | number>;
+  /** the number of legs of the intent, derived from the transaction and ALWAYS supplied to the core (DE-76); 1 for a bindable request */
+  legCount: number;
   /** the producer's CLAIM of the Grant (blob 0 `grantRef`), or null when the intent names none; the head is read from Accumulate, never from this */
   grantRef: { grantId: string; version: number; grantHash: string } | null;
   /** `grantRef.grantHash` or null: the core's `grantRefHash` */
@@ -59,11 +62,8 @@ function chainIdOf(leg: Record<string, unknown>, payload: Record<string, unknown
   return a ?? b ?? null;
 }
 
-const lowerAddress = (v: unknown): string | null => {
-  if (typeof v !== 'string') return null;
-  const l = v.toLowerCase();
-  return ADDRESS_RE.test(l) ? l : null;
-};
+/** a canonical address: 0x and 40 LOWER-case hex digits, exactly as the core hashes it. A checksum-case spelling is refused, as the strict decoder refuses it (DAX7A-F2). */
+const lowerAddress = (v: unknown): string | null => (typeof v === 'string' && ADDRESS_RE.test(v) ? v : null);
 
 export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransaction' | 'summary'>): BuildResult {
   const raw = tx.rawTransaction;
@@ -102,60 +102,17 @@ export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransa
 
   const legs = crossChain['legs'];
   if (!Array.isArray(legs) || legs.length === 0) return bad('no_leg');
-  if (legs.length !== 1) return bad('multi_leg');
-  const leg = legs[0];
-  if (!isObj(leg)) return bad('leg_not_object');
-  const payload = isObj(leg['executionPayload']) ? leg['executionPayload'] : undefined;
-  if (payload === undefined) return bad('no_execution_payload');
-
-  const chainId = chainIdOf(leg, payload);
-  if (chainId === null) return bad('chain_id');
-  const source = lowerAddress(leg['from'] ?? payload['from']);
-  if (source === null) return bad('source_address');
-  const targetPayload = lowerAddress(payload['target']);
-  const targetLeg = lowerAddress(leg['to']);
-  if (targetPayload === null && targetLeg === null) return bad('target_address');
-  if (targetPayload !== null && targetLeg !== null && targetPayload !== targetLeg) return bad('target_disagrees');
-  const target = (targetPayload ?? targetLeg)!;
-  const commitment = typeof payload['executionCommitment'] === 'string' ? payload['executionCommitment'].toLowerCase() : '';
-  if (!HASH_RE.test(commitment)) return bad('execution_commitment');
-
-  // native value of the call: the payload's `value` and the leg's `amountWei` must agree when both are stated
-  const valueP = payload['value'] === undefined || payload['value'] === null ? undefined : String(payload['value']);
-  const valueL = leg['amountWei'] === undefined || leg['amountWei'] === null ? undefined : String(leg['amountWei']);
-  if (valueP !== undefined && valueL !== undefined && valueP !== valueL) return bad('value_disagrees');
-  const value = valueP ?? valueL;
-
-  const cd = payload['callData'];
-  const callData = typeof cd === 'string' ? cd.replace(/^0x/, '') : cd === undefined || cd === null ? '' : null;
-  if (callData === null) return bad('calldata_not_text');
-
-  let kind: string;
-  let beneficiary: string;
-  let asset: string;
-  let amount: string;
-  if (callData === '') {
-    if (value === undefined || !isAmount(value)) return bad('native_amount');
-    kind = 'native.transfer';
-    beneficiary = target;
-    asset = 'native';
-    amount = value;
-  } else {
-    const dec = decodeErc20Calldata('0x' + callData);
-    if (dec === undefined) return bad('calldata_unsupported');
-    if (dec.fn === 'transferFrom') return bad('action_unsupported');
-    if (value !== undefined && value !== '0') return bad('value_with_call');
-    const who = dec.fn === 'transfer' ? dec.args['to'] : dec.args['spender'];
-    const b = lowerAddress(who);
-    if (b === null || !isAmount(dec.amount)) return bad('calldata_arguments');
-    kind = dec.fn === 'transfer' ? 'erc20.transfer' : 'erc20.approve';
-    beneficiary = b;
-    asset = target;
-    amount = dec.amount;
-  }
-
+  // DE-76: legCount is DERIVED from the transaction's legs and ALWAYS supplied; the core refuses a legCount other than 1
+  // (multi_leg_unsupported) before it compares anything. A request is still built from the first leg so the core can read the
+  // presented transaction; when that leg cannot be mapped either, a placeholder that the core can hash stands in. It is never
+  // compared (the refusal comes first) and never sent to a Console (a multi-leg intent carries no `binding`).
   const txHash = '0x' + tx.txHash.replace(/^0x/, '').toLowerCase();
   if (!HASH_RE.test(txHash)) return bad('tx_hash');
+  const mapped = mapLeg(legs[0], txHash, operationId);
+  let request: Record<string, string | number>;
+  if (mapped.ok) request = mapped.request;
+  else if (legs.length !== 1) request = unboundPlaceholder(txHash, operationId);
+  else return bad(mapped.detail);
 
   const s = tx.summary.subject;
   const assertedSubject = s !== undefined && typeof s.adi === 'string' && typeof s.assertedBy === 'string' ? { adi: s.adi, assertedBy: s.assertedBy } : null;
@@ -163,11 +120,83 @@ export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransa
   return {
     ok: true,
     value: {
-      request: { chainId, kind, source, target, beneficiary, asset, amount, executionCommitment: commitment, operationId, txHash },
+      request,
+      legCount: legs.length,
       grantRef,
       grantRefHash: grantRef === null ? null : grantRef.grantHash,
       assertedSubject,
       operationId,
     },
   };
+}
+
+const ZERO20 = '0x' + '00'.repeat(20);
+const ZERO32 = '0x' + '00'.repeat(32);
+
+/** The request the core reads when the transaction has more than one leg: hashable, never compared (see buildPresentedRequest). */
+function unboundPlaceholder(txHash: string, operationId: string): Record<string, string | number> {
+  return { chainId: 1, kind: 'native.transfer', source: ZERO20, target: ZERO20, beneficiary: ZERO20, asset: 'native', amount: '0', executionCommitment: ZERO32, operationId, txHash };
+}
+
+type Mapped = { ok: true; request: Record<string, string | number> } | { ok: false; detail: string };
+
+/** One leg of the intent as the ten members of the request (the mapping of the header comment). */
+function mapLeg(leg: unknown, txHash: string, operationId: string): Mapped {
+  const fail = (detail: string): Mapped => ({ ok: false, detail });
+  if (!isObj(leg)) return fail('leg_not_object');
+  const payload = isObj(leg['executionPayload']) ? leg['executionPayload'] : undefined;
+  if (payload === undefined) return fail('no_execution_payload');
+
+  const chainId = chainIdOf(leg, payload);
+  if (chainId === null) return fail('chain_id');
+  const source = lowerAddress(leg['from'] ?? payload['from']);
+  if (source === null) return fail('source_address');
+  const targetPayload = lowerAddress(payload['target']);
+  const targetLeg = lowerAddress(leg['to']);
+  if (targetPayload === null && targetLeg === null) return fail('target_address');
+  if (targetPayload !== null && targetLeg !== null && targetPayload !== targetLeg) return fail('target_disagrees');
+  const target = (targetPayload ?? targetLeg)!;
+  const commitment = typeof payload['executionCommitment'] === 'string' ? payload['executionCommitment'].toLowerCase() : '';
+  if (!HASH_RE.test(commitment)) return fail('execution_commitment');
+
+  // native value of the call: the payload's `value` and the leg's `amountWei` must agree when both are stated
+  const valueP = payload['value'] === undefined || payload['value'] === null ? undefined : String(payload['value']);
+  const valueL = leg['amountWei'] === undefined || leg['amountWei'] === null ? undefined : String(leg['amountWei']);
+  if (valueP !== undefined && valueL !== undefined && valueP !== valueL) return fail('value_disagrees');
+  const value = valueP ?? valueL;
+
+  // the calldata text is read as strictly as the strict core decoder reads it (DAX7A-F2): `0x` in lower case is required (an absent
+  // member is no calldata), the digits are hex of either case, an even number of them
+  const cd = payload['callData'];
+  if (cd !== undefined && cd !== null && typeof cd !== 'string') return fail('calldata_not_text');
+  if (typeof cd === 'string' && !cd.startsWith('0x')) return fail('calldata_prefix_invalid');
+  const callData = typeof cd === 'string' ? cd.slice(2) : '';
+
+  let kind: string;
+  let beneficiary: string;
+  let asset: string;
+  let amount: string;
+  if (callData === '') {
+    if (value === undefined || !isAmount(value)) return fail('native_amount');
+    kind = 'native.transfer';
+    beneficiary = target;
+    asset = 'native';
+    amount = value;
+  } else {
+    const dec = decodeErc20Calldata('0x' + callData);
+    if (dec === undefined) return fail('calldata_unsupported');
+    if (dec.fn === 'transferFrom') return fail('action_unsupported');
+    // the address word must be a clean 32-byte word (12 zero bytes, then the address): the reading below takes the low 20 bytes, and
+    // another reading must not take a different address from the same bytes (u08, u31 of the golden cases)
+    if (!/^0{24}/.test(callData.slice(8, 72))) return fail('address_pad_dirty');
+    if (value !== undefined && value !== '0') return fail('value_with_call');
+    const who = dec.fn === 'transfer' ? dec.args['to'] : dec.args['spender'];
+    const b = lowerAddress(who);
+    if (b === null || !isAmount(dec.amount)) return fail('calldata_arguments');
+    kind = dec.fn === 'transfer' ? 'erc20.transfer' : 'erc20.approve';
+    beneficiary = b;
+    asset = target;
+    amount = dec.amount;
+  }
+  return { ok: true, request: { chainId, kind, source, target, beneficiary, asset, amount, executionCommitment: commitment, operationId, txHash } };
 }

@@ -68,7 +68,7 @@ function service(dir: string, bound: boolean) {
   const orch = new Orchestrator({
     accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))), store: new MemoryStore(), resolver: new Resolver(acc), logger: silent,
     policy: new HttpPolicyClient({ url, hmacSecret: SECRET, timeoutMs: 5000 }),
-    seats: new Map([[SIGNER.toLowerCase(), { seat: SEAT, ...(bound ? { binding: { seat: SEAT, authorizedApprovers: [APPROVER], maxWindowSeconds: 7200, policyHash: POLICY, requireGrant: false, registryPrincipals: [] } } : {}) }]]),
+    seats: new Map([[SIGNER.toLowerCase(), { seat: SEAT, ...(bound ? { binding: { seat: SEAT, authorizedApprovers: [APPROVER], maxWindowSeconds: 7200, policyHash: POLICY, requireGrant: false } } : {}) }]]),
     binding: { nonces: new NonceStore(journal, nowS), nowSeconds: nowS },
   });
   return { acc, handle: () => orch.handle({ txHash: TX, signerUrl: SIGNER }) };

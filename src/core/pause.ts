@@ -8,8 +8,8 @@
  * The module records who paused and who resumed; WHO MAY pause or resume is an authorization of the caller (the signer
  * and the Console know which authenticated seat is acting) and is not decided here: this module adds no authority.
  * A resume lifts only its own scope and id. A state that cannot be read signs nothing (`pause_state_unreadable`), never
- * "not paused". The persisted text alone cannot show that a record was dropped from it; `reconcilePauseState` replays
- * the pause.set and pause.clear entries of a verified decision log and refuses a state that differs (finding DAX4A-F6).
+ * "not paused". The persisted text alone cannot show that a record was dropped from it; `checkPersistedPause` folds
+ * the pause.set and pause.clear entries of a verified decision log and refuses a state that differs (DE-78, finding DAX4A-F6).
  */
 import { CoreError, hasLoneSurrogate } from './bytes.js';
 import { canonicalize, parseJson } from './jcs.js';
@@ -30,7 +30,11 @@ export type PauseEvent =
   | { kind: 'pause.set'; payload: { scope: PauseScope; id: string; by: string; reason: string } }
   | { kind: 'pause.clear'; payload: { scope: PauseScope; id: string; by: string; reason: string; pausedBy: string; pausedAt: number } };
 
-export type PauseChange = { ok: true; state: PauseState; event: PauseEvent } | { ok: false; reason: string; detail?: string };
+export type PauseChange =
+  | { ok: true; state: PauseState; event: PauseEvent }
+  /** pausing what is paused is not a refusal: the answer is idempotent, the first record stays, no second event is logged (pz-17) */
+  | { ok: true; state: PauseState; idempotent: true; status: 'already_paused' }
+  | { ok: false; reason: string; detail?: string };
 
 export type SigningVerdict = { ok: true } | { ok: false; reason: 'paused'; scope: PauseScope; id: string; by: string; since: number } | { ok: false; reason: string; detail?: string };
 
@@ -107,14 +111,14 @@ function open(state: unknown, opts: PauseOptions | undefined): { ok: true; state
   return { ok: true, state: s.state, min };
 }
 
-/** Set a pause. A pause that is already set is refused (`already_paused`) and the first record, who and when, stays. */
+/** Set a pause. A pause that is already set is the idempotent answer `already_paused` (not a refusal): the first record, who and when, stays. */
 export function applyPause(state: unknown, op: unknown, opts?: PauseOptions): PauseChange {
   const o = open(state, opts);
   if (!o.ok) return o;
   const parsed = readOp(op, o.min);
   if (!parsed.ok) return parsed;
   const f = parsed.op;
-  if (o.state.pauses.some((p) => p.scope === f.scope && p.id === f.id)) return refuse('already_paused', f.scope + ' ' + f.id);
+  if (o.state.pauses.some((p) => p.scope === f.scope && p.id === f.id)) return { ok: true, state: o.state, idempotent: true, status: 'already_paused' };
   const pauses = [...o.state.pauses, { scope: f.scope, id: f.id, by: f.by, reason: f.reason, at: f.at }].sort(byKey);
   return { ok: true, state: { version: 1, pauses }, event: { kind: 'pause.set', payload: { scope: f.scope, id: f.id, by: f.by, reason: f.reason } } };
 }
@@ -204,37 +208,85 @@ export function checkSigningFromText(text: string, request: unknown): SigningVer
 }
 
 /**
- * Replays the pause.set and pause.clear entries of a decision log (already verified by verifyLog, with a pinned head)
- * and compares the result with the persisted state. A state from which a record was dropped, or to which one was added,
- * differs from the log and is refused. Entries of other kinds are ignored. Each entry is `{ kind, at, payload }`.
+ * A session of operations (DE-74): { ops: [...], state? } run in order from the given state (default empty) through
+ * applyPauseOp; returns every answer and the final state. Operations that are not a list, or an input that is not an
+ * operations object, are pause_input_malformed; a given state that is not readable is refused by its own name.
  */
-export function reconcilePauseState(input: unknown): { ok: true } | { ok: false; reason: string; detail?: string } {
-  const inp = closedObject(input, ['state', 'entries']);
-  if (inp === null) return refuse('pause_input_malformed', 'shape');
-  const persisted = readState(inp['state'], 1);
-  if (!persisted.ok) return refuse(persisted.reason, persisted.detail);
-  const entries = dataArray(inp['entries'], 0xffffffff);
-  if (entries === null) return refuse('pause_input_malformed', 'entries');
+export function runPauseOps(input: unknown): { results: Array<Record<string, unknown>>; state: PauseState } | { ok: false; reason: string; detail?: string } {
+  const inp = closedObject(input, ['ops'], ['state']);
+  if (inp === null) return refuse('pause_input_malformed');
+  const ops = dataArray(inp['ops'], 0xffffffff);
+  if (ops === null) return refuse('pause_input_malformed');
   let state = emptyPauseState();
-  for (let i = 0; i < entries.length; i++) {
-    const e = dataObject(entries[i]);
+  if (inp['state'] !== undefined) {
+    const s = readState(inp['state'], 1);
+    if (!s.ok) return refuse(s.reason, s.detail);
+    state = s.state;
+  }
+  const results: Array<Record<string, unknown>> = [];
+  for (const op of ops) {
+    const r = applyPauseOp(state, op);
+    state = r.state;
+    results.push(r.result);
+  }
+  return { results, state };
+}
+
+/**
+ * A persisted pause state against its pause log (DE-78): { state: { version?, pauses: [...] }, log: [...] }. The state must
+ * equal the fold of the pause.set and pause.clear entries of the log (a set of a pause that is already set changes nothing,
+ * as the operation is idempotent). Refused by name: pause_state_malformed or pause_state_version (a state of the wrong
+ * shape), pause_state_duplicate (two entries for one scope and id), pause_log_malformed (a log that is not a list, an entry
+ * of an unknown pause kind, a payload that is not a scope and id, a clear of what is not paused or that names another
+ * pause), pause_state_log_mismatch (the state is not the fold). Entries of other kinds are ignored: the log holds every
+ * kind. When an entry also carries who set the pause, why and when (by, reason, at), the state record must agree with
+ * it: an edited record is a mismatch. The log itself is verified by verifyLog against a pinned head by the caller.
+ */
+export function checkPersistedPause(input: unknown): { ok: true; pauses: number } | { ok: false; reason: string; detail?: string } {
+  const inp = closedObject(input, ['state', 'log']);
+  if (inp === null) return refuse('pause_input_malformed', 'shape');
+  const st = closedObject(inp['state'], ['pauses'], ['version']);
+  if (st === null) return refuse('pause_state_malformed', 'shape');
+  if (st['version'] !== undefined && st['version'] !== 1) return refuse('pause_state_version', String(st['version']));
+  const list = dataArray(st['pauses'], MAX_PAUSES);
+  if (list === null) return refuse('pause_state_malformed', 'pauses');
+  const have = new Map<string, PauseRecord>();
+  for (let i = 0; i < list.length; i++) {
+    const r = readRecord(list[i], 1);
+    if (typeof r === 'string') return refuse('pause_state_malformed', 'record ' + i + ' ' + r);
+    const key = r.scope + ' ' + r.id;
+    if (have.has(key)) return refuse('pause_state_duplicate', key);
+    have.set(key, r);
+  }
+
+  const log = dataArray(inp['log'], 0xffffffff);
+  if (log === null) return refuse('pause_log_malformed', 'log');
+  const folded = new Map<string, { by?: string; reason?: string; at?: number }>();
+  for (let i = 0; i < log.length; i++) {
+    const e = dataObject(log[i]);
     if (e === null || typeof e['kind'] !== 'string') return refuse('pause_log_malformed', 'entry ' + i);
-    if (e['kind'] !== 'pause.set' && e['kind'] !== 'pause.clear') continue;
+    if (!e['kind'].startsWith('pause.')) continue;
+    if (e['kind'] !== 'pause.set' && e['kind'] !== 'pause.clear') return refuse('pause_log_malformed', 'entry ' + i + ' ' + e['kind']);
     const p = dataObject(e['payload']);
-    if (p === null || !isTime(e['at'])) return refuse('pause_log_malformed', 'entry ' + i);
-    const fields = { scope: p['scope'], id: p['id'], by: p['by'], reason: p['reason'], at: e['at'] };
+    if (p === null || !isScope(p['scope']) || !idFits(p['scope'], p['id'])) return refuse('pause_log_malformed', 'entry ' + i + ' payload');
+    if (e['at'] !== undefined && !isTime(e['at'])) return refuse('pause_log_malformed', 'entry ' + i + ' at');
+    if (p['by'] !== undefined && !isSeatId(p['by'])) return refuse('pause_log_malformed', 'entry ' + i + ' by');
+    if (p['reason'] !== undefined && (typeof p['reason'] !== 'string' || p['reason'].length > MAX_REASON_LENGTH || hasLoneSurrogate(p['reason']))) return refuse('pause_log_malformed', 'entry ' + i + ' reason');
+    const key = p['scope'] + ' ' + p['id'];
     if (e['kind'] === 'pause.set') {
-      if (closedObject(p, ['scope', 'id', 'by', 'reason']) === null) return refuse('pause_log_malformed', 'entry ' + i);
-      const r = applyPause(state, fields, { minReasonLength: 1 });
-      if (!r.ok) return refuse('pause_log_malformed', 'entry ' + i + ' ' + r.reason);
-      state = r.state;
+      if (!folded.has(key)) folded.set(key, { ...(p['by'] !== undefined ? { by: p['by'] as string } : {}), ...(p['reason'] !== undefined ? { reason: p['reason'] as string } : {}), ...(e['at'] !== undefined ? { at: e['at'] as number } : {}) });
     } else {
-      if (closedObject(p, ['scope', 'id', 'by', 'reason', 'pausedBy', 'pausedAt']) === null) return refuse('pause_log_malformed', 'entry ' + i);
-      const r = applyResume(state, fields, { minReasonLength: 1 });
-      if (!r.ok) return refuse('pause_log_malformed', 'entry ' + i + ' ' + r.reason);
-      if (r.event.kind !== 'pause.clear' || r.event.payload.pausedBy !== p['pausedBy'] || r.event.payload.pausedAt !== p['pausedAt']) return refuse('pause_log_malformed', 'entry ' + i + ' clears another pause');
-      state = r.state;
+      const was = folded.get(key);
+      if (was === undefined) return refuse('pause_log_malformed', 'entry ' + i + ' clears what is not paused');
+      if ((p['pausedBy'] !== undefined && was.by !== undefined && p['pausedBy'] !== was.by) || (p['pausedAt'] !== undefined && was.at !== undefined && p['pausedAt'] !== was.at)) return refuse('pause_log_malformed', 'entry ' + i + ' clears another pause');
+      folded.delete(key);
     }
   }
-  return canonicalize(state) === canonicalize(persisted.state) ? { ok: true } : refuse('pause_state_log_mismatch', 'state differs from the replay of the log');
+  if (folded.size !== have.size) return refuse('pause_state_log_mismatch', 'the state holds ' + have.size + ' pauses, the log folds to ' + folded.size);
+  for (const [key, f] of folded) {
+    const r = have.get(key);
+    if (r === undefined) return refuse('pause_state_log_mismatch', 'the log set ' + key + ', the state does not hold it');
+    if ((f.by !== undefined && f.by !== r.by) || (f.reason !== undefined && f.reason !== r.reason) || (f.at !== undefined && f.at !== r.at)) return refuse('pause_state_log_mismatch', key + ' differs from the log');
+  }
+  return { ok: true, pauses: have.size };
 }

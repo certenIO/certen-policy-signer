@@ -6,7 +6,7 @@ import yaml from 'js-yaml';
 import { z } from 'zod';
 import { NOTIFY_EVENTS } from './notify.js';
 import { isIdentity } from './core/decision-identity.js';
-import { isAdiUrl } from './core/grant-profile.js';
+import { isAccUrl, isAdiUrl, isUnderAdi } from './core/grant-profile.js';
 import { derivedSeat, isSeat } from './binding/seats.js';
 
 /** Event names as a zod enum source — derived from the one list in notify.ts so the two cannot drift. */
@@ -171,7 +171,9 @@ const BehaviorOverrideSchema = z.object({
  *   policy_hash           the pinned hash of the seat's active rule set; absent = the hash is recorded and NOT compared
  *   require_grant         a seat that requires a Grant refuses a transaction and a decision that name none
  *   grantor_adi           whose Grants the seat takes (required when a Grant is required; needed whenever a transaction names one)
- *   registry_principals   whose subject registries the seat reads (required when a Grant is required)
+ *   grantor_book          the key book that must own the grantor's accounts (certen-grants, certen-subjects): the account authority
+ *                         rule's owner (READER-MODEL-V2); required with grantor_adi. The subject is resolved ONLY through the
+ *                         grantor's registry and the subject's own acceptance account, so there is no list of registries to name
  */
 const BindingSchema = z.object({
   authorized_approvers: z.array(z.string().min(1)).min(1),
@@ -179,7 +181,7 @@ const BindingSchema = z.object({
   policy_hash: z.string().regex(/^0x[0-9a-f]{64}$/, 'binding.policy_hash must be 0x and 64 lowercase hex').optional(),
   require_grant: z.boolean().default(false),
   grantor_adi: z.string().optional(),
-  registry_principals: z.array(z.string()).default([]),
+  grantor_book: z.string().optional(),
 }).strict();
 
 export type BindingConfig = z.infer<typeof BindingSchema>;
@@ -415,7 +417,7 @@ const Schema = z.object({
     relay_clients: z.array(z.object({
       name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, 'admin.relay_clients[].name must be 1-64 of [A-Za-z0-9._-]'),
       key: z.string(),                   // `env:NAME`
-      scopes: z.array(z.enum(['proof', 'tx', 'pending', 'governance'])).min(1),
+      scopes: z.array(z.enum(['proof', 'tx', 'pending', 'governance', 'chain'])).min(1),
     }).strict()).optional(),
   }).default({})),
   // Phase 7 officer intake (contract §3–4): personal signatures made on a person's own device, verified and
@@ -432,6 +434,14 @@ const Schema = z.object({
   // pause live. `pin_path` is where the journal's head pin is kept: a medium the journal's writer cannot edit makes a truncated or
   // re-chained journal a refusal to start (DECISION.md DE-45); by default the pin sits next to the journal.
   store: section(z.object({ path: z.string().optional(), pin_path: z.string().optional() }).default({})),
+  // The reader of Accumulate facts behind decision binding and the `chain` relay routes (READER-MODEL-V2, read amplification).
+  // `cache_ttl_seconds` is the hard TTL of every cached fact, at most 30: a revocation or a supersede is visible within it.
+  reader: section(z.object({
+    cache_ttl_seconds: z.number().int().min(1).max(30).default(30),
+    max_concurrency: z.number().int().min(1).max(16).default(4),
+    backoff_base_ms: z.number().int().min(1).max(60_000).default(500),
+    backoff_max_ms: z.number().int().min(1).max(600_000).default(30_000),
+  }).strict().default({})),
   // The default `binding` of every scope that does not state its own. Absent = unbound legacy replies (see BindingSchema).
   binding: BindingSchema.optional(),
   observability: section(z.object({
@@ -571,9 +581,10 @@ export function validateBindings(cfg: Pick<ParsedConfig, 'wallet' | 'binding' | 
     }
     if (new Set(b.authorized_approvers).size !== b.authorized_approvers.length) throw new Error(`config: ${s.page}: binding.authorized_approvers lists an identity twice`);
     if (b.grantor_adi !== undefined && !isAdiUrl(b.grantor_adi)) throw new Error(`config: ${s.page}: binding.grantor_adi must be an acc:// ADI URL`);
-    for (const p of b.registry_principals) if (!isAdiUrl(p)) throw new Error(`config: ${s.page}: binding.registry_principals entry ${JSON.stringify(p)} must be an acc:// ADI URL`);
-    if (b.require_grant && (b.grantor_adi === undefined || b.registry_principals.length === 0)) {
-      throw new Error(`config: ${s.page}: binding.require_grant needs binding.grantor_adi and binding.registry_principals (whose Grants and whose subject registries this seat trusts)`);
+    if ((b.grantor_adi === undefined) !== (b.grantor_book === undefined)) throw new Error(`config: ${s.page}: binding.grantor_adi and binding.grantor_book are given together (the grantor and the key book that owns its accounts)`);
+    if (b.grantor_book !== undefined && (!isAccUrl(b.grantor_book) || b.grantor_adi === undefined || !isUnderAdi(b.grantor_book, b.grantor_adi) || b.grantor_book === b.grantor_adi)) throw new Error(`config: ${s.page}: binding.grantor_book must be a key book URL under the grantor ADI (acc://<grantor>/<book>)`);
+    if (b.require_grant && b.grantor_adi === undefined) {
+      throw new Error(`config: ${s.page}: binding.require_grant needs binding.grantor_adi and binding.grantor_book (whose Grants this seat takes)`);
     }
   }
 }

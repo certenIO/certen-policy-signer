@@ -297,7 +297,7 @@ export function createServer(d: ServerDeps): http.Server {
       // Body `{scope?, id?, by, reason}`: `scope` is `seat` or `subject` and `id` the seat id or the subject ADI; without a scope the
       // call acts on EVERY configured seat (the old "stop everything"; a pause on a subject is never lifted by it). `by` is a named
       // seat (`seat:<name>`) and `reason` at least ten characters: a pause without a seat, a resume without a reason and a resume
-      // of what is not paused are refused by name (DE-26). `by` is the caller's declaration, authenticated only as far as the admin
+      // of what is not paused are refused by name (DE-26); pausing what is already paused answers 200 `status: already_paused` (idempotent, DE-78). `by` is the caller's declaration, authenticated only as far as the admin
       // key is. The pause is durable before the answer is sent, survives a restart, and is read again before every signature.
       if (method === 'GET' && path === '/v1/admin/pause') {
         const st = d.pause.snapshot();
@@ -318,13 +318,13 @@ export function createServer(d: ServerDeps): http.Server {
           out = pausing ? await d.pause.set(op) : await d.pause.resume(op);
         }
         if (!out.ok) {
-          const status = out.reason === 'already_paused' || out.reason === 'not_paused' ? 409 : out.reason.startsWith('journal_') ? 500 : 400;
+          const status = out.reason === 'not_paused' ? 409 : out.reason.startsWith('journal_') ? 500 : 400;
           d.logger.warn({ audit: pausing ? 'pause_refused' : 'resume_refused', reason: out.reason, detail: out.detail }, 'pause change refused');
           return json(res, status, { error: out.reason, ...(out.detail !== undefined ? { detail: out.detail } : {}) });
         }
         d.logger.warn({ audit: pausing ? 'signing_paused' : 'signing_resumed', scope: b.scope ?? 'all seats', id: b.id, by, reason }, pausing ? 'SIGNING PAUSED' : 'SIGNING RESUMED');
         d.notify?.(pausing ? 'signer.paused' : 'signer.resumed');
-        return json(res, 200, { paused: out.state.pauses.length > 0, pauses: out.state.pauses });
+        return json(res, 200, { paused: out.state.pauses.length > 0, pauses: out.state.pauses, ...(out.status ? { status: out.status } : {}) });
       }
       // POST /v1/admin/decisions/void {nonces, reason} — marks decision nonces spent without a decision being accepted: the old
       // nonce of a decision a recheck voided (re-issued, denied, expired), so the old decision cannot be used even by a seat that

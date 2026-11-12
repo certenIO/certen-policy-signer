@@ -5,6 +5,7 @@
  */
 import { isPlainObject } from './bytes.js';
 import { isAdiUrl, isUnderAdi, SUBJECT_TYPES } from './grant-profile.js';
+import { verifyRegistrationAccepted } from './envelope.js';
 import { hashRegistration } from './hashes.js';
 import { parseRegistrationTextUnhashed, validateRegistration, type Registration } from './registry-profile.js';
 
@@ -32,7 +33,7 @@ export type ResolveSubjectResult =
 
 const unproven = (reason: string, detail?: string): ResolveSubjectResult => (detail === undefined ? { ok: false, state: 'subject_unproven', reason } : { ok: false, state: 'subject_unproven', reason, detail });
 
-type Row = Record<string, unknown>;
+export type Row = Record<string, unknown>;
 
 /**
  * Resolution (GR-30, GR-31, GR-49 to GR-52). Order of reasons: asserted_malformed, expect_type_malformed,
@@ -44,7 +45,17 @@ type Row = Record<string, unknown>;
  * then for the head: principal_is_subject, subject_retired, subject_suspended, subject_type_mismatch,
  * submitter_not_authorized. A failed version refuses the WHOLE lineage; the head decides the status.
  */
-export function resolveSubject(input: ResolveSubjectInput): ResolveSubjectResult {
+/** What the lineage checks leave for the head decision: the registrations in data-entry order and the rows they came from. */
+export interface LineageParts {
+  adi: string;
+  assertedBy: string;
+  expectType: string;
+  regs: Registration[];
+  rows: Row[];
+  v1: boolean;
+}
+
+export function lineageParts(input: ResolveSubjectInput, requireVerdict = true): LineageParts | ResolveSubjectResult {
   const a = input.asserted;
   if (!isPlainObject(a) || Object.keys(a).length !== 2 || !isAdiUrl(a['adi']) || !isAdiUrl(a['assertedBy'])) return unproven('asserted_malformed');
   if (typeof input.expectType !== 'string' || !(SUBJECT_TYPES as readonly string[]).includes(input.expectType)) return unproven('expect_type_malformed');
@@ -68,7 +79,7 @@ export function resolveSubject(input: ResolveSubjectInput): ResolveSubjectResult
   if (v1.length > 1) return unproven('registry_ambiguous');
 
   const verdictOf = (r: Row): string | undefined => (typeof r['envelopeVerdict'] === 'string' && r['envelopeVerdict'] ? (r['envelopeVerdict'] as string) : undefined);
-  for (const r of mine) if (r['envelopeVerdict'] !== 'ok') return unproven('registration_unverified', verdictOf(r));
+  if (requireVerdict) for (const r of mine) if (r['envelopeVerdict'] !== 'ok') return unproven('registration_unverified', verdictOf(r));
   const regs: Registration[] = [];
   for (const r of mine) {
     const v = validateRegistration(r['record']);
@@ -95,11 +106,51 @@ export function resolveSubject(input: ResolveSubjectInput): ResolveSubjectResult
     }
   }
 
+  return { adi, assertedBy, expectType: input.expectType, regs, rows: mine, v1: v1.length > 0 };
+}
+
+/** The head decides: principal_is_subject, subject_retired, subject_suspended, subject_type_mismatch, submitter_not_authorized. */
+export function headDecision(p: LineageParts): ResolveSubjectResult {
+  const { regs, assertedBy, expectType } = p;
   const head = regs[regs.length - 1]!;
   if (isUnderAdi(head.principal.adi, head.adi)) return unproven('principal_is_subject');
   if (head.status === 'retired') return unproven('subject_retired');
   if (head.status === 'suspended') return unproven('subject_suspended');
-  if (head.type !== input.expectType) return unproven('subject_type_mismatch');
+  if (head.type !== expectType) return unproven('subject_type_mismatch');
   if (assertedBy !== head.principal.adi && !head.submitters.includes(assertedBy)) return unproven('submitter_not_authorized');
   return { ok: true, subject: { adi: head.adi, type: head.type, principal: head.principal.adi, seat: head.responsibleSeat } };
+}
+
+/**
+ * OFFLINE / HISTORICAL resolution over rows that carry an envelope verdict computed elsewhere (the sr-01..sr-52 fixtures).
+ * An online reader MUST NOT feed it verdicts from a key page: use resolveSubjectOnline (registry-online.ts).
+ */
+export function resolveSubject(input: ResolveSubjectInput): ResolveSubjectResult {
+  const p = lineageParts(input);
+  if ('ok' in p) return p;
+  return headDecision(p);
+}
+
+export interface ResolveSubjectSignedInput {
+  asserted: unknown;
+  expectType: unknown;
+  /** rows `{record, envelope, chain, subjectBooks}`: each registration with its envelope and the key-page snapshot as of ITS OWN entry time, or null when that snapshot cannot be read */
+  registry: unknown;
+}
+
+/**
+ * GR-54 to GR-57 at resolution: every row is verified with the two-role verifier against its OWN snapshot (a later
+ * rotation leaves earlier versions valid, a new version needs the then-current keys), and the verdict feeds
+ * resolveSubject. A version without both roles, or whose snapshot is unreadable, makes the whole lineage
+ * registration_unverified; a squatter's principal-only registration never resolves.
+ */
+export function resolveSubjectSigned(input: ResolveSubjectSignedInput): ResolveSubjectResult {
+  const rows = input.registry;
+  if (!Array.isArray(rows)) return resolveSubject({ asserted: input.asserted, expectType: input.expectType, registry: rows });
+  const verified = rows.map((row) => {
+    if (!isPlainObject(row)) return row;
+    const v = verifyRegistrationAccepted({ registration: row['record'], envelope: row['envelope'], chain: row['chain'], subjectBooks: row['subjectBooks'] });
+    return { record: row['record'], envelopeVerdict: v.ok ? 'ok' : v.reason };
+  });
+  return resolveSubject({ asserted: input.asserted, expectType: input.expectType, registry: verified });
 }

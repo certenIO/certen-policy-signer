@@ -14,7 +14,7 @@ export interface ConsumeDecision<T> {
   /** what `consumeWith` returns to its caller */
   result: T;
   /** when set, this nonce (of this request) is consumed before `consumeWith` returns */
-  consume?: { requestHash: string; nonce: string };
+  consume?: { requestHash: string; nonce: string; /** further members of the entry (the facts age): allowed by the log */ extra?: Record<string, unknown> };
 }
 
 export class NonceStore {
@@ -48,9 +48,9 @@ export class NonceStore {
     return this.journal.exclusive(async () => {
       const d = decide(this.list());
       if (d.consume !== undefined) {
-        const { requestHash, nonce } = d.consume;
+        const { requestHash, nonce, extra } = d.consume;
         if (this.spent.has(nonce)) throw new JournalError('decision_replayed', 'the nonce was consumed between the check and the append');
-        this.journal.appendNow('decision.consumed', this.nowSeconds(), { requestHash, nonce });
+        this.journal.appendNow('decision.consumed', this.nowSeconds(), { ...(extra ?? {}), requestHash, nonce });
         this.add(nonce);
       }
       return d.result;

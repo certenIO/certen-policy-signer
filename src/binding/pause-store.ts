@@ -6,7 +6,7 @@
  * then `pause-state.json` (the core's canonical text, written atomically). The state file is what every signature READS; the
  * journal is what shows it was not edited.
  *
- * At start the state file is reconciled with the verified journal through the core's `reconcilePauseState`. A state that
+ * At start the state file is checked against the verified journal through the core's `checkPersistedPause` (DE-78). A state that
  * differs is refused (`pause_state_log_mismatch`), because a dropped record must never read as "not paused", with ONE exception
  * that is not an attack: a crash between the two writes leaves the file behind the journal by the entries of one change (the
  * file equals the replay of a prefix of the pause entries). That is rewritten from the journal, which only re-asserts what the
@@ -18,7 +18,7 @@
 import { existsSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
-  applyPause, applyResume, checkSigningFromText, emptyPauseState, parsePauseState, reconcilePauseState, serializePauseState,
+  applyPause, applyResume, checkSigningFromText, emptyPauseState, parsePauseState, checkPersistedPause, serializePauseState,
   type PauseOptions, type PauseScope, type PauseState, type SigningVerdict,
 } from '../core/pause.js';
 import { DecisionJournal, JournalError } from './journal.js';
@@ -29,7 +29,8 @@ export interface PauseGate {
 }
 
 export interface PauseOp { scope: PauseScope; id: string; by: string; reason: string }
-export type PauseOutcome = { ok: true; state: PauseState } | { ok: false; reason: string; detail?: string };
+/** pausing what is paused is not a refusal (DE-78, pz-17): the answer is `status: 'already_paused'`, the first record stays, nothing is journalled */
+export type PauseOutcome = { ok: true; state: PauseState; status?: 'already_paused' } | { ok: false; reason: string; detail?: string };
 
 export class PauseStateError extends Error {
   constructor(readonly reason: string, readonly detail?: string) {
@@ -56,7 +57,7 @@ function writeAtomic(path: string, data: string): void {
   renameSync(tmp, path);
 }
 
-/** the state the pause entries of the journal add up to (the same fold as the core's reconcilePauseState) */
+/** the state the pause entries of the journal add up to (the same fold as the core's checkPersistedPause) */
 function replay(entries: Array<{ kind: string; at: number; payload: Record<string, unknown> }>): PauseState {
   let state = emptyPauseState();
   for (const e of entries) {
@@ -123,7 +124,7 @@ export class PauseStore {
     }
     const parsed = parsePauseState(readFileSync(this.statePath, 'utf8'));
     if (!parsed.ok) throw new PauseStateError('pause_state_unreadable', parsed.reason);
-    const r = reconcilePauseState({ state: parsed.state, entries: pauseEntries.map((e) => ({ kind: e.kind, at: e.at, payload: e.payload })) });
+    const r = checkPersistedPause({ state: parsed.state, log: pauseEntries.map((e) => ({ kind: e.kind, at: e.at, payload: e.payload })) });
     if (r.ok) {
       this.state = parsed.state;
       return;
@@ -185,7 +186,7 @@ export class PauseStore {
     return this.journal.exclusive(async () => {
       const cur = this.snapshot();
       const todo = this.seatIds.filter((id) => !cur.pauses.some((p) => p.scope === 'seat' && p.id === id));
-      if (todo.length === 0) return { ok: false, reason: 'already_paused', detail: 'every configured seat' } as PauseOutcome;
+      if (todo.length === 0) return { ok: true, state: cur, status: 'already_paused' } as PauseOutcome;
       return this.change('set', todo.map((id) => ({ scope: 'seat' as const, id, by, reason })));
     });
   }
@@ -209,8 +210,9 @@ export class PauseStore {
       const r = kind === 'set' ? applyPause(state, { ...op, at }, this.opts) : applyResume(state, { ...op, at }, this.opts);
       if (!r.ok) return r;
       state = r.state;
-      events.push({ kind: r.event.kind, payload: { ...r.event.payload } });
+      if ('event' in r) events.push({ kind: r.event.kind, payload: { ...r.event.payload } });
     }
+    if (events.length === 0) return { ok: true, state, status: 'already_paused' };
     try {
       for (const e of events) this.journal.appendNow(e.kind, at, e.payload);
     } catch (e) {

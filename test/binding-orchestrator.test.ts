@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { DECISION_RECORD_MEMBER } from '../src/binding/verify.js';
-import { ADDR, APPROVER, GRANTOR, GRANT_HASH, H, KEY, POLICY, PRINCIPAL, SEAT, SUBJECT, fakeWorld, intentBody, leg, subjectClaim } from './support/binding-fixtures.js';
+import { ADDR, APPROVER, GRANTOR, GRANTOR_BOOK, GRANT_HASH, H, KEY, POLICY, PRINCIPAL, SEAT, SUBJECT, fakeWorld, intentBody, leg, subjectClaim } from './support/binding-fixtures.js';
 import { NOW_S, RULES, SIGNER, TX, approveFor, rig, silent, tmp, type Body, type RigOpts } from './support/binding-rig.js';
 import { Orchestrator } from '../src/orchestrator.js';
 import { MemoryStore } from '../src/store/store.js';
@@ -140,7 +140,7 @@ describe('a refused decision causes no vote, no cancel and no account change (DA
     ['another seat', { reply: approveFor(BASE, { seat: 'seat:other-seat' }) }, 'binding: seat_mismatch'],
     ['approver the seat does not authorise', { reply: approveFor(BASE, { approver: KEY('stranger') }) }, 'binding: approver_not_authorized'],
     ['approver given as a display name', { reply: approveFor(BASE, { approver: 'Alice Officer' }) }, 'binding: decision_malformed'],
-    ['multi-leg intent (cannot be bound)', { body: intentBody({ legs: [leg(), leg({ to: ADDR.vendorB })] }), reply: () => ({ decision: 'approve' }) }, 'binding: presented_malformed'],
+    ['multi-leg intent (cannot be bound)', { body: intentBody({ legs: [leg(), leg({ to: ADDR.vendorB })] }), reply: () => ({ decision: 'approve' }) }, 'binding: multi_leg_unsupported'],
   ];
   for (const [name, over, reason] of cases) {
     for (const submitRejectVote of [false, true]) {
@@ -202,14 +202,14 @@ describe('a denied pending item withholds the signature and casts no reject vote
 describe('the Grant and the subject join (DAX-4-A15, DE-06, DE-54, DE-61, DE-71, DE-72)', () => {
   const ref = { grantId: 'fic-agent-pay', version: 1, grantHash: GRANT_HASH };
   const body = intentBody({ grantRef: ref, subject: subjectClaim() });
-  const grantRules = { requireGrant: true, grantorAdi: GRANTOR, registryPrincipals: [PRINCIPAL] };
+  const grantRules = { requireGrant: true, grantorAdi: GRANTOR, grantorBook: GRANTOR_BOOK };
   const withGrant = (over = {}) => approveFor(body, { grantHash: GRANT_HASH, ...over });
 
   it('signs when the Grant is the head and the resolved subject is the Grant subject', async () => {
     const world = fakeWorld();
     const r = rig({ body, rules: grantRules, world, reply: withGrant() });
     expect((await r.handle()).status).toBe('signed');
-    expect(world.calls).toEqual(['grantHead', 'resolveSubject']);
+    expect(world.calls).toEqual(['establish']); // one evaluation answers the head and the subject
     expect((await r.store.getReceipt(TX))?.binding?.grantHash).toBe(GRANT_HASH);
   });
   it('another subject than the Grant names: grant_subject_mismatch', async () => {
@@ -225,7 +225,7 @@ describe('the Grant and the subject join (DAX-4-A15, DE-06, DE-54, DE-61, DE-71,
     const r = rig({ body, rules: grantRules, world: fakeWorld({ resolved: null }), reply: withGrant() });
     const row = await r.handle();
     expect(row.lastError).toBe('binding: subject_unproven');
-    expect((await r.store.getReceipt(TX))?.policyEvidence).toMatchObject({ reason: 'subject_unproven', detail: 'not_registered' });
+    expect((await r.store.getReceipt(TX))?.policyEvidence).toMatchObject({ reason: 'subject_unproven', detail: 'subject_unproven:not_registered' });
     expect(r.acc.submissions).toHaveLength(0);
   });
   it('an intent that asserts no subject cannot be joined: subject_unproven', async () => {
@@ -258,7 +258,7 @@ describe('the Grant and the subject join (DAX-4-A15, DE-06, DE-54, DE-61, DE-71,
     expect(world.calls).toEqual([]);
   });
   it('a seat without a Grant requirement still joins the subject when a Grant IS named (DE-72)', async () => {
-    const r = rig({ body, rules: { grantorAdi: GRANTOR, registryPrincipals: [PRINCIPAL] }, world: fakeWorld({ resolved: { adi: 'acc://agent-two.fic-grantor.acme', type: 'agent' } }), reply: withGrant() });
+    const r = rig({ body, rules: { grantorAdi: GRANTOR, grantorBook: GRANTOR_BOOK }, world: fakeWorld({ resolved: { adi: 'acc://agent-two.fic-grantor.acme', type: 'agent' } }), reply: withGrant() });
     expect((await r.handle()).lastError).toBe('binding: grant_subject_mismatch');
   });
   it('the producer\'s grantRef is a claim: a head with another hash than the claim is superseded, however the claim reads', async () => {
@@ -324,8 +324,9 @@ describe('the persisted pause comes first and spends nothing (DAX-4-A3 at the or
     const world = fakeWorld();
     const ref = { grantId: 'fic-agent-pay', version: 1, grantHash: GRANT_HASH };
     const body = intentBody({ grantRef: ref, subject: subjectClaim() });
-    const r = rig({ body, rules: { requireGrant: true, grantorAdi: GRANTOR, registryPrincipals: [PRINCIPAL] }, world, reply: approveFor(body, { grantHash: GRANT_HASH }) });
-    world.resolveSubject = async () => { await r.pauses.set(op); return { ok: true, value: { ...SUBJECT } }; }; // set during the world read
+    const r = rig({ body, rules: { requireGrant: true, grantorAdi: GRANTOR, grantorBook: GRANTOR_BOOK }, world, reply: approveFor(body, { grantHash: GRANT_HASH }) });
+    const establish = world.establish.bind(world);
+    world.establish = async (q) => { await r.pauses.set(op); return establish(q); }; // set during the world read
     const row = await r.handle();
     expect(row.lastError).toBe('paused');
     expect(r.acc.submissions).toHaveLength(0);
@@ -335,7 +336,7 @@ describe('the persisted pause comes first and spends nothing (DAX-4-A3 at the or
     const ref = { grantId: 'fic-agent-pay', version: 1, grantHash: GRANT_HASH };
     const body = intentBody({ grantRef: ref, subject: subjectClaim() }); // the intent ASSERTS agent-one
     const resolved = { adi: 'acc://agent-two.fic-grantor.acme', type: 'agent' as const };
-    const r = rig({ body, rules: { requireGrant: true, grantorAdi: GRANTOR, registryPrincipals: [PRINCIPAL] }, world: fakeWorld({ resolved }), reply: approveFor(body, { grantHash: GRANT_HASH }) });
+    const r = rig({ body, rules: { requireGrant: true, grantorAdi: GRANTOR, grantorBook: GRANTOR_BOOK }, world: fakeWorld({ resolved }), reply: approveFor(body, { grantHash: GRANT_HASH }) });
     await r.pauses.set({ scope: 'subject', id: resolved.adi, by: 'seat:fic-operator', reason: 'FICTIONAL: stop this agent' });
     expect((await r.handle()).lastError).toBe('paused'); // held by the resolved subject before any nonce is spent
     expect(r.nonces.list()).toEqual([]);
@@ -345,7 +346,7 @@ describe('the persisted pause comes first and spends nothing (DAX-4-A3 at the or
     const world = fakeWorld();
     const ref = { grantId: 'fic-agent-pay', version: 1, grantHash: GRANT_HASH };
     const body = intentBody({ grantRef: ref, subject: subjectClaim() });
-    const r = rig({ body, rules: { requireGrant: true, grantorAdi: GRANTOR, registryPrincipals: [PRINCIPAL] }, world, reply: approveFor(body, { grantHash: GRANT_HASH }) });
+    const r = rig({ body, rules: { requireGrant: true, grantorAdi: GRANTOR, grantorBook: GRANTOR_BOOK }, world, reply: approveFor(body, { grantHash: GRANT_HASH }) });
     await r.pauses.set({ scope: 'subject', id: SUBJECT.adi, by: 'seat:fic-operator', reason: 'FICTIONAL: stop this agent' });
     expect((await r.handle()).lastError).toBe('paused');
     expect(r.acc.submissions).toHaveLength(0);

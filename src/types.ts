@@ -365,10 +365,34 @@ export interface PolicyRequest {
   /** `tcl-summary/v1` hash of `display`, lowercase hex. A signing client refuses when its link carries a different one. */
   summaryHash?: string;
   /**
+   * The exact request this signer will bind a decision to (DAX-4S): the ten members of the core's request hash. Present only when
+   * the scope REQUIRES binding and the transaction is ONE action the signer can express; a decision service with no chain access
+   * builds the same hash from it. The producer's declared ids are never in it: `validatorOperationId` is recomputed from the four
+   * blobs of the pending transaction (DE-64).
+   */
+  binding?: PolicyBinding;
+  /**
    * How long THIS DECISION REQUEST is valid (policy TTL, default 15 min) — NOT the tx's on-chain
    * deadline. The on-chain deadline is `header.expiresAt`.
    */
   expiresAt: string;              // ISO
+}
+
+/** The request of DECISION.md section 2, as the signer binds it (see `PolicyRequest.binding`). */
+export interface PolicyBinding {
+  chainId: number;
+  kind: 'erc20.transfer' | 'erc20.approve' | 'native.transfer';
+  source: string;
+  target: string;
+  beneficiary: string;
+  /** `native` or a 0x + 40 hex token address */
+  asset: string;
+  /** decimal text */
+  amount: string;
+  executionCommitment: string;
+  /** the validator's operation id, recomputed from the transaction's four blobs (never the intent_id UUID, never the blob-3 intent_hash) */
+  validatorOperationId: string;
+  txHash: string;
 }
 
 /**

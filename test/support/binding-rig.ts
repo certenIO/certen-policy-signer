@@ -18,7 +18,8 @@ import { LocalSigner } from '../../src/signer/signer.js';
 import { singleKeyring, type Keyring } from '../../src/signer/keyring.js';
 import { MemoryStore } from '../../src/store/store.js';
 import type { Decision, PolicyRequest } from '../../src/types.js';
-import { APPROVER, POLICY, PRINCIPAL, SEAT, FakeWorld, H, intentBody, record } from './binding-fixtures.js';
+import { APPROVER, POLICY, PRINCIPAL, SEAT, H, intentBody, record } from './binding-fixtures.js';
+import type { BindingWorld } from '../../src/binding/world.js';
 
 export const silent = pino({ level: 'silent' });
 export const SIGNER = 'acc://o.acme/book/1';
@@ -35,7 +36,7 @@ export const requestHashOf = (body: Body, tx = TX): string => {
   return hashRequest(b.value.request);
 };
 
-export const RULES: BindingRules = { seat: SEAT, authorizedApprovers: [APPROVER], maxWindowSeconds: 7200, policyHash: POLICY, requireGrant: false, registryPrincipals: [] };
+export const RULES: BindingRules = { seat: SEAT, authorizedApprovers: [APPROVER], maxWindowSeconds: 7200, policyHash: POLICY, requireGrant: false };
 
 export interface RigOpts {
   dir?: string;
@@ -43,7 +44,7 @@ export interface RigOpts {
   /** the decision the engine returns for every ask */
   reply: (req: PolicyRequest) => Decision;
   rules?: Partial<BindingRules> | null; // null: no binding on this seat (legacy)
-  world?: FakeWorld;
+  world?: BindingWorld;
   submitRejectVote?: boolean;
   tx?: string;
   votes?: ConstructorParameters<typeof Orchestrator>[0]['votes'];

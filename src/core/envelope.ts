@@ -190,21 +190,13 @@ export interface VerifyEnvelopeArgs {
 }
 
 /**
- * GR-14 order: malformed envelope, tag mismatch, hash mismatch, a data-account authority set that includes the
- * subject, one that lacks the owner book; then per signature (in envelope order) an unsupported algorithm, a key form
- * the snapshot's convention refuses, a subject key, a key that is not on a page of the owner book, an invalid
- * signature; finally a threshold no page reaches.
+ * The checks of one role over the given signatures (GR-14 order): tag mismatch, hash mismatch, a data-account authority
+ * set that includes the subject, one that lacks the owner book; then per signature (in order) an unsupported
+ * algorithm, a key form the snapshot's convention refuses, a subject key, a key that is not on a page of the owner
+ * book, an invalid signature; finally a threshold no page reaches. No signature at all is threshold_not_met.
  */
-export function verifyEnvelope(a: VerifyEnvelopeArgs): EnvelopeVerdict {
-  const N = a.names === 'registration' ? REGISTRATION_NAMES : GRANT_NAMES;
-  const ev = validateEnvelope(a.envelope);
-  if (!ev.ok) return ev;
-  const env = ev.envelope;
-  if (!chainOk(a.chain) || !Array.isArray(a.subjectBooks) || !a.subjectBooks.every((b) => isAccUrl(b))) return { ok: false, reason: 'chain_snapshot_malformed' };
-  const chain = a.chain;
-  const subjectBooks = a.subjectBooks as string[];
+function runRole(env: Envelope, signatures: EnvelopeSignature[], a: VerifyEnvelopeArgs, chain: ChainSnapshot, subjectBooks: string[], N: VerdictNames): EnvelopeVerdict {
   const isSubjectBook = (b: string): boolean => subjectBooks.includes(b) || isUnderAdi(b, a.subjectAdi);
-
   if (env.payloadTag !== a.tag) return { ok: false, reason: 'payload_tag_mismatch' };
   if (env.payloadHash !== a.payloadHash) return { ok: false, reason: N.hashMismatch };
   if (chain.dataAccountAuthorities.some(isSubjectBook)) return { ok: false, reason: N.authorityIncludesSubject };
@@ -214,7 +206,7 @@ export function verifyEnvelope(a: VerifyEnvelopeArgs): EnvelopeVerdict {
   for (const p of Object.values(chain.pages)) if (isSubjectBook(p.book)) for (const h of p.keyHashes) subjectKeyHashes.add(h);
 
   const signers = new Map<string, Set<string>>();
-  for (const s of env.signatures) {
+  for (const s of signatures) {
     if (!SUPPORTED_ALGS.includes(s.alg)) return { ok: false, reason: 'signature_alg_unsupported', detail: s.alg };
     if (chain.keyHashConvention === 'accumulate' && s.alg === 'ecdsa-p256-sha256' && s.publicKey.length !== 182) return { ok: false, reason: 'signer_key_form_invalid' };
     const kh = keyHashHex(s.publicKey);
@@ -229,6 +221,15 @@ export function verifyEnvelope(a: VerifyEnvelopeArgs): EnvelopeVerdict {
   const pages = [...signers.entries()].filter(([url, set]) => set.size >= chain.pages[url]!.threshold).map(([url]) => url).sort();
   if (pages.length === 0) return { ok: false, reason: 'threshold_not_met' };
   return { ok: true, pages };
+}
+
+/** One envelope, ONE role: every signature must be on a page of the owner book (the grantor for a Grant). */
+export function verifyEnvelope(a: VerifyEnvelopeArgs): EnvelopeVerdict {
+  const N = a.names === 'registration' ? REGISTRATION_NAMES : GRANT_NAMES;
+  const ev = validateEnvelope(a.envelope);
+  if (!ev.ok) return ev;
+  if (!chainOk(a.chain) || !Array.isArray(a.subjectBooks) || !a.subjectBooks.every((b) => isAccUrl(b))) return { ok: false, reason: 'chain_snapshot_malformed' };
+  return runRole(ev.envelope, ev.envelope.signatures, a, a.chain, a.subjectBooks as string[], N);
 }
 
 export interface VerifyGrantEnvelopeArgs { grant: unknown; envelope: unknown; chain: unknown; subjectBooks: unknown }
@@ -349,4 +350,64 @@ export function readAccountEntries(input: { account: unknown; entries: unknown }
     if (!d.ok) return { ok: false, reason: 'account_entry_undecodable', index: i, cause: d.reason };
   }
   return { ok: true, count: input.entries.length };
+}
+
+export type AcceptedVerdict = { ok: true; pages: string[]; acceptancePages: string[] } | { ok: false; reason: string; detail?: string };
+
+/**
+ * GR-54 to GR-57: the TWO-ROLE verifier of a registration envelope (the verifier profile from DAX-3 round 3 on).
+ *
+ * Role 1, the principal registers: signatures on pages of the principal's key book reach that page's threshold with
+ * distinct keys, judged first and with the verdicts of verifyRegistrationEnvelope (signer_not_principal,
+ * registration_signed_by_subject, threshold_not_met, ...). A signature belongs to this role when its page is a page of
+ * the principal's book.
+ *
+ * Role 2, the subject accepts: every other signature is an acceptance and must sit on a page of a key book of the
+ * subject (the books in the authority set of the subject ADI), with refusals in this order per signature:
+ * signature_alg_unsupported, acceptance_not_subject_book, signer_key_form_invalid, subject_acceptance_invalid (key not
+ * on the page, invalid signature or made for another registration), acceptance_not_independent (a key of the
+ * principal's book cannot also accept); then subject_acceptance_threshold_not_met. No acceptance at all is
+ * subject_acceptance_missing. The acceptance gives the subject no authority (GR-56): an envelope with only the
+ * acceptance has no principal role and is refused as threshold_not_met.
+ */
+export function verifyRegistrationAccepted(a: VerifyRegistrationEnvelopeArgs): AcceptedVerdict {
+  const r = validateRegistration(a.registration);
+  if (!r.ok) return { ok: false, reason: 'registration_malformed', detail: r.reason };
+  const reg: Registration = r.registration;
+  const ev = validateEnvelope(a.envelope);
+  if (!ev.ok) return ev;
+  if (a.chain === null || a.chain === undefined || a.subjectBooks === null || a.subjectBooks === undefined) return { ok: false, reason: 'snapshot_unreadable' };
+  if (!chainOk(a.chain) || !Array.isArray(a.subjectBooks) || !a.subjectBooks.every((b) => isAccUrl(b))) return { ok: false, reason: 'chain_snapshot_malformed' };
+  const chain = a.chain;
+  const subjectBooks = a.subjectBooks as string[];
+  const env = ev.envelope;
+  const args: VerifyEnvelopeArgs = { tag: registrationTag(reg), payloadHash: hashRegistration(reg), envelope: env, chain, ownerBook: reg.principal.keyBook, subjectAdi: reg.adi, subjectBooks, names: 'registration' };
+  const isPrincipalPage = (url: string): boolean => Object.prototype.hasOwnProperty.call(chain.pages, url) && chain.pages[url]!.book === reg.principal.keyBook;
+  const principalSigs = env.signatures.filter((s) => isPrincipalPage(s.page));
+  const acceptanceSigs = env.signatures.filter((s) => !isPrincipalPage(s.page));
+
+  const principal = runRole(env, principalSigs, args, chain, subjectBooks, REGISTRATION_NAMES);
+  if (!principal.ok) return principal;
+  if (acceptanceSigs.length === 0) return { ok: false, reason: 'subject_acceptance_missing' };
+
+  const isSubjectBook = (b: string): boolean => subjectBooks.includes(b) || isUnderAdi(b, reg.adi);
+  const principalKeyHashes = new Set<string>();
+  for (const p of Object.values(chain.pages)) if (p.book === reg.principal.keyBook) for (const h of p.keyHashes) principalKeyHashes.add(h);
+  const accepted = new Map<string, Set<string>>();
+  for (const s of acceptanceSigs) {
+    if (!SUPPORTED_ALGS.includes(s.alg)) return { ok: false, reason: 'signature_alg_unsupported', detail: s.alg };
+    const page = Object.prototype.hasOwnProperty.call(chain.pages, s.page) ? chain.pages[s.page] : undefined;
+    if (page === undefined || !isSubjectBook(page.book)) return { ok: false, reason: 'acceptance_not_subject_book' };
+    if (chain.keyHashConvention === 'accumulate' && s.alg === 'ecdsa-p256-sha256' && s.publicKey.length !== 182) return { ok: false, reason: 'signer_key_form_invalid' };
+    const kh = keyHashHex(s.publicKey);
+    if (!page.keyHashes.includes(kh)) return { ok: false, reason: 'subject_acceptance_invalid' };
+    if (principalKeyHashes.has(kh)) return { ok: false, reason: 'acceptance_not_independent' };
+    if (!signatureValid(s.alg, s.publicKey, s.signature, envelopeDigest(env.payloadTag, env.payloadHash, s.page))) return { ok: false, reason: 'subject_acceptance_invalid' };
+    const set = accepted.get(s.page) ?? new Set<string>();
+    set.add(kh);
+    accepted.set(s.page, set);
+  }
+  const acceptancePages = [...accepted.entries()].filter(([url, set]) => set.size >= chain.pages[url]!.threshold).map(([url]) => url).sort();
+  if (acceptancePages.length === 0) return { ok: false, reason: 'subject_acceptance_threshold_not_met' };
+  return { ok: true, pages: principal.pages, acceptancePages };
 }

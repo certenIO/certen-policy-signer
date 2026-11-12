@@ -23,7 +23,8 @@ import { createServer, HealthSource } from './server.js';
 import { DecisionJournal } from './binding/journal.js';
 import { NonceStore } from './binding/nonces.js';
 import { PauseStore } from './binding/pause-store.js';
-import { createChainReader } from './binding/chain-reader.js';
+import { ReadCache } from './binding/read-cache.js';
+import { metrics } from './metrics.js';
 import { createChainWorld } from './binding/chain-world.js';
 import type { SeatRules } from './orchestrator.js';
 import { bytesToHex } from './accumulate/signing.js';
@@ -192,7 +193,7 @@ async function main() {
         binding: {
           seat: s.seat, authorizedApprovers: b.authorized_approvers, maxWindowSeconds: b.max_window_seconds,
           policyHash: b.policy_hash ?? null, requireGrant: b.require_grant,
-          ...(b.grantor_adi ? { grantorAdi: b.grantor_adi } : {}), registryPrincipals: b.registry_principals,
+          ...(b.grantor_adi && b.grantor_book ? { grantorAdi: b.grantor_adi, grantorBook: b.grantor_book } : {}),
         },
       } : {}),
     });
@@ -201,9 +202,19 @@ async function main() {
       if (b.policy_hash === undefined) logger.warn({ seat: s.seat }, 'binding.policy_hash is not set: the policy hash of each decision is recorded and NOT compared');
     }
   }
-  const bindingWorld = seatConfigs.some((s) => s.binding)
-    ? createChainWorld({ reader: createChainReader((scope, q) => accumulate.query(scope, q)), nowSeconds })
+  // The reader of Accumulate facts (READER-MODEL-V2): ONE read cache for the decision binding AND the Console's `chain` relay routes,
+  // so they share the cache, the 30-second TTL, the concurrency bound and the node back-off.
+  const chainRelay = (cfg.admin.relay_clients ?? []).some((c) => c.scopes.includes('chain'));
+  const readCache = seatConfigs.some((s) => s.binding) || chainRelay
+    ? new ReadCache((scope, q) => accumulate.query(scope, q), {
+        ttlMs: cfg.reader.cache_ttl_seconds * 1000, maxConcurrent: cfg.reader.max_concurrency,
+        backoffBaseMs: cfg.reader.backoff_base_ms, backoffMaxMs: cfg.reader.backoff_max_ms, metrics,
+      })
     : undefined;
+  const bindingWorld = readCache && seatConfigs.some((s) => s.binding)
+    ? createChainWorld({ evaluation: () => readCache.evaluation(), nowSeconds })
+    : undefined;
+  if (readCache) logger.info({ ttlSeconds: cfg.reader.cache_ttl_seconds, maxConcurrency: cfg.reader.max_concurrency, chainRelay }, 'accumulate reader: cached by account and main-chain length, hard TTL, bounded concurrency, node back-off');
 
   // SR4 local guard: refuse to sign above a value ceiling (see src/guard.ts — gates EVERY leg).
   const guard = cfg.behavior.value_ceiling
@@ -430,6 +441,7 @@ async function main() {
       evm: cfg.relay.evm.map((c) => ({ chainId: c.chain_id, rpcUrl: c.rpc_url })),
       getPolicyRequest: (h) => store.getPolicyRequest(h),
       governanceKey: cfg.admin.governance_admin_key,
+      ...(readCache ? { chainReader: () => readCache.evaluation() } : {}),
       pages: () => keyring.scopes().map((s) => s.page),
       applyKeyPageOp: governKeyPage,
       // Phase 7: a governance tx still awaiting a signature is stored so a human on that page can sign it via officer intake.

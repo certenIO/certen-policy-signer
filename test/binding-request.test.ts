@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { buildPresentedRequest } from '../src/binding/request.js';
+import { policyBindingOf } from '../src/binding/policy-binding.js';
 import { bindDecision } from '../src/core/decision-binding.js';
 import { hashRequest } from '../src/core/hashes.js';
 import { ADDR, APPROVER, GRANT_HASH, H, SEAT, SUBJECT, intentBody, leg, record, subjectClaim } from './support/binding-fixtures.js';
@@ -46,13 +47,48 @@ describe('the request built from a pending intent', () => {
     expect(none.assertedSubject).toBeNull();
   });
 
-  it('lowercases addresses and the commitment, and takes the transaction hash with or without 0x', () => {
-    const mixed = leg({ from: '0x' + 'AB'.repeat(20), to: '0x' + 'CD'.repeat(20), commitment: H('c').toUpperCase().replace('0X', '0x') });
-    const v = ok(intentBody({ legs: [mixed] }), '0x' + TX.toUpperCase());
-    expect(v.request['source']).toBe('0x' + 'ab'.repeat(20));
-    expect(v.request['beneficiary']).toBe('0x' + 'cd'.repeat(20));
+  it('lowercases the commitment and the transaction hash (with or without 0x); an address must already be canonical lower case', () => {
+    const v = ok(intentBody({ legs: [leg({ commitment: H('c').toUpperCase().replace('0X', '0x') })] }), '0x' + TX.toUpperCase());
     expect(v.request['executionCommitment']).toBe(H('c'));
     expect(v.request['txHash']).toBe('0x' + TX);
+    // a checksum-case address is refused by name, as the strict decoder refuses it (DAX7A-F2): no second spelling of one address
+    expect(build(intentBody({ legs: [leg({ from: '0x' + 'AB'.repeat(20) })] }))).toEqual({ ok: false, detail: 'source_address' });
+    // hex digits of the CALLDATA are bytes, of either case (golden g15): the same bytes, the same canonical beneficiary
+    expect(ok(intentBody({ legs: [leg({ to: '0x' + 'CD'.repeat(20) })] })).request['beneficiary']).toBe('0x' + 'cd'.repeat(20));
+  });
+
+  it('reads the calldata text as strictly as the strict decoder: 0x required, a clean address word', () => {
+    const word = (a: string) => a.replace('0x', '').padStart(64, '0');
+    const calldata = (hi: string) => '0xa9059cbb' + hi + ADDR.vendorA.replace('0x', '') + word((300).toString(16));
+    expect(build(intentBody({ legs: [leg({ payloadOverride: { callData: calldata('0'.repeat(24)) } })] })).ok).toBe(true);
+    expect(build(intentBody({ legs: [leg({ payloadOverride: { callData: calldata('0'.repeat(23) + '1') } })] }))).toEqual({ ok: false, detail: 'address_pad_dirty' });
+    expect(build(intentBody({ legs: [leg({ payloadOverride: { callData: calldata('0'.repeat(24)).slice(2) } })] }))).toEqual({ ok: false, detail: 'calldata_prefix_invalid' });
+    expect(build(intentBody({ legs: [leg({ payloadOverride: { callData: '0X' + calldata('0'.repeat(24)).slice(2) } })] }))).toEqual({ ok: false, detail: 'calldata_prefix_invalid' });
+    expect(build(intentBody({ legs: [leg({ payloadOverride: { callData: 5 } })] }))).toEqual({ ok: false, detail: 'calldata_not_text' });
+  });
+});
+
+describe('legCount is derived from the legs and ALWAYS supplied (DE-76, DAX-4-A20)', () => {
+  it('is 1 for one leg, the number of legs otherwise, and the core refuses a legCount other than 1 by name', () => {
+    expect(ok(intentBody()).legCount).toBe(1);
+    expect(ok(intentBody({ legs: [leg(), leg({ to: ADDR.vendorB })] })).legCount).toBe(2);
+    expect(ok(intentBody({ legs: [leg(), leg(), leg({ to: ADDR.vendorB })] })).legCount).toBe(3);
+    const NOW = 1_800_000_000;
+    const state = { requireGrant: false, grantHeadHash: null, grantHeadSubject: null, expectedPolicyHash: null, authorizedApprovers: [APPROVER], consumed: [] as string[], maxWindowSeconds: 86400 };
+    for (const legs of [[leg(), leg({ to: ADDR.vendorB })], [leg({ payloadOverride: { callData: '0xdeadbeef' } }), leg()]]) {
+      const v = ok(intentBody({ legs }));
+      const r = bindDecision({ state, now: NOW, decision: record({ requestHash: hashRequest(v.request), issuedAt: NOW - 1 }), presented: { request: v.request, legCount: v.legCount, grantRefHash: null, seat: SEAT, subject: null } });
+      expect(r).toMatchObject({ ok: false, reason: 'multi_leg_unsupported' }); // even when the first leg cannot be mapped (a placeholder request stands in, never compared)
+    }
+    // one leg that cannot be mapped is still presented_malformed: nothing is guessed
+    expect(build(intentBody({ legs: [leg({ payloadOverride: { callData: '0xdeadbeef' } })] }))).toEqual({ ok: false, detail: 'calldata_unsupported' });
+  });
+  it('a single-leg request is what the Console is told (policyBindingOf: ten members, the validator id named validatorOperationId)', () => {
+    const v = ok(intentBody());
+    expect(policyBindingOf(v.request)).toEqual({
+      chainId: 84532, kind: 'erc20.transfer', source: ADDR.treasury, target: ADDR.token, beneficiary: ADDR.vendorA, asset: ADDR.token, amount: '300',
+      executionCommitment: H('commit-1'), validatorOperationId: v.operationId, txHash: '0x' + TX,
+    });
   });
 });
 
@@ -61,8 +97,7 @@ describe('what cannot be bound is refused by name, never guessed', () => {
     const r = build(body, TX, summary);
     expect(r).toEqual({ ok: false, detail });
   };
-  it('multi-leg, no leg, no payload', () => {
-    refused(intentBody({ legs: [leg(), leg({ to: ADDR.vendorB })] }), 'multi_leg');
+  it('no leg, no payload', () => {
     refused(intentBody({ legs: [] }), 'no_leg');
     const l = leg() as Record<string, unknown>;
     delete l['executionPayload'];

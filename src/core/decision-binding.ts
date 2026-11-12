@@ -17,6 +17,11 @@
  * grant_required applies only to a seat that requires one; a seat that does not still refuses a decision and a transaction
  * that disagree about a Grant (grant_hash_mismatch) and applies the subject join whenever a Grant is named; when the
  * authenticated head or its subject is not available the answer is grant_unverified, never an allow (DE-71, DE-72).
+ * The request hash binds ONE action, so a multi-leg intent cannot be bound by one decision: the presented legCount must be
+ * a positive integer (else presented_malformed) and a legCount other than 1 is multi_leg_unsupported (DE-76), judged right
+ * after the presented transaction is read and before the decision (the specification names no place; finding DAX4A-F16).
+ * A presented transaction that declares no legCount is a single action: that is for fixtures, the production caller must
+ * derive legCount from the transaction's legs and always supply it.
  */
 import { CoreError, hasLoneSurrogate } from './bytes.js';
 import { SUBJECT_TYPES, isAdiUrl, type SubjectType } from './grant-profile.js';
@@ -145,7 +150,7 @@ function readDecision(v: unknown): DecisionRecord | 'decision_malformed' | 'nonc
   return { schema, decision, requestHash, grantHash, policyHash, seat, approver, nonce, issuedAt, expiresAt, reason };
 }
 
-interface Presented { requestHash: string; grantRefHash: string | null; seat: string; subject: BindingSubject | null }
+interface Presented { requestHash: string; grantRefHash: string | null; seat: string; subject: BindingSubject | null; legCount: number }
 
 /**
  * The transaction as the signer decoded it: its request hash is RECOMPUTED here, never taken from the producer.
@@ -155,8 +160,10 @@ interface Presented { requestHash: string; grantRefHash: string | null; seat: st
  * intent_hash. Recomputing it from the four blobs is the caller's test (DAX-4-A17, DAX-4S and DAX-4C), not this module's.
  */
 function readPresented(v: unknown): Presented | null {
-  const o = closedObject(v, ['request', 'grantRefHash', 'seat', 'subject']);
+  const o = closedObject(v, ['request', 'grantRefHash', 'seat', 'subject'], ['legCount']);
   if (o === null) return null;
+  const legs = o['legCount'] === undefined ? 1 : o['legCount'];
+  if (typeof legs !== 'number' || !Number.isSafeInteger(legs) || legs < 1) return null;
   const request = dataObject(o['request']);
   if (request === null) return null;
   let requestHash: string;
@@ -171,7 +178,7 @@ function readPresented(v: unknown): Presented | null {
   if (!isSeatId(o['seat'])) return null;
   const subject = readSubject(o['subject']);
   if (subject === undefined) return null;
-  return { requestHash, grantRefHash: ref, seat: o['seat'], subject };
+  return { requestHash, grantRefHash: ref, seat: o['seat'], subject, legCount: legs };
 }
 
 export interface BindInput {
@@ -196,6 +203,7 @@ export function bindDecision(input: BindInput): BindResult {
   // 1. presented_malformed, decision_malformed, nonce_malformed
   const presented = readPresented(inp['presented']);
   if (presented === null) return refuse('presented_malformed');
+  if (presented.legCount !== 1) return refuse('multi_leg_unsupported', 'legCount ' + presented.legCount);
   const decision = readDecision(inp['decision']);
   if (decision === 'decision_malformed' || decision === 'nonce_malformed') return refuse(decision);
 

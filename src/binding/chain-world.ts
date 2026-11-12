@@ -1,62 +1,76 @@
 /**
- * The production `BindingWorld`: the head of a Grant lineage and the subject a transaction resolves to, read through the core's
- * `readGrantLineage`, `readSubjectRegistry` and `resolveSubject` over an `AccumulateReader` (src/binding/chain-reader.ts).
+ * The production `BindingWorld` (READER-MODEL-V2): the head of a Grant lineage and the subject a transaction resolves to, through
+ * the core's ONLINE readers over an `AccumulateReader` view of the read cache (src/binding/read-cache.ts). No key page is read:
+ * the gate is the account authority rule (the authority set now is exactly the owner's book, the account's own main chain from
+ * creation shows only SAFE_AFTER types), canonical entries, the prior-hash chain and the owner match, so a routine key rotation
+ * cannot brick a lineage (DAX2-L9).
  *
- * The Grant head. `readGrantLineage` verifies every version's envelope against the key pages the reader returns and evaluates
- * the whole lineage (a fork, a gap, a wrong prior hash or a version that does not verify refuses the WHOLE lineage). The
- * lineage result names the head's hash but not its subject, so the reader is wrapped to keep the bytes of the entries it
- * verified, and the head's subject is decoded from those same bytes (a version never changes its subject, GR-22). A head that is
- * not `in_force` (ended, not yet valid) is not a head a decision can be bound to: `{ ok: false }`, which the core names
- * `grant_unverified`.
+ * The Grant head. `readGrantLineage` takes the grantor's key book from the CALLER (the seat configures it). The lineage result
+ * names the head's hash but not the Grant, so the view's data entries are kept and the head Grant is decoded from the same
+ * bytes the lineage verified. A first pass learns the Grant's subject, the second passes the subject's books as the forbidden
+ * books of the authority rule (both passes are served by ONE evaluation: the node is asked once per account).
+ * A head that is not `in_force` (ended, not yet valid) is not a head a decision can be bound to.
  *
- * The subject. The registries of the seat's configured principals are read and every row of the asserted ADI is resolved with
- * `resolveSubject` (a fork, a gap, a suspended or retired subject, a submitter that is not the principal's: each is refused as
- * `subject_unproven`). The expected type is the type of the registry's own record: the comparison of the TYPE with the Grant's
- * is the core's, so that a registry type other than the Grant's is reported as `grant_subject_mismatch` and not hidden.
+ * The subject. `readSubjectRegistry` resolves the asserted subject ONLY through `<grant.grantor.adi>/certen-subjects` and the
+ * consent in `<subject>/certen-acceptances`; a registration by any other ADI is invisible. The expected type is the Grant's.
  */
 import { decodeEntry } from '../core/envelope.js';
 import { readGrantLineage, readSubjectRegistry, type AccumulateReader, type DataEntry } from '../core/reader.js';
-import { resolveSubject } from '../core/registry.js';
-import type { BindingWorld } from './world.js';
+import { validateGrant } from '../core/grant-profile.js';
+import type { BindingWorld, GrantHead, WorldAnswer } from './world.js';
+import type { CountedReader } from './read-cache.js';
 
-export function createChainWorld(o: { reader: AccumulateReader; nowSeconds: () => number }): BindingWorld {
+export interface ChainWorldOptions {
+  /** one evaluation view per call: its counters are the evaluation's */
+  evaluation: () => CountedReader;
+  nowSeconds: () => number;
+}
+
+/** a refusal as one line: its reason, then the cause or detail the core gave (an undecodable entry names why) */
+function why(r: { reason: string; detail?: string; cause?: string; index?: number }): string {
+  return r.reason + (r.cause ? ' ' + r.cause : '') + (r.detail ? ' ' + r.detail : '') + (r.index === undefined ? '' : ' @' + r.index);
+}
+
+export function createChainWorld(o: ChainWorldOptions): BindingWorld {
   return {
-    async grantHead({ grantorAdi, grantId }) {
+    async establish({ grantorAdi, grantorBook, grantId, asserted }) {
+      const view = o.evaluation();
       const seen = new Map<string, DataEntry[] | null>();
-      const recording: AccumulateReader = {
-        authorities: (a) => o.reader.authorities(a),
-        keyBookPages: (b) => o.reader.keyBookPages(b),
-        async dataEntries(account) {
-          const e = await o.reader.dataEntries(account);
-          seen.set(account, e);
+      const reader: AccumulateReader = {
+        authorities: (a) => view.authorities(a),
+        accountHistory: (a) => view.accountHistory(a),
+        dataEntries: async (a) => {
+          const e = await view.dataEntries(a);
+          seen.set(a, e);
           return e;
         },
       };
-      const r = await readGrantLineage(recording, { grantorAdi, grantId, now: o.nowSeconds() });
-      if (!r.ok) return { ok: false, detail: `lineage:${r.reason}${'detail' in r && r.detail ? ' ' + r.detail : ''}` };
-      if (r.status !== 'in_force') return { ok: false, detail: `grant_${r.status}` };
-      const rec = r.entries?.find((e) => e.hash === r.head.hash && e.version === r.head.version);
-      const elements = rec === undefined ? undefined : [...seen.values()].flatMap((v) => v ?? []).find((e) => e.txId === rec.txId)?.elements;
-      if (elements === undefined) return { ok: false, detail: 'head_entry_not_found' };
-      const d = decodeEntry({ account: 'grants', elements });
-      if (!d.ok || d.account !== 'grants') return { ok: false, detail: 'head_entry_undecodable' };
-      return { ok: true, value: { hash: r.head.hash, subject: { adi: d.grant.subject.adi, type: d.grant.subject.type } } };
-    },
+      const now = o.nowSeconds();
+      const done = (head: WorldAnswer<GrantHead>, subject: Awaited<ReturnType<BindingWorld['establish']>>['subject'] = null) => ({ head, subject, stats: view.stats() });
 
-    async resolveSubject({ principals, asserted }) {
-      if (principals.length === 0) return { ok: false, detail: 'no_registry_principals_configured' };
-      const rows: Array<{ record: unknown; envelopeVerdict: string; txId: string; registrationHash: string }> = [];
-      for (const p of principals) {
-        const reg = await readSubjectRegistry(o.reader, p);
-        if (!reg.ok) return { ok: false, detail: `registry:${reg.reason}` };
-        rows.push(...reg.registry);
-      }
-      const mine = rows.find((r) => (r.record as { adi?: unknown }).adi === asserted.adi);
-      const expectType = (mine?.record as { type?: string } | undefined)?.type ?? 'agent';
-      const res = resolveSubject({ asserted, expectType, registry: rows });
-      if (!res.ok) return { ok: false, detail: `${res.state}:${res.reason}` };
-      const type = res.subject.type as 'agent' | 'merchant' | 'client';
-      return { ok: true, value: { adi: res.subject.adi, type } };
+      // pass 1: the lineage, to learn the Grant's subject; pass 2: again with the subject's books as the forbidden books
+      const lineageArgs = { grantorAdi, grantorBook, grantId, now };
+      const first = await readGrantLineage(reader, lineageArgs);
+      if (!first.ok) return done({ ok: false, detail: `lineage:${why(first)}` });
+      const grantsAccount = `${grantorAdi}/certen-grants`;
+      const entryAt = (index: number): Uint8Array[] | undefined => seen.get(grantsAccount)?.[index]?.elements;
+      const headRec = first.entries.find((e) => e.hash === first.head.hash && e.version === first.head.version);
+      const elements = headRec === undefined ? undefined : entryAt(headRec.index);
+      if (elements === undefined) return done({ ok: false, detail: 'head_entry_not_found' });
+      const d = decodeEntry({ account: 'grants', elements });
+      if (!d.ok || d.account !== 'grants') return done({ ok: false, detail: 'head_entry_undecodable' });
+      const r = await readGrantLineage(reader, { ...lineageArgs, subjectAdi: d.grant.subject.adi });
+      if (!r.ok) return done({ ok: false, detail: `lineage:${why(r)}` });
+      if (r.head.hash !== first.head.hash) return done({ ok: false, detail: 'lineage_moved_during_read' });
+      if (r.status !== 'in_force') return done({ ok: false, detail: `grant_${r.status}` });
+      const g = validateGrant(d.grant);
+      if (!g.ok) return done({ ok: false, detail: 'head_grant_malformed' });
+      const head: WorldAnswer<GrantHead> = { ok: true, value: { hash: r.head.hash, subject: { adi: g.grant.subject.adi, type: g.grant.subject.type }, grant: g.grant } };
+      if (asserted === null) return done(head);
+
+      const res = await readSubjectRegistry(reader, { grant: g.grant, asserted, expectType: g.grant.subject.type });
+      if (!res.ok) return done(head, { ok: false, detail: `${res.state}:${why(res)}` });
+      return done(head, { ok: true, value: { adi: res.subject.adi, type: res.subject.type as 'agent' | 'merchant' | 'client' } });
     },
   };
 }
