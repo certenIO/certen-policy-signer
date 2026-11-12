@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CORE_COPY_DIR, CORE_FILES, CORE_MANIFEST, CORE_SOURCE_COMMIT, CORE_SOURCE_DIR } from '../scripts/core-source.mjs';
-import { REPO, canonicalBytes, sha256Hex, sourceRepo } from '../scripts/sync-core.mjs';
+import { REPO, canonicalBytesAll, sha256Hex, sourceRepo } from '../scripts/sync-core.mjs';
 
 const manifestPath = join(REPO, CORE_MANIFEST);
 const manifest = (): { commit: string; dir: string; files: Record<string, string> } => JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -48,8 +48,9 @@ describe('the copied core (MOD-03, DAX-4-A10)', () => {
   });
 
   it.runIf(repo !== undefined)('is byte for byte identical to the canonical file in transaction-controls at the constant commit', () => {
+    const canonical = canonicalBytesAll(repo!, CORE_FILES);
     for (const f of CORE_FILES) {
-      const want = canonicalBytes(repo!, f);
+      const want = canonical.get(f)!;
       const have = readFileSync(join(REPO, CORE_COPY_DIR, f));
       expect(have.equals(want), `${f} differs from ${CORE_SOURCE_COMMIT}:${CORE_SOURCE_DIR}/${f}`).toBe(true);
       expect(manifest().files[f], `${f} manifest hash`).toBe(sha256Hex(want));

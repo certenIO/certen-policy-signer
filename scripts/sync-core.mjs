@@ -6,7 +6,7 @@
  *   node scripts/sync-core.mjs --check    verify the copy, the manifest and the commit; write nothing; exit 1 on a difference
  *
  * The source is read with `git show <commit>:<dir>/<file>` from a transaction-controls checkout or worktree (it is never
- * written to): CERTEN_TCL_REPO, else ../transaction-controls next to this repository. The copy carries no added header:
+ * written to): CERTEN_TCL_REPO, else ../transaction-controls next to this repository (or ../../transaction-controls for a worktree). The copy carries no added header:
  * a banner would be an edit, and an edited file cannot be compared byte for byte. Provenance is src/core/SOURCE.json.
  */
 import { createHash } from 'node:crypto';
@@ -23,7 +23,8 @@ export const sha256Hex = (buf) => createHash('sha256').update(buf).digest('hex')
 
 /** The transaction-controls checkout to read from, or undefined when none is reachable. */
 export function sourceRepo() {
-  const candidates = [process.env.CERTEN_TCL_REPO, resolve(REPO, '..', 'transaction-controls')].filter(Boolean).map((p) => resolve(p));
+  // CERTEN_TCL_REPO, a sibling checkout (../transaction-controls), or the sibling of a worktrees folder (../../transaction-controls)
+  const candidates = [process.env.CERTEN_TCL_REPO, resolve(REPO, '..', 'transaction-controls'), resolve(REPO, '..', '..', 'transaction-controls')].filter(Boolean).map((p) => resolve(p));
   for (const c of candidates) {
     if (!existsSync(join(c, '.git')) && !existsSync(join(c, 'packages'))) continue;
     try {
@@ -34,6 +35,27 @@ export function sourceRepo() {
     }
   }
   return undefined;
+}
+
+/**
+ * The canonical bytes of EVERY listed file at the constant commit, read with ONE git process (git cat-file --batch): a process start
+ * is slow on some machines, and the drift test and --check must not cost one per file. Returns a Map file -> Buffer.
+ */
+export function canonicalBytesAll(repo, files) {
+  const input = files.map((f) => `${CORE_SOURCE_COMMIT}:${CORE_SOURCE_DIR}/${f}
+`).join('');
+  const out = execFileSync('git', ['-C', repo, 'cat-file', '--batch'], { input, maxBuffer: 64 * 1024 * 1024 });
+  const res = new Map();
+  let pos = 0;
+  for (const f of files) {
+    const nl = out.indexOf(10, pos);
+    const header = nl < 0 ? [] : out.toString('utf8', pos, nl).split(' ');
+    if (header[1] !== 'blob') throw new Error(`${CORE_SOURCE_COMMIT}:${CORE_SOURCE_DIR}/${f} is not a file of the canonical repository`);
+    const size = Number(header[2]);
+    res.set(f, out.subarray(nl + 1, nl + 1 + size));
+    pos = nl + 1 + size + 1;
+  }
+  return res;
 }
 
 /** The canonical bytes of one file at the constant commit. */
@@ -55,8 +77,9 @@ function main() {
   const hashes = {};
   let bad = 0;
   mkdirSync(join(REPO, CORE_COPY_DIR), { recursive: true });
+  const canonical = canonicalBytesAll(repo, CORE_FILES);
   for (const f of CORE_FILES) {
-    const want = canonicalBytes(repo, f);
+    const want = canonical.get(f);
     hashes[f] = sha256Hex(want);
     const dst = join(REPO, CORE_COPY_DIR, f);
     const have = existsSync(dst) ? readFileSync(dst) : null;
