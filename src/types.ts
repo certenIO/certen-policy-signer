@@ -391,6 +391,13 @@ export interface Decision {
   reason?: string;
   evidence?: Record<string, unknown>;
   assertion?: string;            // optional signed JWS
+  /**
+   * The certen.decision/v1 record (DECISION.md section 3), carried in the reply body beside `decision`, `reason` and `evidence`,
+   * which keep their meaning so an older signer is unaffected. A scope that configures `binding` REQUIRES it: the signer checks it
+   * against the transaction it is about to sign before any signature (src/binding/verify.ts). The shape is the core's
+   * (`DecisionRecord`); it is carried untyped here because it is verified, not trusted.
+   */
+  record?: unknown;
 }
 
 /** Every status a request can hold. Exported as a value so the HTTP layer can validate a caller's filter
@@ -440,6 +447,10 @@ export interface SigningRequest {
 }
 
 export interface Receipt {
+  /** Stamped by the store on append: store-wide, contiguous from 1. A receipt is never replaced or removed (DAX-4S, DE-48). */
+  seq?: number;
+  /** Stamped by the store on append (ms since the epoch). */
+  recordedAt?: number;
   txHash: string;
   /** Matches the request's `workKey`. Two votes on one tx (two wrapper paths) are two receipts. */
   workKey?: string;
@@ -460,6 +471,21 @@ export interface Receipt {
   policyEvidence?: Record<string, unknown>;
   /** The signer-config version the decision was taken under (`sha256:…`). Decision A6. */
   configVersion?: string;
+  /**
+   * What a bound decision (certen.decision/v1) was, when the scope requires binding (DAX-4S): the hash of the record, the request
+   * it was about, the nonce it spent, the Grant and the policy hash it carried (recorded whether or not the seat pins a policy; a
+   * seat that pins none did not compare it), the seat and the approver identity. Absent on a legacy, unbound decision.
+   */
+  binding?: {
+    decisionHash: string;
+    requestHash: string;
+    nonce: string;
+    grantHash: string | null;
+    policyHash: string;
+    policyPinned: boolean;
+    seat: string;
+    approver: string;
+  };
   /**
    * What actually satisfied the vote. Runbook F Phase F4.
    *
