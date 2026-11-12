@@ -2,7 +2,7 @@
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseArgs, helpText, VERSION, BIN } from './cli.js';
-import { loadConfig, parseBind, effectiveScopeRules, isIntakeOnly, Config } from './config.js';
+import { loadConfig, parseBind, effectiveScopeRules, effectiveSeats, isIntakeOnly, Config } from './config.js';
 import { logger as baseLogger } from './logger.js';
 import { MapKeyring, buildSignerFromSpec, bookOf, SigningScope } from './signer/keyring.js';
 import { RawAccumulateClient } from './accumulate/raw-client.js';
@@ -19,7 +19,13 @@ import { Orchestrator, ScopeRules, WrapperModeOptions } from './orchestrator.js'
 import { FileWrapperRegistry, MemoryWrapperRegistry, WrapperRegistry, isRegisteredWrapperPage } from './registry/wrappers.js';
 import { chainWrapperReader, checkWrapper, checkWrapperChange } from './delegation/wrapper.js';
 import { Poller } from './poller.js';
-import { createServer, PauseController, HealthSource } from './server.js';
+import { createServer, HealthSource } from './server.js';
+import { DecisionJournal } from './binding/journal.js';
+import { NonceStore } from './binding/nonces.js';
+import { PauseStore } from './binding/pause-store.js';
+import { createChainReader } from './binding/chain-reader.js';
+import { createChainWorld } from './binding/chain-world.js';
+import type { SeatRules } from './orchestrator.js';
 import { bytesToHex } from './accumulate/signing.js';
 import { createRelayHandler, createRelayServer, RelayHandler } from './relay.js';
 import { createRelayClientsHandler, RelayClientsHandler } from './relay-clients.js';
@@ -157,7 +163,47 @@ async function main() {
   logger.info({ decoders: decoders.names() }, 'intent decoder chain (first claim wins)');
 
   const resolver = new Resolver(accumulate, decoders);
-  const pause: PauseController = { paused: false };
+  // --- decision binding state (DAX-4S): the journal (nonces consumed, pauses), the persisted pause, the seats ---
+  // Beside the store file. Read and VERIFIED here, at boot, before any poller starts: a journal that was edited, truncated or
+  // re-chained (against its pin), a pause state that disagrees with it, or a state that cannot be read refuses the start, because
+  // a signer that cannot tell what was spent or paused must not sign.
+  const nowSeconds = () => Math.floor(Date.now() / 1000);
+  const stateDir = cfg.store.path ? dirname(cfg.store.path) : undefined;
+  const seatConfigs = effectiveSeats(cfg);
+  const journal = new DecisionJournal({
+    logId: `certen-signer:${cfg.wallet.org_id}`,
+    ...(stateDir ? { path: join(stateDir, 'decision-journal.jsonl'), ...(cfg.store.pin_path ? { pinPath: cfg.store.pin_path } : {}) } : {}),
+    onTornTail: (bytes) => logger.warn({ bytes }, 'decision journal: a torn last line (a crash inside an append that never returned) was cut off'),
+  });
+  if (stateDir) logger.info({ entries: journal.entries().length, head: journal.currentHead()?.seq ?? 0, pinned: true }, 'decision journal verified against its pin');
+  else logger.warn('no store.path configured — the decision nonces consumed and the pause are IN MEMORY and lost on restart');
+  const pause = new PauseStore({
+    journal, ...(stateDir ? { statePath: join(stateDir, 'pause-state.json') } : {}),
+    seats: seatConfigs.map((s) => s.seat), nowSeconds,
+    onHeal: (m) => logger.warn({ detail: m }, 'persisted pause healed from the journal'),
+  });
+  const nonces = new NonceStore(journal, nowSeconds);
+  const seatRules = new Map<string, SeatRules>();
+  for (const s of seatConfigs) {
+    const b = s.binding;
+    seatRules.set(s.page.toLowerCase(), {
+      seat: s.seat,
+      ...(b ? {
+        binding: {
+          seat: s.seat, authorizedApprovers: b.authorized_approvers, maxWindowSeconds: b.max_window_seconds,
+          policyHash: b.policy_hash ?? null, requireGrant: b.require_grant,
+          ...(b.grantor_adi ? { grantorAdi: b.grantor_adi } : {}), registryPrincipals: b.registry_principals,
+        },
+      } : {}),
+    });
+    if (b) {
+      logger.info({ page: s.page, seat: s.seat, approvers: b.authorized_approvers.length, maxWindowSeconds: b.max_window_seconds, requireGrant: b.require_grant, policyPinned: b.policy_hash !== undefined }, 'decisions for this seat must be BOUND (certen.decision/v1)');
+      if (b.policy_hash === undefined) logger.warn({ seat: s.seat }, 'binding.policy_hash is not set: the policy hash of each decision is recorded and NOT compared');
+    }
+  }
+  const bindingWorld = seatConfigs.some((s) => s.binding)
+    ? createChainWorld({ reader: createChainReader((scope, q) => accumulate.query(scope, q)), nowSeconds })
+    : undefined;
 
   // SR4 local guard: refuse to sign above a value ceiling (see src/guard.ts — gates EVERY leg).
   const guard = cfg.behavior.value_ceiling
@@ -255,13 +301,13 @@ async function main() {
   const orchestrator = new Orchestrator({
     accumulate, keyring, policy, store, resolver, logger, votes,
     notifier, orgId: cfg.wallet.org_id, scopeRules, configVersion: cfg.configVersion, displayLabels: cfg.decoders.labels,
+    pauses: pause, seats: seatRules, binding: { nonces, ...(bindingWorld ? { world: bindingWorld } : {}), nowSeconds },
     ...(wrapperMode ? { wrapper: wrapperMode } : {}),
     options: {
       submitRejectVote: cfg.behavior.submit_reject_vote,
       maxBadVersionRetries: cfg.behavior.max_bad_version_retries,
       policyTtlSeconds: cfg.policy.async_ttl_seconds,
       guard,
-      isPaused: () => pause.paused,
       delegators,
       requireSignatureData: cfg.behavior.require_signature_data,
     },
@@ -398,7 +444,7 @@ async function main() {
   // --- server (health/metrics/webhook/admin) ---
   const server = createServer({
     relay, relayClients, officerIntake: officerIntake?.handle, configVersion: cfg.configVersion,
-    orchestrator, store, keyring, accumulate, pause, logger, poller: pollerHealth,
+    orchestrator, store, keyring, accumulate, pause, nonces, logger, poller: pollerHealth,
     ...(wrapperRegistry ? { wrapperRegistry, wrapperOurBook: scopes[0].book } : {}),
     webhookHmacSecret: cfg.trigger.webhook.enabled ? cfg.trigger.webhook.hmac_secret : undefined,
     webhookSignatureHeader: cfg.trigger.webhook.signature_header,

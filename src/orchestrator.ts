@@ -17,6 +17,25 @@ import { WrapperRegistry, wrapperOwning } from './registry/wrappers.js';
 import { PageState } from './ops/rotate.js';
 import { AuthorityVote } from './accumulate/client.js';
 import { WrapperCheck, targetsWrapper } from './delegation/wrapper.js';
+import { isAdiUrl } from './core/grant-profile.js';
+import { BindingOutcome, BindingRules, BindingRuntime, BoundDecision, verifyBinding } from './binding/verify.js';
+import { PauseGate } from './binding/pause-store.js';
+import { derivedSeat } from './binding/seats.js';
+
+/** The error a vote reports when the persisted pause stopped it at the moment of signing. */
+const PAUSED_AT_CAST = 'paused';
+
+/** One scope's seat: its id (every scope has one) and, when its decisions must be bound, the rules of that binding. */
+export interface SeatRules {
+  seat: string;
+  binding?: BindingRules;
+}
+
+/** Who a signature is for, for the pause gate: the seat and every subject the transaction may be about (asserted, resolved). */
+interface SignCtx {
+  seat: string;
+  subjects: Array<string | null>;
+}
 
 export interface OrchestratorOptions {
   submitRejectVote?: boolean;   // default false: deny => withhold signature (tx expires)
@@ -25,7 +44,6 @@ export interface OrchestratorOptions {
   /** SR4 local guard. Receives EVERY leg amount (`values`), not just the representative one, plus the
    *  count of legs whose amount could not be read at all. */
   guard?: (tx: { account: string; summary: string; value?: string; values?: string[]; unpricedLegs?: number }) => boolean;
-  isPaused?: () => boolean;     // SR8 emergency kill switch
   delegators?: string[];        // delegate attachment model: user page(s) delegating to our book
   /** Wrapper runbook, change 4: refuse an approval whose evidence has no valid `signatureData`. */
   requireSignatureData?: boolean;
@@ -63,6 +81,15 @@ export interface OrchestratorDeps {
   orgId?: string;
   /** Per-page rule overrides, keyed by the page URL LOWERCASED. Absent pages use the defaults. */
   scopeRules?: Map<string, ScopeRules>;
+  /**
+   * The persisted pause (SR8, DECISION.md section 6), read before EVERY signature, a reject vote included. Absent = nothing is
+   * paused (library and tests; index.ts always wires the persisted one). Replaces the in-memory `isPaused` boolean.
+   */
+  pauses?: PauseGate;
+  /** Seat ids and binding rules, keyed by the page URL LOWERCASED. A page without an entry has a derived seat and no binding. */
+  seats?: Map<string, SeatRules>;
+  /** The nonce store and the world a bound decision is checked against. Required by any seat that configures `binding`. */
+  binding?: BindingRuntime;
   /**
    * `sha256:` + hex of this signer's effective config (secrets removed), computed at startup. Stamped on
    * every PolicyRequest and Receipt so a decision names the signer configuration it was taken under (A6).
@@ -147,11 +174,14 @@ export class Orchestrator {
       maxBadVersionRetries: d.options?.maxBadVersionRetries ?? 3,
       policyTtlSeconds: d.options?.policyTtlSeconds ?? 900,
       guard: d.options?.guard,
-      isPaused: d.options?.isPaused,
       delegators: d.options?.delegators,
       requireSignatureData: d.options?.requireSignatureData,
     };
     this.now = d.now ?? Date.now;
+    // A seat that configures `binding` cannot run without the nonce store: a missing one would sign unbound decisions.
+    for (const [page, s] of d.seats ?? []) {
+      if (s.binding && !d.binding) throw new Error(`orchestrator: ${page} configures binding but no nonce store is wired`);
+    }
     this.notifier = d.notifier ?? NULL_NOTIFIER;
     this.votes = d.votes ?? new DirectVoteBackend(d.accumulate, d.keyring, d.logger, {
       maxBadVersionRetries: this.opt.maxBadVersionRetries,
@@ -176,6 +206,64 @@ export class Orchestrator {
       guard: o?.guard !== undefined ? o.guard : this.opt.guard,
       submitRejectVote: o?.submitRejectVote ?? this.opt.submitRejectVote,
     };
+  }
+
+  /** The seat of a page: its configured one, or the one derived from the page URL. Every scope has one. */
+  private seatOf(signerUrl: string): SeatRules {
+    return this.d.seats?.get(signerUrl.toLowerCase()) ?? { seat: derivedSeat(signerUrl) };
+  }
+
+  /**
+   * The subject of a transaction for the pause gate, as an ADI the pause state can name, or null. An asserted subject is a
+   * CLAIM of the producer (a seat that requires a Grant also has the registry-resolved one): a lower-case ADI without a trailing
+   * slash is the form a pause names, and anything that is not an ADI is no subject for it.
+   */
+  private subjectAdi(raw: string | undefined): string | null {
+    if (raw === undefined) return null;
+    const adi = raw.trim().toLowerCase().replace(/\/+$/, '');
+    return isAdiUrl(adi) ? adi : null;
+  }
+
+  /**
+   * May this seat sign this vote? Read from the PERSISTED pause every time (a pause set a moment ago applies). A paused seat or
+   * subject, and a pause state that cannot be read, sign nothing: a reject vote included, because a reject vote is a signature.
+   */
+  private pausedFor(ctx: SignCtx, vote: 'approve' | 'reject'): { reason: string; scope?: string; id?: string } | undefined {
+    const pauses = this.d.pauses;
+    if (pauses === undefined) return undefined;
+    for (const subject of ctx.subjects.length > 0 ? ctx.subjects : [null]) {
+      const v = pauses.check({ seat: ctx.seat, subject, vote });
+      if (!v.ok) return v as { reason: string; scope?: string; id?: string };
+    }
+    return undefined;
+  }
+
+  /** Nothing is signed: the seat or the subject is paused, or the pause state cannot be read. The decision is NOT consumed by this. */
+  private withholdPaused(key: string, txHash: string, decision: string, reason: string): Promise<SigningRequest> {
+    this.d.logger.warn({ tx: txHash, decision, reason }, 'signing paused; withholding signature');
+    return this.d.store.update(key, { status: 'awaiting_policy', lastError: reason });
+  }
+
+  /**
+   * A decision the binding check refused (DE-10): the signer made no signature, cast no vote, cancelled nothing and called no
+   * `submit`. The item stays retryable (`awaiting_policy`): the Console may issue a fresh decision. The refusal is an
+   * append-only receipt, not repeated while the same refusal stands (a poll every few seconds would otherwise write one per poll).
+   */
+  private async refuseBinding(tx: ResolvedTx, key: string, out: Extract<BindingOutcome, { ok: false }>, verb: string): Promise<SigningRequest> {
+    const reason = `binding: ${out.reason}`;
+    this.d.logger.warn({ tx: tx.txHash, key, reason: out.reason, detail: out.detail, decision: verb }, 'decision refused by the binding check; signing nothing');
+    const evidence = { blockedBy: 'decision_binding', reason: out.reason, ...(out.detail !== undefined ? { detail: out.detail } : {}) };
+    const latest = await this.d.store.getReceipt(key);
+    const le = latest?.policyEvidence;
+    const same = le?.['blockedBy'] === 'decision_binding' && le['reason'] === out.reason && (le['detail'] ?? null) === (out.detail ?? null);
+    if (!same) {
+      await this.saveReceipt({
+        ...receiptKey(tx), operationId: tx.operationId, reason,
+        ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
+        policyEvidence: evidence,
+      });
+    }
+    return this.d.store.update(key, { status: 'awaiting_policy', lastError: reason });
   }
 
   /** Every receipt carries the signer-config version (A6). */
@@ -620,10 +708,36 @@ export class Orchestrator {
     // SR8 emergency pause — checked BEFORE the deny branch, because a Reject vote is still a SIGNATURE.
     // With `submit_reject_vote: true` (what every shipped config sets), leaving this check further down
     // meant a "paused" wallet went on signing and submitting rejections. Pause means sign NOTHING.
-    if (this.opt.isPaused?.()) {
-      logger.warn({ tx: ref.txHash, decision: decision.decision }, 'signing paused; withholding signature');
-      return store.update(key, { status: 'awaiting_policy', lastError: 'paused' });
+    // Now the PERSISTED pause (seat and subject scopes), read from the file each time (DAX-4S, DECISION.md section 6).
+    const seat = this.seatOf(ref.signerUrl);
+    const verb: 'approve' | 'reject' = decision.decision === 'deny' ? 'reject' : 'approve';
+    const sign: SignCtx = { seat: seat.seat, subjects: [this.subjectAdi(tx.summary.subject?.adi)] };
+    const stopped = this.pausedFor(sign, verb);
+    if (stopped) return this.withholdPaused(key, ref.txHash, decision.decision, stopped.reason);
+
+    // DAX-4S: the decision record is checked against the transaction ABOUT TO BE SIGNED, before ANY signature, a deny that would
+    // become a reject vote included (DECISION.md section 4). A refusal is a refusal to sign and nothing else (DE-10): no vote,
+    // no cancel, no `submit`. Only a seat that configures `binding` is bound; any other scope keeps the unbound legacy reply.
+    let bound: BoundDecision | undefined;
+    if (seat.binding) {
+      const out = await verifyBinding({
+        reply: decision as unknown as Record<string, unknown>, tx, rules: seat.binding, runtime: this.d.binding!,
+        gate: (resolved) => {
+          const adi = resolved ? this.subjectAdi(resolved.adi) : null;
+          if (adi && !sign.subjects.includes(adi)) sign.subjects.push(adi);
+          return this.pausedFor(sign, verb)?.reason;
+        },
+      });
+      if (!out.ok) {
+        if (out.reason === 'paused' || out.reason === 'pause_state_unreadable') return this.withholdPaused(key, ref.txHash, decision.decision, out.reason);
+        return this.refuseBinding(tx, key, out, decision.decision);
+      }
+      bound = out;
+      logger.info({ tx: ref.txHash, seat: bound.seat, requestHash: bound.requestHash, approver: bound.approver, policyPinned: bound.policyPinned }, 'decision bound and consumed');
     }
+    const bindingInfo = bound
+      ? { binding: { decisionHash: bound.decisionHash, requestHash: bound.requestHash, nonce: bound.nonce, grantHash: bound.grantHash, policyHash: bound.policyHash, policyPinned: bound.policyPinned, seat: bound.seat, approver: bound.approver } }
+      : {};
 
     if (decision.decision === 'deny') {
       logger.info({ tx: ref.txHash, reason: decision.reason }, 'policy denied');
@@ -636,8 +750,9 @@ export class Orchestrator {
       let rejectVote: VoteResult | undefined;
       if (rules.submitRejectVote) {
         const lateReject = this.deadlineRefusal(tx);
-        if (lateReject) return this.refuseDeadline(tx, lateReject, decision);
-        const res = await this.signAndSubmit(tx, 'reject', undefined, signatureEvidence(decision.evidence));
+        if (lateReject) return this.refuseDeadline(tx, lateReject, decision, bindingInfo);
+        const res = await this.signAndSubmit(tx, 'reject', undefined, signatureEvidence(decision.evidence), sign);
+        if (!res.ok && res.error === PAUSED_AT_CAST) return this.withholdPaused(key, ref.txHash, decision.decision, PAUSED_AT_CAST);
         if (!res.ok) {
           logger.error({ tx: ref.txHash, err: res.error }, 'reject vote submission failed');
           this.notify('signature.failed', tx, { reason: decision.reason, error: res.error });
@@ -654,6 +769,7 @@ export class Orchestrator {
         // that is the question being asked of them.
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
         policyEvidence: decision.evidence,
+        ...bindingInfo,
         // A reject is a signature too, and the record should say which key cast it. A deployment that
         // withholds rejects rather than casting them has nothing to attribute, and gets nothing.
         ...(rejectVote?.signedBy ? { signedBy: rejectVote.signedBy } : {}),
@@ -675,6 +791,7 @@ export class Orchestrator {
         reason: decision.reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
         policyEvidence: { ...(decision.evidence ?? {}), blockedBy: 'local_guard', values: tx.summary.values },
+        ...bindingInfo,
       });
       return store.update(key, { status: 'rejected', lastError: 'local_guard_block' });
     }
@@ -691,6 +808,7 @@ export class Orchestrator {
         reason: decision.reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
         policyEvidence: { ...(decision.evidence ?? {}), blockedBy: 'signature_data_missing' },
+        ...bindingInfo,
       });
       return store.update(key, { status: 'rejected', lastError: 'signature_data_missing' });
     }
@@ -698,13 +816,14 @@ export class Orchestrator {
     // 3. Sign + submit (approve). The deadline is re-read against the clock now: an approval that arrived
     // after the transaction died must not become a late signature (0031).
     const lateApprove = this.deadlineRefusal(tx);
-    if (lateApprove) return this.refuseDeadline(tx, lateApprove, decision);
+    if (lateApprove) return this.refuseDeadline(tx, lateApprove, decision, bindingInfo);
 
     await store.update(key, { status: 'approved', decision: 'approve', assertionRef: decision.assertion ? sha256Hex(decision.assertion) : undefined });
     // Whose key signs. T29: when the policy engine names the approver, THEIR key signs — so the
     // signature on chain is the person's rather than the organisation's cast in their name. Absent,
     // the organisation signs as itself, exactly as before.
-    const res = await this.castForApprovers(tx, 'approve', approverKeyRefs(decision.evidence), evidence);
+    const res = await this.castForApprovers(tx, 'approve', approverKeyRefs(decision.evidence), evidence, sign);
+    if (!res.ok && res.error === PAUSED_AT_CAST) return this.withholdPaused(key, ref.txHash, decision.decision, PAUSED_AT_CAST);
     if (res.ok) {
       await this.saveReceipt({
         ...receiptKey(tx), operationId: tx.operationId, decision: 'approve', vote: 'approve',
@@ -712,6 +831,7 @@ export class Orchestrator {
         reason: decision.reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
         policyEvidence: decision.evidence,
+        ...bindingInfo,
         // What satisfied it, carried through rather than re-derived. F4.
         ...(res.signedBy ? { signedBy: res.signedBy } : {}),
       });
@@ -754,6 +874,7 @@ export class Orchestrator {
     tx: ResolvedTx,
     refusal: { lastError: string; reason: string },
     decision?: { decision: string; reason?: string; evidence?: Record<string, unknown> },
+    bindingInfo: Pick<Receipt, 'binding'> = {},
   ): Promise<SigningRequest> {
     this.d.logger.warn(
       { tx: tx.txHash, headerExpiresAt: tx.header.expiresAt, decision: decision?.decision, err: refusal.lastError },
@@ -770,6 +891,7 @@ export class Orchestrator {
         blockedBy: refusal.lastError,
         ...(tx.header.expiresAt ? { headerExpiresAt: tx.header.expiresAt } : {}),
       },
+      ...bindingInfo,
     });
     const status = refusal.lastError === 'header_deadline_passed' ? 'expired' : 'rejected';
     return this.d.store.update(tx.workKey ?? tx.txHash, { status, lastError: refusal.lastError });
@@ -780,7 +902,9 @@ export class Orchestrator {
    * or GATEWAY (the Certen api-gateway hands us the bytes; we sign; we hand the signature back). The
    * decision above this line is identical either way: the policy engine gates both.
    */
-  private async signAndSubmit(tx: ResolvedTx, vote: 'approve' | 'reject', keyRef?: string, evidence: SignatureEvidence = {}): Promise<VoteResult> {
+  private async signAndSubmit(tx: ResolvedTx, vote: 'approve' | 'reject', keyRef: string | undefined, evidence: SignatureEvidence, sign: SignCtx): Promise<VoteResult> {
+    // The pause is read again at the moment of signing: a pause set while the world was being read still applies.
+    if (this.pausedFor(sign, vote)) return { ok: false, error: PAUSED_AT_CAST };
     await this.d.store.update(tx.workKey ?? tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
     return this.votes.cast(tx, vote, { ...(keyRef === undefined ? {} : { keyRef }), ...evidence, ...pathOf(tx) });
   }
@@ -808,10 +932,11 @@ export class Orchestrator {
     tx: ResolvedTx,
     vote: 'approve' | 'reject',
     refs: string[],
-    evidence: SignatureEvidence = {},
+    evidence: SignatureEvidence,
+    sign: SignCtx,
   ): Promise<VoteResult> {
     // Nobody named: one vote, the organisation's own key, exactly as before T29.
-    if (refs.length === 0) return this.signAndSubmit(tx, vote, undefined, evidence);
+    if (refs.length === 0) return this.signAndSubmit(tx, vote, undefined, evidence, sign);
 
     // From one ref upward the loop below handles it, so a named approver this wallet cannot sign for
     // is RECORDED as a failed vote rather than thrown out of the pipeline. One ref and two refs
@@ -823,6 +948,12 @@ export class Orchestrator {
     let firstError: string | undefined;
 
     for (const ref of refs) {
+      // Before EACH signature the pause is read again: one decision may cast several keys, and a pause set between two of them
+      // stops the rest.
+      if (this.pausedFor(sign, vote)) {
+        firstError ??= PAUSED_AT_CAST;
+        break;
+      }
       let res: VoteResult;
       try {
         res = await this.votes.cast(tx, vote, { keyRef: ref, ...evidence, ...pathOf(tx) });

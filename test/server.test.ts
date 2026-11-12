@@ -3,7 +3,9 @@ import http from 'node:http';
 import { createHmac } from 'node:crypto';
 import { AddressInfo } from 'node:net';
 import pino from 'pino';
-import { createServer, PauseController } from '../src/server.js';
+import { createServer } from '../src/server.js';
+import { memoryPauseStore } from '../src/binding/pause-store.js';
+import { derivedSeat } from '../src/binding/seats.js';
 import { Orchestrator } from '../src/orchestrator.js';
 import { MockAccumulateClient } from '../src/accumulate/client.js';
 import { MockPolicyClient } from '../src/policy/policy.js';
@@ -35,8 +37,8 @@ function build(opts: { webhook?: boolean } = {}) {
   const signer = new LocalSigner(new Uint8Array(32).fill(9));
   const keyring = singleKeyring(signer);
   const store = new MemoryStore();
-  const pause: PauseController = { paused: false };
-  const orchestrator = new Orchestrator({ accumulate: acc, keyring, policy: new MockPolicyClient({ decision: 'approve' }), store, resolver: new Resolver(acc), logger: silent, options: { isPaused: () => pause.paused } });
+  const pause = memoryPauseStore([derivedSeat(SIGNER)]);
+  const orchestrator = new Orchestrator({ accumulate: acc, keyring, policy: new MockPolicyClient({ decision: 'approve' }), store, resolver: new Resolver(acc), logger: silent, pauses: pause });
   const keyPageOps: unknown[] = [];   // records what the typed governance route was asked to do
   const server = createServer({
     orchestrator, store, keyring, accumulate: acc, pause, logger: silent,
@@ -112,7 +114,7 @@ describe('http server', () => {
       const acc = new MockAccumulateClient();
       const keyring = singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)));
       const store = new MemoryStore();
-      const pause: PauseController = { paused: false };
+      const pause = memoryPauseStore();
       return createServer({
         orchestrator: new Orchestrator({
           accumulate: acc, keyring, policy: new MockPolicyClient({ decision: 'approve' }),
@@ -333,7 +335,7 @@ describe('http server', () => {
   });
 
   it('pause → healthz shows paused, and signing is withheld', async () => {
-    const p = await reqH(port, 'POST', '/v1/admin/pause', ADMIN);
+    const p = await reqH(port, 'POST', '/v1/admin/pause', { ...ADMIN, 'content-type': 'application/json' }, { by: 'seat:fic-operator', reason: 'FICTIONAL: stop signing now' });
     expect(p.json.paused).toBe(true);
     const h = await req(port, 'GET', '/healthz');
     expect(h.json.paused).toBe(true);

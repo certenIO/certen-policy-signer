@@ -28,6 +28,7 @@ import { WrapperChain, submittedVote } from './support/wrapper-chain.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { memoryPauseStore } from '../src/binding/pause-store.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'ab'.repeat(32);
@@ -209,7 +210,7 @@ describe('push with routing hints', () => {
   async function serve() {
     const refs: PendingRef[] = [];
     const orch = { handleAll: async (r: PendingRef) => { refs.push(r); return []; } } as unknown as Orchestrator;
-    const server = createServer({ orchestrator: orch, store: new MemoryStore(), keyring: {} as never, accumulate: {} as never, pause: { paused: false }, logger: silent, webhookHmacSecret: HOOK_KEY });
+    const server = createServer({ orchestrator: orch, store: new MemoryStore(), keyring: {} as never, accumulate: {} as never, pause: memoryPauseStore(), logger: silent, webhookHmacSecret: HOOK_KEY });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const port = (server.address() as AddressInfo).port;
     const post = (body: unknown, sig?: string) => new Promise<number>((resolve, reject) => {
