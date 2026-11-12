@@ -115,10 +115,11 @@ describe('POST /v1/admin/decisions/void', () => {
 });
 
 describe('config: binding and seats', () => {
-  const base = (extra: string, wallet = ''): string => {
+  const STATE = join(tmpdir(), 'dax4s-cfg-state', 'store.json').split(String.fromCharCode(92)).join('/');
+  const base = (extra: string, wallet = '', withStore = true): string => {
     const f = join(tmp(), 'c.yaml');
     writeFileSync(f, ['wallet: { org_id: "o", accumulate_endpoints: ["https://k.io/v3"], signer_url: "acc://o.acme/book/1"' + wallet + ' }',
-      'signer: { provider: "local", local: { allow_ephemeral: true } }', 'policy: { url: "http://127.0.0.1:9099/decision" }', extra].join('\n'));
+      'signer: { provider: "local", local: { allow_ephemeral: true } }', 'policy: { url: "http://127.0.0.1:9099/decision" }', ...(withStore ? [`store: { path: "${STATE}" }`] : []), extra].join(String.fromCharCode(10)));
     return f;
   };
   const GOOD = `binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400 }`;
@@ -131,6 +132,10 @@ describe('config: binding and seats', () => {
     expect(effectiveSeats(cfg)).toEqual([{ page: 'acc://o.acme/book/1', seat: 'seat:o.acme-book-1', binding: expect.objectContaining({ max_window_seconds: 5400, require_grant: false, registry_principals: [] }) }]);
     const named = loadConfig(base('', ', seat: "seat:fic-treasury"'));
     expect(effectiveSeats(named)[0]).toEqual({ page: 'acc://o.acme/book/1', seat: 'seat:fic-treasury' });
+  });
+
+  it('refuses a binding without a durable store: a nonce forgotten at a restart is a decision that can be used again (DE-02)', () => {
+    expect(() => loadConfig(base(GOOD, '', false))).toThrow(/binding requires store.path/);
   });
 
   it('refuses at boot what would leave a seat unbound or ambiguous', () => {

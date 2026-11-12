@@ -107,7 +107,7 @@ attacker's key from the page but does nothing about whatever they already signed
 ### Suspected compromise — do this first, ask questions after
 
 ```bash
-curl -XPOST -H "x-api-key: $ADMIN_API_KEY" localhost:8080/v1/admin/pause    # stop signing NOW
+curl -XPOST -H "x-api-key: $ADMIN_API_KEY" -H 'content-type: application/json' -d '{"by":"seat:<your-seat>","reason":"<why, at least 10 characters>"}' localhost:8080/v1/admin/pause    # stop signing NOW
 npx tsx scripts/rotate-key.ts --config <cfg> --new-vault-key org-accum-v2 --mode update
 ```
 
@@ -244,9 +244,26 @@ Accumulate "not found": 404.
 ## Emergency stop
 
 ```bash
-curl -XPOST -H "x-api-key: $ADMIN_API_KEY" localhost:8080/v1/admin/pause
-curl -XPOST -H "x-api-key: $ADMIN_API_KEY" localhost:8080/v1/admin/resume
+curl -XPOST -H "x-api-key: $ADMIN_API_KEY" -H 'content-type: application/json' -d '{"by":"seat:<your-seat>","reason":"<why, at least 10 characters>"}' localhost:8080/v1/admin/pause
+curl -XPOST -H "x-api-key: $ADMIN_API_KEY" -H 'content-type: application/json' -d '{"by":"seat:<your-seat>","reason":"<why, at least 10 characters>"}' localhost:8080/v1/admin/resume
+curl -H "x-api-key: $ADMIN_API_KEY" localhost:8080/v1/admin/pause    # who paused, why, since when
 ```
+
+A pause names a **seat** (`by`, `seat:<name>`) and a **reason** (at least ten characters); without them it is refused by name
+(`seat_required`, `reason_required`). Without `scope` and `id` it stops every seat this signer serves (each page has a seat id:
+`wallet.seat` / `scopes[].seat`, else one derived from the page URL, shown by `GET /v1/admin/pause`). `{"scope":"seat","id":"seat:…"}`
+stops one seat and `{"scope":"subject","id":"acc://<adi>"}` stops one subject; a resume lifts only its own scope and id. The pause is
+written to disk (`pause-state.json`, with a hash-chained `decision-journal.jsonl`, beside `store.path`) before the call returns, is read
+again before **every** signature (a reject vote included) and survives a restart of the signer. With no `store.path` it lives in memory only.
+
+### Decision binding (`binding`)
+
+A scope with a `binding` block accepts a decision only when its `record` (certen.decision/v1) names the exact transaction about to be
+signed, an authorised approver, this seat, the pinned policy hash (when set) and an unspent nonce; a reply without one is refused. Every
+accepted nonce is written to the journal before the signature is made, so a decision cannot be used twice, a restart included. Refusals are
+named in the receipt (`binding: <reason>`) and sign nothing. `binding` requires `store.path`. Voiding the nonces of a re-issued decision:
+`POST /v1/admin/decisions/void {"nonces":[…],"reason":"…"}`. Keep the journal's pin (`store.pin_path`) on a medium the signer's writer cannot edit
+if you need a deleted or truncated journal to be a refusal to start.
 
 Pause halts **all** signing immediately, including reject votes — a reject is still a signature, and a
 paused signer that goes on submitting rejections is not paused. Pending transactions stay pending; nothing
@@ -328,11 +345,11 @@ you are approving nothing. Size it: container start + self-check + first poll �
 
 **Upgrade:**
 
-1. `POST /v1/admin/pause` — stop signing cleanly.
+1. `POST /v1/admin/pause` (with `by` and `reason`) — stop signing cleanly.
 2. Wait for in-flight signing to finish (watch the logs; seconds).
 3. `docker compose up -d --build`, or roll the Deployment. The state volume carries history across.
 4. Confirm `SR6 self-check OK` and `/healthz` 200 with `poller.healthy: true`.
-5. `POST /v1/admin/resume`.
+5. `POST /v1/admin/resume` (with `by` and `reason`).
 
 ---
 

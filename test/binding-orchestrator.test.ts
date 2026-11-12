@@ -3,83 +3,18 @@
  * The real Orchestrator, the real core binding, the real journal and pause files in a temp directory, a mock Accumulate client
  * that records every `submit` (a vote, a cancel, anything): FICTIONAL parties only.
  */
-import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { describe, expect, it } from 'vitest';
+import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import pino from 'pino';
-import { MockAccumulateClient } from '../src/accumulate/client.js';
-import { DecisionJournal } from '../src/binding/journal.js';
-import { NonceStore } from '../src/binding/nonces.js';
-import { PauseStore } from '../src/binding/pause-store.js';
-import { buildPresentedRequest } from '../src/binding/request.js';
-import { BindingRules, DECISION_RECORD_MEMBER } from '../src/binding/verify.js';
-import { hashRequest } from '../src/core/hashes.js';
+import { DECISION_RECORD_MEMBER } from '../src/binding/verify.js';
+import { ADDR, APPROVER, GRANTOR, GRANT_HASH, H, KEY, POLICY, PRINCIPAL, SEAT, SUBJECT, fakeWorld, intentBody, leg, subjectClaim } from './support/binding-fixtures.js';
+import { NOW_S, RULES, SIGNER, TX, approveFor, rig, silent, tmp, type Body, type RigOpts } from './support/binding-rig.js';
 import { Orchestrator } from '../src/orchestrator.js';
-import { MockPolicyClient } from '../src/policy/policy.js';
 import { Resolver } from '../src/resolver.js';
 import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
-import { MemoryStore } from '../src/store/store.js';
-import type { Decision, PolicyRequest } from '../src/types.js';
-import { ADDR, APPROVER, GRANTOR, GRANT_HASH, H, KEY, POLICY, PRINCIPAL, SEAT, SUBJECT, FakeWorld, fakeWorld, intentBody, leg, record, subjectClaim } from './support/binding-fixtures.js';
 
-const silent = pino({ level: 'silent' });
-const SIGNER = 'acc://o.acme/book/1';
-const TX = 'ab'.repeat(32);
-const NOW_S = 1_800_000_000;
-const dirs: string[] = [];
-afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
-const tmp = (): string => { const d = mkdtempSync(join(tmpdir(), 'dax4s-o-')); dirs.push(d); return d; };
-
-type Body = ReturnType<typeof intentBody>;
-const requestHashOf = (body: Body, tx = TX): string => {
-  const b = buildPresentedRequest({ txHash: tx, rawTransaction: { body }, summary: { action: 'x' } });
-  if (!b.ok) throw new Error(b.detail);
-  return hashRequest(b.value.request);
-};
-
-const RULES: BindingRules = { seat: SEAT, authorizedApprovers: [APPROVER], maxWindowSeconds: 7200, policyHash: POLICY, requireGrant: false, registryPrincipals: [] };
-
-interface RigOpts {
-  dir?: string;
-  body: Body;
-  /** the decision the engine returns for every ask */
-  reply: (req: PolicyRequest) => Decision;
-  rules?: Partial<BindingRules> | null; // null: no binding on this seat (legacy)
-  world?: FakeWorld;
-  submitRejectVote?: boolean;
-  tx?: string;
-  votes?: ConstructorParameters<typeof Orchestrator>[0]['votes'];
-}
-function rig(o: RigOpts) {
-  const dir = o.dir ?? tmp();
-  const journal = new DecisionJournal({ path: join(dir, 'decision-journal.jsonl'), logId: 'fic-signer' });
-  const nonces = new NonceStore(journal, () => NOW_S);
-  const pauses = new PauseStore({ journal, statePath: join(dir, 'pause-state.json'), seats: [SEAT], nowSeconds: () => NOW_S });
-  const acc = new MockAccumulateClient();
-  const tx = o.tx ?? TX;
-  acc.addPending(tx, { body: o.body, principal: `${PRINCIPAL}/tokens` });
-  const store = new MemoryStore();
-  const policy = new MockPolicyClient(o.reply);
-  const orch = new Orchestrator({
-    accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))), policy, store, resolver: new Resolver(acc), logger: silent,
-    now: () => NOW_S * 1000, pauses,
-    ...(o.votes ? { votes: o.votes } : {}),
-    seats: new Map([[SIGNER.toLowerCase(), { seat: SEAT, ...(o.rules === null ? {} : { binding: { ...RULES, ...(o.rules ?? {}) } }) }]]),
-    binding: { nonces, ...(o.world ? { world: o.world } : {}), nowSeconds: () => NOW_S },
-    options: { submitRejectVote: o.submitRejectVote ?? false },
-  });
-  const handle = () => orch.handle({ txHash: tx, signerUrl: SIGNER });
-  return { dir, journal, nonces, pauses, acc, store, policy, orch, handle, tx };
-}
-
-const approveFor = (body: Body, over: Parameters<typeof record>[0] extends infer R ? Partial<R> : never = {}, verb: 'approve' | 'deny' = 'approve', tx = TX) =>
-  (): Decision => ({
-    decision: verb, reason: 'FICTIONAL officers approved',
-    [DECISION_RECORD_MEMBER]: record({ requestHash: requestHashOf(body, tx), decision: verb, issuedAt: NOW_S - 10, nonce: H('nonce-fixed'), ...over }),
-  } as Decision);
-
+import { requestHashOf } from './support/binding-rig.js';
 const BASE = intentBody();
 
 describe('a bound decision signs exactly once', () => {

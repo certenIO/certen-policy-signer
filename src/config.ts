@@ -552,8 +552,13 @@ export function effectiveSeats(cfg: Pick<ParsedConfig, 'wallet' | 'binding'>): E
  * seat ids are `seat:<name>` and distinct; approvers are identities; ADIs are ADIs; a seat that requires a Grant names whose
  * Grants and whose registries it trusts.
  */
-export function validateBindings(cfg: Pick<ParsedConfig, 'wallet' | 'binding'>): void {
+export function validateBindings(cfg: Pick<ParsedConfig, 'wallet' | 'binding' | 'store'>): void {
   const seats = effectiveSeats(cfg);
+  // A single-use nonce that is forgotten at a restart is a decision that can be used again (DE-02): binding without a durable store
+  // is refused, not warned about.
+  if (seats.some((s) => s.binding) && !cfg.store.path) {
+    throw new Error('config: binding requires store.path — the decision nonces consumed must survive a restart (DE-02), and a signer without a durable store would accept a replayed decision after one');
+  }
   const seen = new Set<string>();
   for (const s of seats) {
     if (!isSeat(s.seat)) throw new Error(`config: ${s.page}: seat ${JSON.stringify(s.seat)} must be seat:<name> (lower case letters, digits, . _ -)`);

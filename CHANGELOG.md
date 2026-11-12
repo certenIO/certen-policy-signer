@@ -11,7 +11,28 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ## Unreleased
 
+### Changed (breaking: pause)
+
+- **The emergency pause is persisted and names a seat and a reason.** `POST /v1/admin/pause` and `/v1/admin/resume` now take
+  `{"by":"seat:<name>","reason":"<at least 10 characters>"}` (a call without them is refused with `seat_required` or
+  `reason_required`; before, a body-less call paused everything). `scope` (`seat` or `subject`) and `id` narrow it; without them
+  it acts on every configured seat. The pause is written to disk before the call returns, read again before every signature (a reject
+  vote included) and survives a restart (`pause-state.json` and a hash-chained `decision-journal.jsonl` beside `store.path`; without
+  `store.path` it stays in memory). `GET /v1/admin/pause` shows who paused and why. Migration: add the body to every pause and resume
+  call, the operator console now asks for both.
+- **Receipts are append-only.** A second receipt for one unit of work is a second record (`getReceipt` is still the latest,
+  `getReceipts` lists all) with a store-wide `seq` and `recordedAt`; a state file with a gap in `seq` refuses to start.
+- `Receipt` gains `seq`, `recordedAt` and `binding`; `Decision` gains `record` (a Console that copies `src/types.ts` must re-sync).
+
 ### Added
+
+- **Decision binding (DAX-4S).** `binding` (top level or per scope) makes the signer accept a decision only when its certen.decision/v1
+  `record` names the exact transaction about to be signed (the request hash is recomputed from the transaction, with the validator
+  operation id recomputed from its four blobs), an authorised approver identity, this seat, the pinned policy hash, the head of the
+  Grant (read from Accumulate, never the producer's claim) with its subject, and a nonce not used before. The nonce is journalled
+  before the signature is made, so a replay inside the old 300-second window, after a restart or after a crash is refused. A refusal is
+  named in the receipt and signs nothing. `POST /v1/admin/decisions/void` voids the nonces of a re-issued decision. The shared core
+  (`src/core`) is a byte-for-byte copy of transaction-controls `packages/core`: `node scripts/sync-core.mjs`, `test/core-drift.test.ts`.
 
 - **Phase 8 key sources (FICTIONAL Business Transaction Controls lab).** `signer.provider: pkcs11` signs
   with a key in a PKCS#11 token: Ed25519 via `CKM_EDDSA`, P-256 via `CKM_ECDSA` with the output converted
