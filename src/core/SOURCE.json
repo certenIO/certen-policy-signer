@@ -1,5 +1,5 @@
 {
-  "commit": "e9d19af0e80de9fa5a35d36ab1c8feb960001c86",
+  "commit": "d9082fa44d73c426b55406eecebd115bc0462cf2",
   "dir": "packages/core/src",
   "files": {
     "bytes.ts": "a6e87147398be7fab345727dbef4f4cb1b953972dff446ccbe14d3caef61d7d7",
@@ -11,10 +11,12 @@
     "grant.ts": "7b8970c56b7aa957b78dead2a7cd8c9fde3dd2ab62b333a95f1a815d64e13685",
     "registry.ts": "3d4ffb5ade31de2611b0e21c7bb17f7ae3eb6419aef6fbb8d1a8874da641a3af",
     "account.ts": "3c3c514cb4667cbf4178d91aa64474887fd9f8e7d4b05364b7eb1b57236ff491",
+    "block-time.ts": "b33291f6b2b6b9929faba5f52f4fd7fb855b909d8eca526bb86a5144022ee6a5",
+    "main-chain-entry.ts": "26f2f2469ecc233b5e49276d19ab3169421c001b4df8cc3cb1ea5fa5b5eb9b9b",
     "acceptance.ts": "7eacf7b26a574daafc6f02cd0dcbc68d929d094ed73d94174e9a3a47f49035e5",
     "lineage-online.ts": "d61363d2f064254290c59c45108288ef7ea21538c17ccc81fb11420cc254b82d",
     "registry-online.ts": "15a41917311cdfa73911efbf1c4b7f59c62af595dacce8666d0093c798d78a37",
-    "reader.ts": "5578c508aeb6e5bd46fe1272fd15f196b4b47d7b9fb158d03eb349c4715c50f4",
+    "reader.ts": "066bb9a1bf65ecee7bcce486a0a96211d9fe6bb8bdaa24a570da9d257351b21d",
     "log.ts": "1c084c74850ea8e4d0ea6acf31d4058115faff903069946d30290fadd48feb9b",
     "decision-identity.ts": "477872451e1cc69d979494ed67e4a69797273a6115c94eec9d8fe3e151001cdf",
     "decision-binding.ts": "73b71336e0938387ff5fd18d16c3b05c7d9c9c8f0337a41adb1c034521ce1adc",

@@ -28,7 +28,9 @@ export interface KeyPageInfo { url: string; keyHashes: string[]; threshold: numb
 export interface DataEntry {
   /** the Accumulate transaction id of the WriteData that carried the entry (a record, never an input to a hash) */
   txId: string;
-  /** chain time of the entry, Unix seconds (the execution time); REQUIRED for the registry and acceptance accounts */
+  /** chain time of the entry, Unix seconds (the execution time); REQUIRED for the registry and acceptance accounts. On Accumulate v3 it is the time of the minor block
+   *  that executed the entry (block-time.ts), and the entries are the account's main-chain WriteData transactions (main-chain-entry.ts), NOT the data-chain query,
+   *  which dates two entries with identical bytes by the later one */
   time?: number;
   elements: Uint8Array[];
 }
