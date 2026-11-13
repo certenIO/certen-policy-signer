@@ -5,6 +5,9 @@ import { dirname, resolve as resolvePath } from 'node:path';
 import yaml from 'js-yaml';
 import { z } from 'zod';
 import { NOTIFY_EVENTS } from './notify.js';
+import { isIdentity } from './core/decision-identity.js';
+import { isAccUrl, isAdiUrl, isUnderAdi } from './core/grant-profile.js';
+import { derivedSeat, isSeat } from './binding/seats.js';
 
 /** Event names as a zod enum source — derived from the one list in notify.ts so the two cannot drift. */
 const NOTIFY_EVENT_NAMES = NOTIFY_EVENTS as [string, ...string[]] as unknown as readonly [
@@ -156,6 +159,33 @@ const BehaviorOverrideSchema = z.object({
   value_ceiling: z.string(),
 }).partial().strict();
 
+/**
+ * DAX-4S decision binding (DECISION.md sections 3 and 4). PRESENCE of this block on a scope (or at the top level, as the default
+ * of every scope) means every decision for that seat must carry a certen.decision/v1 record that binds it to the transaction
+ * about to be signed; a reply without one is refused (`decision_malformed`, detail `record_absent`). A scope without it keeps
+ * the unbound legacy reply. `.strict()`: a misspelled key must stop the boot, not quietly mean "no binding".
+ *
+ *   authorized_approvers  the identities (`key:<sha256 of the key>` or `adi:<url>`, never a display name) the seat accepts
+ *   max_window_seconds    the cap on a decision's expiresAt - issuedAt; no default, a window is a decision (DEC-2: 90 minutes is
+ *                         PROVISIONAL), at most 86400 (a longer window needs an owner-queue note)
+ *   policy_hash           the pinned hash of the seat's active rule set; absent = the hash is recorded and NOT compared
+ *   require_grant         a seat that requires a Grant refuses a transaction and a decision that name none
+ *   grantor_adi           whose Grants the seat takes (required when a Grant is required; needed whenever a transaction names one)
+ *   grantor_book          the key book that must own the grantor's accounts (certen-grants, certen-subjects): the account authority
+ *                         rule's owner (READER-MODEL-V2); required with grantor_adi. The subject is resolved ONLY through the
+ *                         grantor's registry and the subject's own acceptance account, so there is no list of registries to name
+ */
+const BindingSchema = z.object({
+  authorized_approvers: z.array(z.string().min(1)).min(1),
+  max_window_seconds: z.number().int().min(1).max(86_400),
+  policy_hash: z.string().regex(/^0x[0-9a-f]{64}$/, 'binding.policy_hash must be 0x and 64 lowercase hex').optional(),
+  require_grant: z.boolean().default(false),
+  grantor_adi: z.string().optional(),
+  grantor_book: z.string().optional(),
+}).strict();
+
+export type BindingConfig = z.infer<typeof BindingSchema>;
+
 export type PolicyOverride = z.infer<typeof PolicyOverrideSchema>;
 export type BehaviorOverride = z.infer<typeof BehaviorOverrideSchema>;
 
@@ -211,7 +241,14 @@ const Schema = z.object({
       // and "no engine configured" must never be a reachable state.
       policy: PolicyOverrideSchema.optional(),
       behavior: BehaviorOverrideSchema.optional(),
+      // The seat this page is, `seat:<name>`. Every scope has one: this, or one derived from the page URL. A decision record
+      // names it, a seat pause addresses it. Stated here so the id does not change if the page does.
+      seat: z.string().optional(),
+      // Replaces the top-level `binding` for this page when present (see BindingSchema).
+      binding: BindingSchema.optional(),
     })).optional(),
+    // Single-scope form: the seat id of `signer_url` (see scopes[].seat).
+    seat: z.string().optional(),
     // `wrapper` (Trust Stamp, wrapper runbook): this signer is a delegate on enrolled subscribers' wrapper
     // pages, and each vote's delegation path is derived per transaction from the human signature on it.
     // `delegator_url` is meaningless there and refused alongside it.
@@ -380,7 +417,7 @@ const Schema = z.object({
     relay_clients: z.array(z.object({
       name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, 'admin.relay_clients[].name must be 1-64 of [A-Za-z0-9._-]'),
       key: z.string(),                   // `env:NAME`
-      scopes: z.array(z.enum(['proof', 'tx', 'pending', 'governance'])).min(1),
+      scopes: z.array(z.enum(['proof', 'tx', 'pending', 'governance', 'chain'])).min(1),
     }).strict()).optional(),
   }).default({})),
   // Phase 7 officer intake (contract §3–4): personal signatures made on a person's own device, verified and
@@ -393,7 +430,20 @@ const Schema = z.object({
   }).strict().default({ enabled: false })),
   health: section(z.object({ bind: z.string().default('0.0.0.0:8080') }).default({})),
   // Durable state: idempotency (never vote twice) + the receipt audit trail. Omit only for tests.
-  store: section(z.object({ path: z.string().optional() }).default({})),
+  // `path` holds the receipts and the signing history; beside it the decision journal (nonces consumed, pauses) and the persisted
+  // pause live. `pin_path` is where the journal's head pin is kept: a medium the journal's writer cannot edit makes a truncated or
+  // re-chained journal a refusal to start (DECISION.md DE-45); by default the pin sits next to the journal.
+  store: section(z.object({ path: z.string().optional(), pin_path: z.string().optional() }).default({})),
+  // The reader of Accumulate facts behind decision binding and the `chain` relay routes (READER-MODEL-V2, read amplification).
+  // `cache_ttl_seconds` is the hard TTL of every cached fact, at most 30: a revocation or a supersede is visible within it.
+  reader: section(z.object({
+    cache_ttl_seconds: z.number().int().min(1).max(30).default(30),
+    max_concurrency: z.number().int().min(1).max(16).default(4),
+    backoff_base_ms: z.number().int().min(1).max(60_000).default(500),
+    backoff_max_ms: z.number().int().min(1).max(600_000).default(30_000),
+  }).strict().default({})),
+  // The default `binding` of every scope that does not state its own. Absent = unbound legacy replies (see BindingSchema).
+  binding: BindingSchema.optional(),
   observability: section(z.object({
     log_level: z.string().default('info'),
     metrics: z.boolean().default(true),
@@ -483,6 +533,60 @@ export function effectiveScopeRules(
     behavior: { ...cfg.behavior, ...b },
     overridden: Object.keys(p).length > 0 || Object.keys(b).length > 0,
   };
+}
+
+/** One scope's seat id and, when its decisions must be bound, the binding that applies to it (its own, else the default). */
+export interface EffectiveSeat {
+  page: string;
+  seat: string;
+  binding?: BindingConfig;
+}
+
+/** Every signing scope with its seat. A single-scope signer has one entry, for `wallet.signer_url`. */
+export function effectiveSeats(cfg: Pick<ParsedConfig, 'wallet' | 'binding'>): EffectiveSeat[] {
+  const out: EffectiveSeat[] = [];
+  const scopes = cfg.wallet.scopes ?? [];
+  if (scopes.length > 0) {
+    for (const s of scopes) {
+      const binding = s.binding ?? cfg.binding;
+      out.push({ page: s.page, seat: s.seat ?? derivedSeat(s.page), ...(binding ? { binding } : {}) });
+    }
+  } else if (cfg.wallet.signer_url) {
+    out.push({ page: cfg.wallet.signer_url, seat: cfg.wallet.seat ?? derivedSeat(cfg.wallet.signer_url), ...(cfg.binding ? { binding: cfg.binding } : {}) });
+  }
+  return out;
+}
+
+/**
+ * Binding and seat sanity, refused at boot (a typo here is a seat that signs unbound decisions, or no decision at all):
+ * seat ids are `seat:<name>` and distinct; approvers are identities; ADIs are ADIs; a seat that requires a Grant names whose
+ * Grants and whose registries it trusts.
+ */
+export function validateBindings(cfg: Pick<ParsedConfig, 'wallet' | 'binding' | 'store'>): void {
+  const seats = effectiveSeats(cfg);
+  // A single-use nonce that is forgotten at a restart is a decision that can be used again (DE-02): binding without a durable store
+  // is refused, not warned about.
+  if (seats.some((s) => s.binding) && !cfg.store.path) {
+    throw new Error('config: binding requires store.path — the decision nonces consumed must survive a restart (DE-02), and a signer without a durable store would accept a replayed decision after one');
+  }
+  const seen = new Set<string>();
+  for (const s of seats) {
+    if (!isSeat(s.seat)) throw new Error(`config: ${s.page}: seat ${JSON.stringify(s.seat)} must be seat:<name> (lower case letters, digits, . _ -)`);
+    if (seen.has(s.seat)) throw new Error(`config: seat ${s.seat} is the seat of two scopes — each seat id may appear once`);
+    seen.add(s.seat);
+    const b = s.binding;
+    if (!b) continue;
+    for (const a of b.authorized_approvers) {
+      if (!isIdentity(a)) throw new Error(`config: ${s.page}: binding.authorized_approvers entry ${JSON.stringify(a)} must be key:<64 lowercase hex> or adi:<acc URL>, never a display name`);
+    }
+    if (new Set(b.authorized_approvers).size !== b.authorized_approvers.length) throw new Error(`config: ${s.page}: binding.authorized_approvers lists an identity twice`);
+    if (b.grantor_adi !== undefined && !isAdiUrl(b.grantor_adi)) throw new Error(`config: ${s.page}: binding.grantor_adi must be an acc:// ADI URL`);
+    if ((b.grantor_adi === undefined) !== (b.grantor_book === undefined)) throw new Error(`config: ${s.page}: binding.grantor_adi and binding.grantor_book are given together (the grantor and the key book that owns its accounts)`);
+    if (b.grantor_book !== undefined && (!isAccUrl(b.grantor_book) || b.grantor_adi === undefined || !isUnderAdi(b.grantor_book, b.grantor_adi) || b.grantor_book === b.grantor_adi)) throw new Error(`config: ${s.page}: binding.grantor_book must be a key book URL under the grantor ADI (acc://<grantor>/<book>)`);
+    if (b.require_grant && b.grantor_adi === undefined) {
+      throw new Error(`config: ${s.page}: binding.require_grant needs binding.grantor_adi and binding.grantor_book (whose Grants this seat takes)`);
+    }
+  }
 }
 
 /**
@@ -651,6 +755,7 @@ export function loadConfig(path: string): Config {
   if (cfg.behavior.value_ceiling !== undefined && !/^\d+$/.test(cfg.behavior.value_ceiling)) {
     throw new Error(`config: behavior.value_ceiling must be a whole number as a string, got ${JSON.stringify(cfg.behavior.value_ceiling)}`);
   }
+  validateBindings(cfg);
   // Notification credentials. Unlike the policy channel, an unauthenticated notification is not a security
   // failure — the receiver is being TOLD what happened, not asked what to do, and nothing it says comes
   // back. So a missing webhook secret warns at boot (in index.ts) rather than refusing to start.

@@ -15,6 +15,7 @@ import { createOfficerIntake, OfficerIntake } from './officer/intake.js';
 import { createRelayClientsHandler, RelayClientsHandler } from './relay-clients.js';
 import { createServer } from './server.js';
 import { MemoryStore, FileStore, Store } from './store/store.js';
+import { memoryPauseStore } from './binding/pause-store.js';
 import { buildRegistry, loadDecoderModules, DecoderRegistry } from './decode/registry.js';
 import { createCertenIntentDecoder } from './decode/decoders/certen-intent.js';
 import { buildSelectorTable } from './decode/abi.js';
@@ -86,7 +87,7 @@ export async function startIntakeOnly(cfg: Config, logger: Logger, opts: { accum
 
   const server = createServer({
     relayClients, officerIntake: intake.handle, configVersion: cfg.configVersion,
-    orchestrator: NO_ORCHESTRATOR, store, keyring: EMPTY_KEYRING, accumulate, pause: { paused: false }, logger,
+    orchestrator: NO_ORCHESTRATOR, store, keyring: EMPTY_KEYRING, accumulate, pause: memoryPauseStore(), logger,
     adminApiKey: cfg.admin.api_key,
     metricsPublic: cfg.observability.metrics_public,
   });

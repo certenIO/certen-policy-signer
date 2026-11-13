@@ -22,8 +22,15 @@ export interface Store {
   get(key: string): Promise<SigningRequest | undefined>;
   create(req: SigningRequest): Promise<void>;
   update(key: string, patch: Partial<SigningRequest>): Promise<SigningRequest>;
+  /**
+   * APPENDS a receipt: nothing replaces or removes one (DAX-4S, DE-48). The store stamps `seq`, store-wide and contiguous from 1,
+   * and `recordedAt`; a drop or a reorder shows as a gap, and the Console chains the receipts through its decision log.
+   */
   saveReceipt(r: Receipt): Promise<void>;
+  /** The LATEST receipt of a unit of work (what every reader has always had). */
   getReceipt(key: string): Promise<Receipt | undefined>;
+  /** Every receipt of a unit of work, oldest first. */
+  getReceipts(key: string): Promise<Receipt[]>;
   /**
    * The latest PolicyRequest built for a unit of work (Phase 6.4 `/relay/pending/:hash`). `key` defaults
    * to the request's tx hash; a wrapper path's request lives under its work key, so the tx-hash route
@@ -52,6 +59,8 @@ export interface Store {
 
 export class MemoryStore implements Store {
   protected reqs = new Map<string, SigningRequest>();
+  /** Every receipt, in the order appended: `seq` is the index plus one. Never edited, never shortened. */
+  protected receiptLog: Receipt[] = [];
   protected receipts = new Map<string, Receipt>();
   protected policyRequests = new Map<string, PolicyRequest>();
   private locks = new Set<string>();
@@ -73,8 +82,22 @@ export class MemoryStore implements Store {
     await this.persist();
     return next;
   }
-  async saveReceipt(r: Receipt) { this.receipts.set(keyOf(r), { ...r }); await this.persist(); }
+  async saveReceipt(r: Receipt) {
+    const rec: Receipt = { ...r, seq: this.receiptLog.length + 1, recordedAt: Date.now() };
+    this.receiptLog.push(rec);
+    this.receipts.set(keyOf(rec), rec);
+    try {
+      await this.persist();
+    } catch (e) {
+      // An append that could not be made durable is not an append: roll the in-memory log back so a retry takes the same seq.
+      this.receiptLog.pop();
+      const prior = [...this.receiptLog].reverse().find((x) => keyOf(x) === keyOf(rec));
+      if (prior) this.receipts.set(keyOf(rec), prior); else this.receipts.delete(keyOf(rec));
+      throw e;
+    }
+  }
   async getReceipt(key: string) { return this.receipts.get(key); }
+  async getReceipts(key: string) { return this.receiptLog.filter((x) => keyOf(x) === key); }
   async savePolicyRequest(r: PolicyRequest, key = r.txHash) { this.policyRequests.set(key, structuredClone(r)); await this.persist(); }
   async getPolicyRequest(key: string) { return this.policyRequests.get(key); }
   async listNonTerminal() {
@@ -130,7 +153,7 @@ export class FileStore extends MemoryStore {
       // A file written before work keys has no `workKey` on any record; `keyOf` files those under their
       // txHash, which is where they always were, so an upgrade neither re-votes nor loses a receipt.
       for (const r of raw.requests ?? []) this.reqs.set(keyOf(r), r);
-      for (const r of raw.receipts ?? []) this.receipts.set(keyOf(r), r);
+      this.loadReceipts(raw.receipts ?? []);
       for (const r of raw.policyRequests ?? []) this.policyRequests.set(r.txHash, r);
       for (const [k, r] of raw.policyRequestsByKey ?? []) this.policyRequests.set(k, r);
     } catch (e) {
@@ -139,10 +162,26 @@ export class FileStore extends MemoryStore {
     }
   }
 
+  /**
+   * Receipts are an append-only log. A file written before this change holds one receipt per key and no `seq`: its receipts are
+   * numbered in file order. A file that has `seq` must have it on every receipt, contiguous from 1: a gap, a duplicate or a mix
+   * means a receipt was dropped or edited out, and the process refuses to start rather than carry on with a shortened trail.
+   */
+  private loadReceipts(rows: Receipt[]): void {
+    const withSeq = rows.filter((r) => typeof r.seq === 'number').length;
+    if (withSeq !== 0 && withSeq !== rows.length) throw new Error('receipts with and without a sequence number: a receipt trail that may have been edited');
+    const ordered = withSeq === 0 ? rows.map((r, i) => ({ ...r, seq: i + 1 })) : [...rows].sort((a, b) => a.seq! - b.seq!);
+    ordered.forEach((r, i) => {
+      if (r.seq !== i + 1) throw new Error(`receipt sequence is not contiguous (expected ${i + 1}, found ${r.seq}): a receipt was dropped or duplicated`);
+      this.receiptLog.push(r);
+      this.receipts.set(keyOf(r), r);
+    });
+  }
+
   protected async persist(): Promise<void> {
     const snapshot = JSON.stringify({
       requests: [...this.reqs.values()],
-      receipts: [...this.receipts.values()],
+      receipts: this.receiptLog,
       // Hash-keyed requests in the original field, so a file stays readable by the previous release;
       // path-keyed ones beside it, with their key, because the request itself does not carry it.
       policyRequests: [...this.policyRequests.entries()].filter(([k, r]) => k === r.txHash).map(([, r]) => r),

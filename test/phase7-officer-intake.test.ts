@@ -26,6 +26,7 @@ import { startIntakeOnly } from '../src/intake-only.js';
 import type { PageState } from '../src/ops/rotate.js';
 import type { KeyPageResult } from '../src/ops/keypage.js';
 import type { PolicyRequest } from '../src/types.js';
+import { memoryPauseStore } from '../src/binding/pause-store.js';
 
 const silent = pino({ level: 'silent' });
 const subtle = webcrypto.subtle;
@@ -218,7 +219,7 @@ beforeEach(async () => {
     recordAwaiting: async ({ txHash, page, op }) => store.savePolicyRequest(awaitingGovernanceRequest(txHash, page, op)),
     propose: intake.propose, logger: silent,
   });
-  server = createServer({ relayClients, officerIntake: intake.handle, orchestrator: {} as any, store, keyring: {} as any, accumulate: {} as any, pause: { paused: false }, logger: silent });
+  server = createServer({ relayClients, officerIntake: intake.handle, orchestrator: {} as any, store, keyring: {} as any, accumulate: {} as any, pause: memoryPauseStore(), logger: silent });
   port = await listen(server);
 });
 afterAll(() => server?.close());

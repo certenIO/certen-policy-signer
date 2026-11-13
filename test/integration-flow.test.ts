@@ -8,6 +8,8 @@ import { Resolver } from '../src/resolver.js';
 import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
 import { Orchestrator, OrchestratorOptions } from '../src/orchestrator.js';
+import { memoryPauseStore, type PauseGate } from '../src/binding/pause-store.js';
+import { derivedSeat } from '../src/binding/seats.js';
 // @ts-expect-error — plain .mjs engine, no type declarations
 import { decideByParity } from '../scripts/parity-policy-engine.mjs';
 
@@ -46,13 +48,13 @@ beforeAll(async () => {
 });
 afterAll(() => engine.close());
 
-function pipeline(txHash: string, body: any, options?: OrchestratorOptions) {
+function pipeline(txHash: string, body: any, options?: OrchestratorOptions, pauses?: PauseGate) {
   const acc = new MockAccumulateClient();
   acc.addPending(txHash, { body, principal: 'acc://a.acme/data' });
   const orch = new Orchestrator({
     accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))),
     policy: new HttpPolicyClient({ url: engineUrl, timeoutMs: 3000 }),
-    store: new MemoryStore(), resolver: new Resolver(acc), logger: silent, options,
+    store: new MemoryStore(), resolver: new Resolver(acc), logger: silent, options, ...(pauses ? { pauses } : {}),
   });
   return { acc, orch };
 }
@@ -102,14 +104,15 @@ describe('full pipeline: CERTEN intent → HTTP even-odd engine → vote', () =>
   });
 
   it('SR8 pause → withholds signature even when the engine approves', async () => {
-    let paused = true;
-    const { acc, orch } = pipeline(H(6), certenBody('4000'), { isPaused: () => paused });
+    const pauses = memoryPauseStore([derivedSeat(SIGNER)]);
+    await pauses.set({ scope: 'seat', id: derivedSeat(SIGNER), by: 'seat:fic-operator', reason: 'FICTIONAL: stop signing now' });
+    const { acc, orch } = pipeline(H(6), certenBody('4000'), undefined, pauses);
     const r = await orch.handle({ txHash: H(6), signerUrl: SIGNER });
     expect(r.status).toBe('awaiting_policy');
     expect(r.lastError).toBe('paused');
     expect(acc.submissions).toHaveLength(0);
     // resume → now it signs
-    paused = false;
+    await pauses.resume({ scope: 'seat', id: derivedSeat(SIGNER), by: 'seat:fic-operator', reason: 'FICTIONAL: resume signing' });
     const r2 = await orch.handle({ txHash: H(6), signerUrl: SIGNER });
     expect(r2.status).toBe('signed');
     expect(acc.submissions).toHaveLength(1);

@@ -18,8 +18,9 @@ import { NotifyEvent } from './notify.js';
 import { RelayHandler, RELAY_PREFIX } from './relay.js';
 import { RelayClientsHandler, RELAY_CLIENT_PREFIX } from './relay-clients.js';
 import { OfficerIntakeHandler, OFFICER_PATHS } from './officer/intake.js';
+import type { PauseControl, PauseOutcome } from './binding/pause-store.js';
 
-export interface PauseController { paused: boolean; }
+export type { PauseControl } from './binding/pause-store.js';
 
 /** Anything whose staleness should make the wallet report unhealthy (the poller, in practice). */
 export interface HealthSource {
@@ -44,7 +45,10 @@ export interface ServerDeps {
   store: Store;
   keyring: Keyring;
   accumulate: AccumulateClient;
-  pause: PauseController;
+  /** The PERSISTED pause (seat and subject scopes, DECISION.md section 6): `/healthz` reads it, `/v1/admin/pause` and `/resume` change it. */
+  pause: PauseControl;
+  /** Voids decision nonces (`POST /v1/admin/decisions/void`). Absent => that route is 404. */
+  nonces?: { voidNonces(nonces: string[], reason: string): Promise<{ voided: string[] }> };
   logger: Logger;
   webhookHmacSecret?: string;
   /** Header the caller signs the webhook body in. Defaults to DEFAULT_SIGNATURE_HEADER; the legacy name
@@ -135,7 +139,8 @@ export function createServer(d: ServerDeps): http.Server {
       // silently going unsigned, which must not report 200.
       if (method === 'GET' && (path === '/healthz' || path === '/health')) {
         const reasons: string[] = [];
-        if (d.pause.paused) reasons.push('paused');   // deliberate (SR8) — degraded, not unhealthy
+        const paused = d.pause.anyPaused();
+        if (paused) reasons.push('paused');   // deliberate (SR8) — degraded, not unhealthy
         const keyOk = await d.keyring.healthy();       // every scope's key provider reachable
         if (!keyOk) reasons.push('key_provider_unreachable');
         const pollerOk = d.poller ? d.poller.healthy() : true;
@@ -149,7 +154,7 @@ export function createServer(d: ServerDeps): http.Server {
         if (stalled.length) reasons.push(...stalled.map((p) => `poller_stalled:${p}`));
         return json(res, ok ? 200 : 503, {
           ok,
-          paused: d.pause.paused,
+          paused,
           reasons,
           poller: d.poller ? { healthy: pollerOk, lastSuccess: d.poller.lastSuccess() || null } : undefined,
           // Only when there is more than one; a single-scope signer would just be repeating `poller`.
@@ -287,18 +292,55 @@ export function createServer(d: ServerDeps): http.Server {
       if (method === 'GET' && path === '/v1/config/version') {
         return json(res, 200, { configVersion: d.configVersion ?? null });
       }
-      // POST /v1/admin/pause | resume
-      if (method === 'POST' && path === '/v1/admin/pause') {
-        d.pause.paused = true;
-        d.logger.warn('SIGNING PAUSED');
-        d.notify?.('signer.paused');
-        return json(res, 200, { paused: true });
+      // GET|POST /v1/admin/pause, POST /v1/admin/resume — the PERSISTED pause (DAX-4S, DECISION.md section 6).
+      //
+      // Body `{scope?, id?, by, reason}`: `scope` is `seat` or `subject` and `id` the seat id or the subject ADI; without a scope the
+      // call acts on EVERY configured seat (the old "stop everything"; a pause on a subject is never lifted by it). `by` is a named
+      // seat (`seat:<name>`) and `reason` at least ten characters: a pause without a seat, a resume without a reason and a resume
+      // of what is not paused are refused by name (DE-26); pausing what is already paused answers 200 `status: already_paused` (idempotent, DE-78). `by` is the caller's declaration, authenticated only as far as the admin
+      // key is. The pause is durable before the answer is sent, survives a restart, and is read again before every signature.
+      if (method === 'GET' && path === '/v1/admin/pause') {
+        const st = d.pause.snapshot();
+        return json(res, 200, { paused: st.pauses.length > 0, pauses: st.pauses, seats: d.pause.seats() });
       }
-      if (method === 'POST' && path === '/v1/admin/resume') {
-        d.pause.paused = false;
-        d.logger.warn('SIGNING RESUMED');
-        d.notify?.('signer.resumed');
-        return json(res, 200, { paused: false });
+      if (method === 'POST' && (path === '/v1/admin/pause' || path === '/v1/admin/resume')) {
+        const pausing = path === '/v1/admin/pause';
+        let b: any;
+        try { b = JSON.parse((await readBody(req)) || '{}'); } catch { return json(res, 400, { error: 'body must be JSON' }); }
+        if (b === null || typeof b !== 'object' || Array.isArray(b)) return json(res, 400, { error: 'body must be a JSON object' });
+        const by = typeof b.by === 'string' ? b.by : '';
+        const reason = typeof b.reason === 'string' ? b.reason : '';
+        let out: PauseOutcome;
+        if (b.scope === undefined && b.id === undefined) {
+          out = pausing ? await d.pause.setAllSeats(by, reason) : await d.pause.resumeAllSeats(by, reason);
+        } else {
+          const op = { scope: b.scope, id: b.id, by, reason };
+          out = pausing ? await d.pause.set(op) : await d.pause.resume(op);
+        }
+        if (!out.ok) {
+          const status = out.reason === 'not_paused' ? 409 : out.reason.startsWith('journal_') ? 500 : 400;
+          d.logger.warn({ audit: pausing ? 'pause_refused' : 'resume_refused', reason: out.reason, detail: out.detail }, 'pause change refused');
+          return json(res, status, { error: out.reason, ...(out.detail !== undefined ? { detail: out.detail } : {}) });
+        }
+        d.logger.warn({ audit: pausing ? 'signing_paused' : 'signing_resumed', scope: b.scope ?? 'all seats', id: b.id, by, reason }, pausing ? 'SIGNING PAUSED' : 'SIGNING RESUMED');
+        d.notify?.(pausing ? 'signer.paused' : 'signer.resumed');
+        return json(res, 200, { paused: out.state.pauses.length > 0, pauses: out.state.pauses, ...(out.status ? { status: out.status } : {}) });
+      }
+      // POST /v1/admin/decisions/void {nonces, reason} — marks decision nonces spent without a decision being accepted: the old
+      // nonce of a decision a recheck voided (re-issued, denied, expired), so the old decision cannot be used even by a seat that
+      // pins no policy. Idempotent and durable.
+      if (method === 'POST' && path === '/v1/admin/decisions/void') {
+        if (!d.nonces) return json(res, 404, { error: 'not found' });
+        let b: any;
+        try { b = JSON.parse((await readBody(req)) || '{}'); } catch { return json(res, 400, { error: 'body must be JSON' }); }
+        if (!Array.isArray(b?.nonces) || typeof b?.reason !== 'string' || b.reason.length === 0) return json(res, 400, { error: 'nonces (array) and reason required' });
+        try {
+          const r = await d.nonces.voidNonces(b.nonces, b.reason);
+          d.logger.warn({ audit: 'nonces_voided', count: r.voided.length, reason: b.reason }, 'decision nonces voided');
+          return json(res, 200, r);
+        } catch (e) {
+          return json(res, e instanceof Error && (e as { reason?: string }).reason === 'nonce_malformed' ? 400 : 500, { error: (e as { reason?: string }).reason ?? 'void failed' });
+        }
       }
 
       // GET /v1/admin/pubkey — the wallet's signing key(s) + Accumulate key hash(es), per page (for setup / SR6).

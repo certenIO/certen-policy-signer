@@ -21,6 +21,7 @@ import { MockAccumulateClient } from '../src/accumulate/client.js';
 import { MemoryStore } from '../src/store/store.js';
 import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
+import { memoryPauseStore } from '../src/binding/pause-store.js';
 
 const silent = pino({ level: 'silent' });
 const TOKEN = 'test-relay-token';
@@ -293,7 +294,7 @@ describe('relay mounted on the health/admin server', () => {
     const acc = new MockAccumulateClient();
     return createServer({
       orchestrator: {} as any, store: new MemoryStore(), keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9))),
-      accumulate: acc, pause: { paused: false }, logger: silent, adminApiKey: 'test-admin-key-000', relay,
+      accumulate: acc, pause: memoryPauseStore(), logger: silent, adminApiKey: 'test-admin-key-000', relay,
     });
   }
   it('is 404 when not enabled, and the admin key does not open it', async () => {

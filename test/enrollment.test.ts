@@ -25,6 +25,7 @@ import { PageState } from '../src/ops/rotate.js';
 import { createServer } from '../src/server.js';
 import { WrapperChain, submittedVote } from './support/wrapper-chain.js';
 import http from 'node:http';
+import { memoryPauseStore } from '../src/binding/pause-store.js';
 import { AddressInfo } from 'node:net';
 
 const silent = pino({ level: 'silent' });
@@ -248,7 +249,7 @@ describe('seat reconcile on every vote', () => {
 describe('registering an enrolling wrapper', () => {
   async function serve(registry?: MemoryWrapperRegistry) {
     const server = createServer({
-      orchestrator: {} as never, store: new MemoryStore(), keyring: {} as never, accumulate: {} as never, pause: { paused: false }, logger: silent,
+      orchestrator: {} as never, store: new MemoryStore(), keyring: {} as never, accumulate: {} as never, pause: memoryPauseStore(), logger: silent,
       adminApiKey: 'k', ...(registry ? { wrapperRegistry: registry, wrapperOurBook: T } : {}),
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
