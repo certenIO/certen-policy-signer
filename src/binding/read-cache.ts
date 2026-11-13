@@ -12,11 +12,12 @@
  *   5. one in-flight read per account fact (concurrent evaluations coalesce);
  *   6. counters per evaluation (queries, hits, misses, invalidations, coalesced, the age of the oldest fact used) and totals;
  *   7. no txid-miss query: nothing here asks for a transaction by id.
- * The key-book pages (advisory, never a gate) have no cheap change detector, so they are cached by the TTL alone.
+ * The key-book pages (the quorum roster the Console reads; never an input of an online Grant or registration verdict) are NOT covered by
+ * the chain-length key of the data accounts, so they are cached by the TTL alone.
  */
-import type { AccountHistory, AccumulateReader, DataEntry, KeyPageInfo } from '../core/reader.js';
+import type { AccountHistory, AccumulateReader, DataEntry } from '../core/reader.js';
 import { isDefinitiveNotFound } from '../accumulate/raw-client.js';
-import { createNodeSource, type ChainQuery, type Meter, type NodeSource } from './node-source.js';
+import { createNodeSource, type ChainQuery, type Meter, type NodeSource, type RosterPage } from './node-source.js';
 
 export const MAX_TTL_MS = 30_000;
 
@@ -50,6 +51,10 @@ export interface EvaluationStats {
 }
 
 export interface CountedReader extends AccumulateReader {
+  /** the key pages of a book now, with the delegate seats (the quorum roster); cached by the TTL alone */
+  keyBookPages(book: string): Promise<RosterPage[] | null>;
+  /** the main-chain length of an account: the one cheap probe the cache keys its facts on (one node query; null when it could not be read) */
+  chainLength(account: string): Promise<number | null>;
   stats(): EvaluationStats;
 }
 
@@ -76,7 +81,7 @@ export interface ReadCacheTotals { nodeQueries: number; cacheHits: number; cache
 export class ReadCache {
   private readonly source: NodeSource;
   private readonly entries = new Map<string, Entry>();
-  private readonly books = new Map<string, Fact<KeyPageInfo[]>>();
+  private readonly books = new Map<string, Fact<RosterPage[]>>();
   private readonly inflight = new Map<string, Promise<unknown>>();
   private readonly now: () => number;
   private readonly ttlMs: number;
@@ -239,7 +244,7 @@ export class ReadCache {
     return {
       authorities: (account) => fact<string[]>(account, 'authorities', () => this.source.authorities(account, m), () => true),
       accountHistory: (account) => fact<AccountHistory>(account, 'history', (e) => this.source.history(account, e.total, m), (h) => !h.incomplete),
-      dataEntries: (account) => fact<DataEntry[]>(account, 'entries', () => this.source.entries(account, m), () => true),
+      dataEntries: (account) => fact<DataEntry[]>(account, 'entries', (e) => this.source.entries(account, e.total, m), () => true),
       keyBookPages: async (book) => {
         const cached = this.books.get(book);
         const t = this.now();
@@ -256,6 +261,10 @@ export class ReadCache {
         }
         this.books.set(book, { v, at: this.now() });
         return v;
+      },
+      chainLength: async (account) => {
+        const e = await validate(account);
+        return e === null ? null : e.total;
       },
       stats: () => ({ ...st }),
     };

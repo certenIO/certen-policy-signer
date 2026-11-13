@@ -63,7 +63,7 @@ function keyMatches(given: unknown, expected: string): boolean {
 }
 
 /** the chain routes: the account is ONE percent-encoded path segment (no raw slash) */
-const CHAIN_ROUTE = new RegExp('^/relay/(data|authorities|history|keybook)/([^/]+)$');
+const CHAIN_ROUTE = new RegExp('^/relay/(data|authorities|history|keybook|chainlen)/([^/]+)$');
 const GOV_TYPES = new Set(['add-key', 'remove-key', 'set-threshold', 'add-delegate', 'remove-delegate']);
 const MAX_GOV_OPS = 10;
 const sameUrl = (a: string, b: string) => a.toLowerCase().replace(/\/+$/, '') === b.toLowerCase().replace(/\/+$/, '');
@@ -122,13 +122,13 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
 
     let m: RegExpExecArray | null;
 
-    // GET /relay/data|authorities|history|keybook/:account  (scope chain; read-only, v3 only, strictly validated: src/binding/relay-routes.ts)
+    // GET /relay/data|authorities|history|keybook|chainlen/:account  (scope chain; read-only, v3 only, strictly validated: src/binding/relay-routes.ts)
     if ((m = CHAIN_ROUTE.exec(path))) {
       if (!need('chain')) return send(res, 403, { error: 'forbidden: scope chain required' });
       if (method !== 'GET') return send(res, 405, { error: 'method not allowed' });
       if (url.search !== '') return send(res, 400, { error: 'no query parameters are accepted' });
       if (!d.chainReader) return send(res, 503, { error: 'chain reader not configured' });
-      const out = await relayAccountRoute(d.chainReader(), m[1] as 'data' | 'authorities' | 'history' | 'keybook', m[2]);
+      const out = await relayAccountRoute(d.chainReader(), m[1] as 'data' | 'authorities' | 'history' | 'keybook' | 'chainlen', m[2]);
       for (const [k, v] of Object.entries(out.headers)) res.setHeader(k, v);
       return send(res, out.status, out.body);
     }

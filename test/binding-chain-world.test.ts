@@ -61,10 +61,11 @@ function registrationElements(r: Record<string, unknown>): Uint8Array[] {
 const acceptance = (action: 'accept' | 'revoke', over: Record<string, unknown> = {}) => encodeAcceptanceEntry({ schema: 'certen.acceptance/v1', subject: SUBJECT, principal: GRANTOR, registry: REGISTRY, action, ...over });
 
 /** the whole scene: the grantor's grants account and registry (owned by the grantor's book), the subject ADI and its acceptance account */
-function scene(o: { grants?: Grant[]; registrations?: Array<{ r: Record<string, unknown>; time?: number }>; acceptances?: Array<{ action: 'accept' | 'revoke'; time: number }> | null } = {}) {
+function scene(o: { grants?: Grant[]; registrations?: Array<{ r: Record<string, unknown>; time?: number | null }>; acceptances?: Array<{ action: 'accept' | 'revoke'; time: number }> | null } = {}) {
   const node = new FakeNode();
   node.dataAccount(GRANTS, [BOOK]);
-  for (const g of o.grants ?? [grant()]) node.write(GRANTS, grantElements(g));
+  let grantsBlock: number | undefined; // the Grant entries of a scene share one executing block: one block query, not one per entry
+  for (const g of o.grants ?? [grant()]) grantsBlock = node.write(GRANTS, grantElements(g), undefined, grantsBlock === undefined ? {} : { block: grantsBlock }).block;
   node.dataAccount(REGISTRY, [BOOK]);
   for (const x of o.registrations ?? [{ r: registration(), time: T_REG }]) node.write(REGISTRY, registrationElements(x.r), x.time);
   node.identity(SUBJECT, [`${SUBJECT}/book`]);
@@ -109,7 +110,10 @@ describe('the Grant head (online model: no key page is read)', () => {
     const s = scene({ grants: [...noise, g1] });
     const r = await s.ask(null);
     expect(r.head).toMatchObject({ ok: true, value: { hash: hashGrant(g1) } });
-    expect(s.node.calls.filter((c) => c === `${GRANTS} data`)).toHaveLength(3);
+    // the entries are the main chain's WriteData transactions: 1 length probe + 3 pages (232 records) shared by the history and the entries, one block query, never the data chain
+    expect(s.node.calls.filter((c) => c === `${GRANTS} chain`)).toHaveLength(4);
+    expect(s.node.calls.filter((c) => c === `${GRANTS} block`)).toHaveLength(1);
+    expect(s.node.calls.filter((c) => c === `${GRANTS} data`)).toHaveLength(0);
   });
 
   it('is refused by the account authority rule, never allowed', async () => {
@@ -176,7 +180,7 @@ describe('the subject (the GRANTOR registry and the subject acceptance only)', (
   it('a registration by ANOTHER ADI in the grantor registry is invisible to the Grant; an entry without a chain time cannot be placed', async () => {
     const stranger = registration({ principal: { adi: 'acc://stranger.acme', keyBook: 'acc://stranger.acme/book' } });
     expect(await subject(scene({ registrations: [{ r: stranger, time: T_REG }] }))).toMatchObject({ ok: false, detail: expect.stringContaining('registration_principal_mismatch') });
-    expect(await subject(scene({ registrations: [{ r: registration() }] }))).toMatchObject({ ok: false, detail: expect.stringContaining('account_entry_undecodable entry_time_missing') });
+    expect(await subject(scene({ registrations: [{ r: registration(), time: null }] }))).toMatchObject({ ok: false, detail: expect.stringContaining('account_entry_undecodable entry_time_missing') });
   });
 
   it('is unproven when the asserter is neither the grantor nor a submitter, and when the registry fails the authority rule', async () => {

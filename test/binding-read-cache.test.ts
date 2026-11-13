@@ -230,3 +230,65 @@ describe('one in-flight read per fact, bounded concurrency, back-off, counters',
     expect(b.stats!.ttlMs).toBe(30_000);
   });
 });
+
+describe('the key pages (the quorum roster) are cached by the TTL ALONE, the chain-length key does not cover them', () => {
+  const RISK = 'acc://fic-risk.acme/risk';
+  const rosterRig = () => {
+    const r = rig();
+    r.node.book(RISK, [{ keyHashes: ['aa'.repeat(32)], delegates: ['acc://fic-ops.acme/ops'], threshold: 1 }]);
+    return r;
+  };
+
+  it('a roster read inside the TTL costs no node query, and is the same facts; no chain-length probe is made for it', async () => {
+    const r = rosterRig();
+    const first = await r.cache.evaluation().keyBookPages(RISK);
+    expect(first).toEqual([{ url: `${RISK}/1`, keyHashes: ['aa'.repeat(32)], delegates: ['acc://fic-ops.acme/ops'], threshold: 1 }]);
+    const before = r.node.calls.length;
+    r.clock.ms += 10_000;
+    const ev = r.cache.evaluation();
+    expect(await ev.keyBookPages(RISK)).toEqual(first);
+    expect(r.node.calls.length).toBe(before);
+    expect(ev.stats().cacheHits).toBe(1);
+    expect(ev.stats().queries).toBe(0);
+  });
+
+  it('a rotation of a seat is visible at the TTL and not before (key pages are not covered by the chain-length key): the bound is the TTL, at most 30 seconds', async () => {
+    const r = rosterRig();
+    await r.cache.evaluation().keyBookPages(RISK);
+    r.node.accounts.get(`${RISK}/1`)!.seats = [{ publicKeyHash: 'bb'.repeat(32) }];
+    r.clock.ms += MAX_TTL_MS - 1;
+    expect((await r.cache.evaluation().keyBookPages(RISK))![0]!.keyHashes).toEqual(['aa'.repeat(32)]); // still inside the bound
+    r.clock.ms += 1;
+    expect((await r.cache.evaluation().keyBookPages(RISK))![0]).toMatchObject({ keyHashes: ['bb'.repeat(32)], delegates: [] });
+  });
+
+  it('a failed or unreadable roster read is never cached and never served', async () => {
+    const r = rosterRig();
+    r.node.accounts.get(`${RISK}/1`)!.seats = [{}];
+    expect(await r.cache.evaluation().keyBookPages(RISK)).toBeNull();
+    r.node.accounts.get(`${RISK}/1`)!.seats = [{ publicKeyHash: 'aa'.repeat(32) }];
+    expect(await r.cache.evaluation().keyBookPages(RISK)).toEqual([{ url: `${RISK}/1`, keyHashes: ['aa'.repeat(32)], delegates: [], threshold: 1 }]);
+  });
+});
+
+describe('the chain-length probe a relay caller keys its own facts on', () => {
+  it('is one node query per request, and the cache is told the length it reads', async () => {
+    const r = rig();
+    const before = r.node.calls.length;
+    const ev = r.cache.evaluation();
+    expect(await ev.chainLength(GRANTS)).toBe(2);
+    expect(r.node.calls.length - before).toBe(1);
+    expect(ev.stats().queries).toBe(1);
+    r.node.write(GRANTS, grantEl(grant({ version: 2, priorHash: hashGrant(grant()), issuedAt: 1_800_000_200 })));
+    expect(await r.cache.evaluation().chainLength(GRANTS)).toBe(3);
+  });
+
+  it('is null when the node cannot give it, and a failure is not remembered', async () => {
+    const r = rig();
+    r.node.down.add(GRANTS);
+    expect(await r.cache.evaluation().chainLength(GRANTS)).toBeNull();
+    r.node.down.delete(GRANTS);
+    r.clock.ms += 120_000;
+    expect(await r.cache.evaluation().chainLength(GRANTS)).toBe(2);
+  });
+});

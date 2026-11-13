@@ -1,27 +1,42 @@
 /**
  * The raw facts of Accumulate API v3 that the core reader needs (READER-MODEL-V2): the main-chain LENGTH of an account (one cheap
  * query), its authority set NOW, its own main chain FROM CREATION as transaction types, its data entries with chain time, and
- * (advisory only) the pages of a key book. Every method counts the node queries it makes in `Meter` so a caller can state its
- * load; none reads a key page unless it is the advisory `keyBookPages`; none makes a txid-miss query.
+ * the pages of a key book (the roster of the Console's quorum; NEVER read by an online Grant or registration verdict). Every method counts the node queries it makes in `Meter` so a caller can state its
+ * load; none reads a key page unless it is `keyBookPages`; none makes a txid-miss query.
  *
- * The response shapes are those the DAX-3A live driver read from Kermit (transaction-controls scenarios/spikes/DAX3A.ts):
- *   account record     { account: { type, authorities: [{url, disabled}], pageCount, keys: [{publicKeyHash}], acceptThreshold } }
+ * The response shapes are those the DAX-3A live run read from Kermit (recorded answers: test/fixtures/live-dax3a-answers-trimmed.json,
+ * replayed by test/binding-real-shapes.test.ts):
+ *   account record     { recordType:"account", account: { type, authorities: [{url}], pageCount, keys: [{publicKeyHash}], acceptThreshold } }
  *   main chain query   { queryType: "chain", name: "main", range: { start, count, expand: true } }
- *                      -> { total, records: [{ value: { message: { transaction: { body: { type } } } } }] }
- *   data query         { queryType: "data", range: { start, count, expand: true } }
- *                      -> { total, records: [{ value: { id, message: { transaction: { body: { entry: { data: [hex] } } } } } }] }
- * NOT proven against Kermit by the signer's own tests (no chain contact in DAX-4S; the live smoke is the proof). The one fact the
- * model leaves OPEN until DAX-3-A15 is settled live is WHICH FIELD of an entry record carries its chain time: `entryTimeOf` is the
- * single place that reads it. When it finds none the entry has no `time`, and the core refuses a registry or acceptance entry
- * without one (`entry_time_missing`): a Grant seat refuses, it never guesses a time.
+ *                      -> { recordType:"range", total, records: [{ index, value: { id, status:"delivered", received: <minor block index>,
+ *                           message: { type:"transaction", transaction: { body: { type, entry?: { data: [hex] } } } } } }] }
+ *   block query        { queryType: "block", minor: <index> }  (scope: the account; the network resolves the partition)
+ *                      -> { recordType:"minorBlock", index, time:"2026-11-12T20:47:34Z", source }
  *
- * Fail closed: any surprise (a missing member, a non-hex element, a query error, a count that does not add up) answers null, which
- * the core turns into a named refusal. Nothing here is an allow.
+ * Two live findings shape the entries (DAX-3A R5-1, R5-2), both decided in the core (block-time.ts, main-chain-entry.ts):
+ *   - a data entry record has NO timestamp. `value.received` is the index of the minor block that executed it, and the chain time of
+ *     the entry is that block's `time`, one-second resolution (two entries of one second compare equal; the library tie rule applies).
+ *     `lastBlockTime` is a field of an ACCOUNT answer, never of an entry: nothing reads it as an entry time.
+ *   - the entries of a data account are the WriteData transactions of its MAIN chain. The `data` chain query resolves an entry to a
+ *     transaction through the entry hash, so byte-identical entries (accept, revoke, accept) collapse to the later transaction: this
+ *     source never asks the data chain.
+ * An entry has no `time` only when the node truly gave none (no executing block on the record, or a block record that is not the block
+ * asked for / has no exact UTC time): the core then refuses a registry or acceptance entry by name (`entry_time_missing`). A block
+ * QUERY that fails is a different fact: the whole account is unreadable, never an entry that merely lacks a time.
+ *
+ * Read cost: the main chain is read ONCE per evaluation for the history and the entries together (one query per 100 records), plus
+ * one block query per distinct executing block. A block time is chain history that never changes, so it is remembered for the life of
+ * the process (bounded; only an answered, exact time is remembered), and a new entry costs one block query.
+ *
+ * Fail closed: any surprise (a missing member, a non-hex element, a WriteData that was not delivered, a query error, a count that
+ * does not add up) answers null, which the core turns into a named refusal. Nothing here is an allow.
  */
 import type { AccountHistory, DataEntry, KeyPageInfo } from '../core/reader.js';
+import { entryBlockIndex, minorBlockTime } from '../core/block-time.js';
+import { mainChainEntryOf } from '../core/main-chain-entry.js';
 
 export type ChainQuery = (scope: string, query?: unknown) => Promise<any>;
-/** counts the node queries made on behalf of one caller */
+/** counts the node queries made on behalf of one caller (one evaluation) */
 export interface Meter { n: number }
 
 export interface NodeSource {
@@ -30,33 +45,21 @@ export interface NodeSource {
   authorities(account: string, m: Meter): Promise<string[] | null>;
   /** the main chain from its creation; `total` is the length already read by chainLength (saves the probe) */
   history(account: string, total: number, m: Meter): Promise<AccountHistory | null>;
-  entries(account: string, m: Meter): Promise<DataEntry[] | null>;
-  keyBookPages(book: string, m: Meter): Promise<KeyPageInfo[] | null>;
-}
-
-const PAGE = 100;
-const MAX_RECORDS = 100_000;
-
-function hexBytes(h: unknown): Uint8Array | null {
-  if (typeof h !== 'string') return null;
-  const s = h.startsWith('0x') ? h.slice(2) : h;
-  if (s.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(s)) return null;
-  return new Uint8Array(Buffer.from(s, 'hex'));
+  /** the WriteData entries of the main chain, in chain order, each with the time of its executing block; `total` is the length already read by chainLength */
+  entries(account: string, total: number, m: Meter): Promise<DataEntry[] | null>;
+  keyBookPages(book: string, m: Meter): Promise<RosterPage[] | null>;
 }
 
 /**
- * The chain time of a data-entry record, Unix seconds, or undefined. UNSETTLED until DAX-3-A15 shows the live record: this reads
- * `value.lastBlockTime` (RFC 3339 text or seconds) and nothing else, and reads NOTHING that the producer of the entry controls.
+ * A key page as the quorum roster needs it: the key hashes (64 lower-case hex) AND the delegate books of its seats (a seat may be a key, a
+ * delegation to another key BOOK, or both: a delegate entry stands as its book url), and the accept threshold.
  */
-export function entryTimeOf(rec: any): number | undefined {
-  const t = rec?.value?.lastBlockTime;
-  if (typeof t === 'number' && Number.isSafeInteger(t) && t >= 0) return t;
-  if (typeof t === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(t)) {
-    const ms = Date.parse(t);
-    if (Number.isFinite(ms) && ms >= 0) return Math.floor(ms / 1000);
-  }
-  return undefined;
-}
+export interface RosterPage extends KeyPageInfo { delegates: string[] }
+
+const PAGE = 100;
+const MAX_RECORDS = 100_000;
+/** how many block times are remembered (oldest dropped first) */
+const MAX_BLOCK_TIMES = 20_000;
 
 export function createNodeSource(query: ChainQuery): NodeSource {
   const ask = async (m: Meter, scope: string, q?: unknown): Promise<any | null> => {
@@ -69,6 +72,53 @@ export function createNodeSource(query: ChainQuery): NodeSource {
     }
   };
   const chainRange = (start: number, count: number) => ({ queryType: 'chain', name: 'main', range: { start, count, expand: true } });
+
+  // The main chain of one account at one length, read once per evaluation (the Meter is the evaluation): the history and the entries
+  // are two views of the same records. A failed read is shared inside the evaluation (a failing node is not asked twice) and forgotten with it.
+  const reads = new WeakMap<Meter, Map<string, Promise<any[] | null>>>();
+  const mainChain = (account: string, total: number, m: Meter): Promise<any[] | null> => {
+    let per = reads.get(m);
+    if (per === undefined) reads.set(m, (per = new Map()));
+    const key = `${account}#${total}`;
+    let p = per.get(key);
+    if (p === undefined) {
+      p = (async (): Promise<any[] | null> => {
+        if (!Number.isSafeInteger(total) || total < 0 || total > MAX_RECORDS) return null;
+        const records: any[] = [];
+        let start = 0;
+        while (start < total) {
+          const r = await ask(m, account, chainRange(start, PAGE));
+          const recs = r?.records;
+          if (!Array.isArray(recs) || recs.length === 0) return null; // the chain could not be read back: never an answer
+          records.push(...recs);
+          start += recs.length;
+        }
+        // read from index 0: complete. A chain longer than what was asked for, or a count that moved, is not an answer.
+        return records.length === total ? records : null;
+      })();
+      per.set(key, p);
+    }
+    return p;
+  };
+
+  // The time of a minor block (chain history: immutable), by account and block index. Only an answered, exact time is remembered.
+  const blockTimes = new Map<string, number>();
+  const rememberBlockTime = (key: string, t: number): void => {
+    if (blockTimes.size >= MAX_BLOCK_TIMES) blockTimes.delete(blockTimes.keys().next().value as string);
+    blockTimes.set(key, t);
+  };
+  /** 'failed' = the node could not be asked; undefined = the node answered and gave no exact time of that block */
+  const blockTime = async (account: string, minor: number, m: Meter): Promise<number | undefined | 'failed'> => {
+    const key = `${account}#${minor}`;
+    const have = blockTimes.get(key);
+    if (have !== undefined) return have;
+    const r = await ask(m, account, { queryType: 'block', minor });
+    if (r === null) return 'failed';
+    const t = minorBlockTime(r, minor);
+    if (t !== undefined) rememberBlockTime(key, t);
+    return t;
+  };
+
   return {
     async chainLength(account, m) {
       const r = await ask(m, account, chainRange(0, 1));
@@ -84,52 +134,40 @@ export function createNodeSource(query: ChainQuery): NodeSource {
     },
 
     async history(account, total, m) {
-      if (!Number.isSafeInteger(total) || total < 0 || total > MAX_RECORDS) return null;
+      const records = await mainChain(account, total, m);
+      if (records === null) return null;
       const types: string[] = [];
-      let start = 0;
-      while (start < total) {
-        const r = await ask(m, account, chainRange(start, PAGE));
-        const recs = r?.records;
-        if (!Array.isArray(recs) || recs.length === 0) return null; // the chain could not be read back: never an answer
-        for (const rec of recs) {
-          const t = rec?.value?.message?.transaction?.body?.type;
-          if (typeof t !== 'string' || t.length === 0) return null;
-          types.push(t);
-        }
-        start += recs.length;
+      for (const rec of records) {
+        const t = rec?.value?.message?.transaction?.body?.type;
+        if (typeof t !== 'string' || t.length === 0) return null;
+        types.push(t);
       }
-      // read from index 0: complete. A chain longer than what was read, or a count that moved, is not an answer.
-      return types.length === total ? { types, incomplete: false } : null;
+      return { types, incomplete: false };
     },
 
-    async entries(account, m) {
-      const out: DataEntry[] = [];
-      let start = 0;
-      for (;;) {
-        const r = await ask(m, account, { queryType: 'data', range: { start, count: PAGE, expand: true } });
-        const recs = r?.records;
-        if (!Array.isArray(recs)) return null;
-        for (const rec of recs) {
-          const data = rec?.value?.message?.transaction?.body?.entry?.data;
-          if (!Array.isArray(data)) return null;
-          const elements: Uint8Array[] = [];
-          for (const h of data) {
-            const b = hexBytes(h);
-            if (b === null) return null;
-            elements.push(b);
-          }
-          const time = entryTimeOf(rec);
-          out.push({ txId: String(rec?.value?.id ?? ''), ...(time === undefined ? {} : { time }), elements });
-        }
-        start += recs.length;
-        const total = Number(r.total);
-        if (recs.length === 0 || (Number.isSafeInteger(total) && start >= total) || recs.length < PAGE) {
-          // when the node states a total it must agree with what was read: a short read is not the whole account
-          if (Number.isSafeInteger(total) && total !== out.length) return null;
-          return out;
-        }
-        if (out.length > MAX_RECORDS) return null;
+    async entries(account, total, m) {
+      const records = await mainChain(account, total, m);
+      if (records === null) return null;
+      const found: Array<{ txId: string; elements: Uint8Array[]; minor: number | undefined }> = [];
+      for (const rec of records) {
+        const e = mainChainEntryOf(rec);
+        if (e.kind === 'other') continue;
+        if (e.kind === 'malformed') return null;
+        // a WriteData that is on the chain but was not delivered is not an entry, and is not skipped either: the account cannot be read exactly
+        if (rec?.value?.status !== 'delivered') return null;
+        found.push({ txId: e.txId, elements: e.elements, minor: entryBlockIndex(rec) });
       }
+      // one block query per distinct executing block (the read cache bounds how many run at once)
+      const distinct = [...new Set(found.map((f) => f.minor).filter((x): x is number => x !== undefined))];
+      const times = new Map<number, number | undefined | 'failed'>();
+      await Promise.all(distinct.map(async (minor) => { times.set(minor, await blockTime(account, minor, m)); }));
+      const out: DataEntry[] = [];
+      for (const f of found) {
+        const t = f.minor === undefined ? undefined : times.get(f.minor);
+        if (t === 'failed') return null;
+        out.push({ txId: f.txId, ...(t === undefined ? {} : { time: t }), elements: f.elements });
+      }
+      return out;
     },
 
     async keyBookPages(book, m) {
@@ -137,16 +175,33 @@ export function createNodeSource(query: ChainQuery): NodeSource {
       if (!b?.account || b.account.type !== 'keyBook') return null;
       const count = Number(b.account.pageCount);
       if (!Number.isSafeInteger(count) || count < 1 || count > 1000) return null;
-      const pages: KeyPageInfo[] = [];
+      const pages: RosterPage[] = [];
       for (let i = 1; i <= count; i++) {
         const url = `${book}/${i}`;
         const p = await ask(m, url);
         const keys = p?.account?.keys;
         const threshold = Number(p?.account?.acceptThreshold);
         if (!p?.account || !Array.isArray(keys) || !Number.isSafeInteger(threshold) || threshold < 1) return null;
+        // every seat is read exactly: a seat with a key hash that is not 64 hex, a delegate that is not text, or neither a key nor a delegate
+        // makes the book unreadable. A roster that silently lost a seat would be SHORTER than the chain's, and shorter is never safe to answer.
         const keyHashes: string[] = [];
-        for (const k of keys) if (typeof k?.publicKeyHash === 'string' && k.publicKeyHash.length > 0) keyHashes.push(k.publicKeyHash.toLowerCase());
-        pages.push({ url, keyHashes, threshold });
+        const delegates: string[] = [];
+        for (const k of keys) {
+          const h = k?.publicKeyHash;
+          const d = k?.delegate;
+          const hasKey = h !== undefined && h !== null && h !== '';
+          const hasDelegate = d !== undefined && d !== null && d !== '';
+          if (!hasKey && !hasDelegate) return null;
+          if (hasKey) {
+            if (typeof h !== 'string' || !/^[0-9a-fA-F]{64}$/.test(h)) return null;
+            keyHashes.push(h.toLowerCase());
+          }
+          if (hasDelegate) {
+            if (typeof d !== 'string') return null;
+            delegates.push(d);
+          }
+        }
+        pages.push({ url, keyHashes, delegates, threshold });
       }
       return pages;
     },
