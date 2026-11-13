@@ -228,6 +228,9 @@ POST <policy.url>    content-type: application/json
     "legCount": 1,                    // the legs of the intent; always sent; above 1 the decision service refuses it by name (multi_leg_unsupported)
     "grantRef": { "grantId": "…", "version": 1, "grantHash": "0x…" }   // only when blob 0 of the intent names a Grant (the producer's claim)
   },
+  "execution": {                      // DAX-4S round 5: what actually executes, a SIBLING of `binding` (never inside it); ONE mapped leg only, else omitted
+    "chainId": 84532, "source": "0x…", "target": "0x…", "value": "0", "calldata": "0x…"   // value: decimal string in wei; calldata: 0x + lower-case hex
+  },
   "display":       [["Principal", "acc://acme.acme/orders"], ["Body type", "writeData"], ["Payer", "acc://acme.acme"]],  // Phase 7: what a human is shown
   "summaryHash":   "77533e7e…",       // tcl-summary/v1 of `display` (lowercase hex); tx hash and vote are NOT inside
   "expiresAt":     "2026-07-26T12:00:00Z"         // THIS REQUEST's validity (policy TTL) — not the on-chain deadline
@@ -275,7 +278,12 @@ request hash, with `validatorOperationId` the validator's operation id recompute
 intent_id, never the blob-3 intent_hash), plus `legCount` (always) and `grantRef` (only when blob 0 of the intent carries one; omitted,
 never `null`). It is ABSENT for a legacy scope and for a transaction the signer cannot read as an intent (an unsupported call, a malformed
 `grantRef`): such a decision is refused by name (`presented_malformed`). A SEVERAL-LEG intent carries its `binding` with `legCount` above 1
-so the decision service refuses it by name (`multi_leg_unsupported`) and so does the signer; neither side silently skips it. There is no
+so the decision service refuses it by name (`multi_leg_unsupported`) and so does the signer; neither side silently skips it. `execution` is the single call the leg runs, so a decision service can DECODE it (sign what you see) instead of reading prose. It is present
+exactly when `binding` is present and the intent has ONE leg that maps to the ten request members, and omitted (never `null`) otherwise (a
+several-leg intent, an unsupported call). The signer AUTHENTICATES it before it sends anything: keccak(chainid, target, value, keccak(calldata)),
+the core's single-call commitment, must equal the intent's stated `executionCommitment`; if it does not, no `binding` and no `execution` are
+sent and a decision for the transaction is refused `presented_malformed` (detail `execution_commitment_mismatch`). A decision service recomputes
+the same commitment over `execution` and refuses a mismatch (`request_execution_mismatch`). There is no
 `leafExpiry`: the on-chain leaf expiry is not a field of the pending transaction (the deployed account computes its leaf from its own
 parameters), so a decision service that wants it must supply it from another source. The reply keeps `decision`,
 `reason` and `evidence` as before and gains `record`; a scope without `binding` ignores the member.

@@ -34,6 +34,14 @@ Anything in that list appears here with a migration note before it ships in a re
   `PolicyRequest.binding` carries the ten members of the request to bind (a seat that requires binding only). `legCount` is derived from
   the legs and always supplied (a two-leg intent is `multi_leg_unsupported`). The request mapping refuses what the strict decoder refuses
   (checksum-case addresses, a missing 0x, a dirty address word). Pausing what is paused answers 200 `status: already_paused`.
+- **`PolicyRequest.execution` (DAX-4S round 5, DAX7C-F1).** The bound request carries no calldata and no native value, so a decision service could
+  not decode what executes. The request now also carries `execution` {chainId, source, target, value, calldata}, a SIBLING of `binding`, for a
+  one-leg intent that maps to the ten request members (omitted, never null, otherwise). The signer authenticates it first: the core's single-call
+  commitment keccak(chainid, target, value, keccak(calldata)) over it must equal the intent's stated `executionCommitment`; a mismatch sends no
+  `binding` and no `execution` and a decision for it is refused `presented_malformed` (`execution_commitment_mismatch`). This tightens round 1's
+  "the commitment is taken as stated": an intent whose stated commitment is not the single-call commitment of its own bytes is now refused.
+  The shared core copy moves to 4ff146c (adds calldata-keccak, calldata-registry, calldata, calldata-display; the other 19 files are unchanged).
+  A Console that copies `src/types.ts` must re-sync (`PolicyExecution`, `PolicyRequest.execution`).
 - **`binding` carries `legCount` and the intent's `grantRef` (DAX-4S round 4).** `PolicyRequest.binding` had the ten members of the request hash and
   no `legCount`, and was sent for a one-leg transaction only, so a Console that requires `legCount` (DE-76) held every real request. It now
   always carries `legCount`, is sent for a several-leg intent too (the decision service refuses it by name, `multi_leg_unsupported`) and
