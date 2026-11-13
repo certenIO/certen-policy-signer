@@ -365,10 +365,11 @@ export interface PolicyRequest {
   /** `tcl-summary/v1` hash of `display`, lowercase hex. A signing client refuses when its link carries a different one. */
   summaryHash?: string;
   /**
-   * The exact request this signer will bind a decision to (DAX-4S): the ten members of the core's request hash. Present only when
-   * the scope REQUIRES binding and the transaction is ONE action the signer can express; a decision service with no chain access
-   * builds the same hash from it. The producer's declared ids are never in it: `validatorOperationId` is recomputed from the four
-   * blobs of the pending transaction (DE-64).
+   * The exact request this signer will bind a decision to (DAX-4S): the ten members of the core's request hash plus `legCount`, and
+   * `grantRef` when the intent names a Grant. Present when the scope REQUIRES binding and the transaction can be read as an intent
+   * (a several-leg intent is present too, with `legCount` above 1, so the decision service refuses it by name); a decision service
+   * with no chain access builds the same hash from it. The producer's declared ids are never in it: `validatorOperationId` is
+   * recomputed from the four blobs of the pending transaction (DE-64).
    */
   binding?: PolicyBinding;
   /**
@@ -393,6 +394,17 @@ export interface PolicyBinding {
   /** the validator's operation id, recomputed from the transaction's four blobs (never the intent_id UUID, never the blob-3 intent_hash) */
   validatorOperationId: string;
   txHash: string;
+  /**
+   * How many legs the intent has, derived from the transaction (DE-76) and ALWAYS sent. The request hash binds ONE action, so a decision
+   * service refuses anything but 1 by name (`multi_leg_unsupported`) instead of the signer leaving the binding out.
+   */
+  legCount: number;
+  /**
+   * The producer's CLAIM of the Grant (blob 0 `grantRef` of the intent), sent only when the intent carries one. The Grant head is read
+   * from Accumulate and compared with it; this is never trusted. There is no `leafExpiry`: no field of the pending transaction carries
+   * the on-chain leaf expiry (DAX-4S round 4, DESIGN.md).
+   */
+  grantRef?: { grantId: string; version: number; grantHash: string };
 }
 
 /**

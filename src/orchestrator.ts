@@ -629,8 +629,10 @@ export class Orchestrator {
 
     // 2. Decide
     // DAX-4S: a seat that requires binding tells the decision service the exact request the signer will bind (the ten members of the
-    // core's request hash, the validator operation id among them), so a service with no chain access can build the same hash. A
-    // transaction the signer cannot express as ONE action carries no `binding`, and its decision is refused later by name.
+    // core's request hash, the validator operation id among them, plus `legCount` and the intent's `grantRef`), so a service with no
+    // chain access can build the same hash. A several-leg intent carries its `binding` too (`legCount` above 1): the decision service
+    // refuses it by name (`multi_leg_unsupported`) and so does the signer's own check; neither side silently skips it. A transaction
+    // the signer cannot read as an intent at all (no binding built) carries none, and its decision is refused later by name.
     const seat = this.seatOf(ref.signerUrl);
     const presentedBinding = seat.binding ? buildPresentedRequest(tx) : undefined;
     const policyReq: PolicyRequest = withDisplay({
@@ -675,7 +677,7 @@ export class Orchestrator {
       ...(ref.delegators?.length ? { wrapper: { page: ref.delegators[0]!, path: [...ref.delegators] } } : {}),
       ...(kind === 'wrapper_create' ? { wrapper: { page: tx.account, path: [] } } : {}),
       ...(kind ? { attachmentKind: kind } : {}),
-      ...(presentedBinding?.ok && presentedBinding.value.legCount === 1 ? { binding: policyBindingOf(presentedBinding.value.request) } : {}),
+      ...(presentedBinding?.ok ? { binding: policyBindingOf(presentedBinding.value) } : {}),
       // Policy TTL for THIS request. Not the on-chain deadline, which is `header.expiresAt`.
       expiresAt: new Date(this.now() + this.opt.policyTtlSeconds * 1000).toISOString(),
     }, { labels: this.d.displayLabels });

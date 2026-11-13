@@ -83,11 +83,11 @@ describe('legCount is derived from the legs and ALWAYS supplied (DE-76, DAX-4-A2
     // one leg that cannot be mapped is still presented_malformed: nothing is guessed
     expect(build(intentBody({ legs: [leg({ payloadOverride: { callData: '0xdeadbeef' } })] }))).toEqual({ ok: false, detail: 'calldata_unsupported' });
   });
-  it('a single-leg request is what the Console is told (policyBindingOf: ten members, the validator id named validatorOperationId)', () => {
+  it('a single-leg request is what the Console is told (policyBindingOf: ten members, the validator id named validatorOperationId, and legCount; no grantRef when the intent names none)', () => {
     const v = ok(intentBody());
-    expect(policyBindingOf(v.request)).toEqual({
+    expect(policyBindingOf(v)).toEqual({
       chainId: 84532, kind: 'erc20.transfer', source: ADDR.treasury, target: ADDR.token, beneficiary: ADDR.vendorA, asset: ADDR.token, amount: '300',
-      executionCommitment: H('commit-1'), validatorOperationId: v.operationId, txHash: '0x' + TX,
+      executionCommitment: H('commit-1'), validatorOperationId: v.operationId, txHash: '0x' + TX, legCount: 1,
     });
   });
 });

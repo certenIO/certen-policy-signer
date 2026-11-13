@@ -105,7 +105,9 @@ export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransa
   // DE-76: legCount is DERIVED from the transaction's legs and ALWAYS supplied; the core refuses a legCount other than 1
   // (multi_leg_unsupported) before it compares anything. A request is still built from the first leg so the core can read the
   // presented transaction; when that leg cannot be mapped either, a placeholder that the core can hash stands in. It is never
-  // compared (the refusal comes first) and never sent to a Console (a multi-leg intent carries no `binding`).
+  // compared (the refusal comes first). It IS sent to a Console, as the `binding` of a several-leg intent with `legCount` above 1
+  // (DAX-4S round 4): the Console refuses a count other than 1 by name before it compares anything, so the members only have to be
+  // hashable, and a decision for it is never issued.
   const txHash = '0x' + tx.txHash.replace(/^0x/, '').toLowerCase();
   if (!HASH_RE.test(txHash)) return bad('tx_hash');
   const mapped = mapLeg(legs[0], txHash, operationId);

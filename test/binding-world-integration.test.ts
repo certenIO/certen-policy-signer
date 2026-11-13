@@ -50,12 +50,13 @@ describe('the production world on the decision path', () => {
     expect(hashGrant(g2)).not.toBe(ref.grantHash);
   });
 
-  it('the decision service is told the exact request to bind (policyBindingOf: ten members), for a seat that requires binding only', async () => {
+  it('the decision service is told the exact request to bind (ten members, legCount, and the intent\'s grantRef), for a seat that requires binding only', async () => {
     const seen: unknown[] = [];
     const r = rig({ body, rules: grantRules, world: grantScene().world, reply: (req) => { seen.push(req.binding); return approveFor(body, { grantHash: ref.grantHash })(); } });
     await r.handle();
     expect(seen[0]).toMatchObject({ chainId: 84532, kind: 'erc20.transfer', amount: '300', txHash: '0x' + TX });
-    expect(Object.keys(seen[0] as object).sort()).toEqual(['amount', 'asset', 'beneficiary', 'chainId', 'executionCommitment', 'kind', 'source', 'target', 'txHash', 'validatorOperationId']);
+    expect(Object.keys(seen[0] as object).sort()).toEqual(['amount', 'asset', 'beneficiary', 'chainId', 'executionCommitment', 'grantRef', 'kind', 'legCount', 'source', 'target', 'txHash', 'validatorOperationId']);
+    expect(seen[0]).toMatchObject({ legCount: 1, grantRef: ref });
     const legacy: unknown[] = [];
     const l = rig({ body, rules: null, reply: (req) => { legacy.push(req.binding); return { decision: 'approve' }; } });
     await l.handle();
@@ -63,7 +64,8 @@ describe('the production world on the decision path', () => {
     const multi: unknown[] = [];
     const m = rig({ body: intentBody({ legs: [leg(), leg({ to: '0x' + '44'.repeat(20) })] }), reply: (req) => { multi.push(req.binding); return { decision: 'approve' }; } });
     await m.handle();
-    expect(multi[0]).toBeUndefined(); // a multi-leg intent carries no binding: the decision is refused by name (multi_leg_unsupported)
+    // a multi-leg intent carries its binding too, with legCount 2: the decision service refuses it by name (multi_leg_unsupported), the signer never skips it
+    expect(multi[0]).toMatchObject({ legCount: 2, chainId: 84532, kind: 'erc20.transfer' });
   });
 });
 
