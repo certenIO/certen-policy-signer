@@ -10,7 +10,7 @@
  *
  * Nothing else names the commit: scripts/sync-core.mjs and test/core-drift.test.ts both import this file.
  */
-export const CORE_SOURCE_COMMIT = 'd9082fa44d73c426b55406eecebd115bc0462cf2';
+export const CORE_SOURCE_COMMIT = '4ff146c1a985dab7c7d162e35e9006639ede2086';
 /** the directory of the canonical files inside transaction-controls */
 export const CORE_SOURCE_DIR = 'packages/core/src';
 /** the folder of the copies, relative to the signer repository root */
@@ -41,4 +41,9 @@ export const CORE_FILES = [
   'decision-identity.ts',
   'decision-binding.ts',
   'pause.ts',
+  // DAX-4S round 5: the single-call execution commitment (calldata-keccak) and what the Console's decoded review reads (calldata, registry, display)
+  'calldata-keccak.ts',
+  'calldata-registry.ts',
+  'calldata.ts',
+  'calldata-display.ts',
 ];
