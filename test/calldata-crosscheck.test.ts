@@ -17,7 +17,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { decodeErc20Calldata } from '../src/decode/decoders/certen-intent.js';
 import { buildPresentedRequest } from '../src/binding/request.js';
-import { H } from './support/binding-fixtures.js';
+import { H, genuineCommitment } from './support/binding-fixtures.js';
 
 const raw = readFileSync(new URL('./fixtures/calldata-golden-dax7a-fc1a901.json', import.meta.url));
 interface Golden { id: string; title: string; input: any; expect: Record<string, any> }
@@ -27,7 +27,7 @@ const hex = (o: unknown): string => Buffer.from(JSON.stringify(o), 'utf8').toStr
 /** a one-leg intent whose leg is the golden execution input */
 function mapping(input: any): { ok: true; request: Record<string, string | number> } | { ok: false; detail: string } | { notAnExecution: true } {
   if (typeof input !== 'object' || input === null || Array.isArray(input) || typeof input.source !== 'string' || typeof input.target !== 'string' || input.chainId === undefined) return { notAnExecution: true };
-  const leg = { legId: 'leg-1', from: input.source, to: input.target, amountWei: input.value, executionPayload: { target: input.target, value: input.value, callData: input.calldata, chainId: input.chainId, executionCommitment: H('commit') } };
+  const leg = { legId: 'leg-1', from: input.source, to: input.target, amountWei: input.value, executionPayload: { target: input.target, value: input.value, callData: input.calldata, chainId: input.chainId, executionCommitment: genuineCommitment({ target: input.target, value: input.value, callData: input.calldata, chainId: input.chainId }) ?? H('commit') } };
   const data = [{ kind: 'CERTEN_INTENT', intent_id: 'i' }, { protocol: 'CERTEN', legs: [leg] }, { authorization: {} }, { nonce: 'n' }].map(hex);
   const r = buildPresentedRequest({ txHash: 'ab'.repeat(32), rawTransaction: { body: { type: 'writeData', entry: { data } } }, summary: { action: 'x' } });
   return r.ok ? { ok: true, request: r.value.request } : { ok: false, detail: r.detail };

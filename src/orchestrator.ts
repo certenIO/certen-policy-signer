@@ -678,6 +678,9 @@ export class Orchestrator {
       ...(kind === 'wrapper_create' ? { wrapper: { page: tx.account, path: [] } } : {}),
       ...(kind ? { attachmentKind: kind } : {}),
       ...(presentedBinding?.ok ? { binding: policyBindingOf(presentedBinding.value) } : {}),
+      // DAX7C-F1: what actually executes, as a SIBLING of `binding` (never inside it), so a decision service can decode it instead of reading our
+      // prose. Only for ONE mapped leg, already authenticated against the commitment; omitted (never null) otherwise.
+      ...(presentedBinding?.ok && presentedBinding.value.execution !== null ? { execution: presentedBinding.value.execution } : {}),
       // Policy TTL for THIS request. Not the on-chain deadline, which is `header.expiresAt`.
       expiresAt: new Date(this.now() + this.opt.policyTtlSeconds * 1000).toISOString(),
     }, { labels: this.d.displayLabels });

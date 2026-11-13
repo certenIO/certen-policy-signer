@@ -17,8 +17,9 @@
  * The mapping is the signer's reading of the intent format; the Console must build the same object (OQ-DAX4S-2).
  */
 import { ADDRESS_RE, HASH_RE, isAmount } from '../core/bytes.js';
+import { singleCommitment } from '../core/calldata-keccak.js';
 import { decodeErc20Calldata } from '../decode/decoders/certen-intent.js';
-import type { ResolvedTx } from '../types.js';
+import type { PolicyExecution, ResolvedTx } from '../types.js';
 import { OperationIdError, validatorOperationId } from './operation-id.js';
 
 export interface PresentedRequest {
@@ -34,6 +35,11 @@ export interface PresentedRequest {
   assertedSubject: { adi: string; assertedBy: string } | null;
   /** the validator operation id (also inside `request.operationId`) */
   operationId: string;
+  /**
+   * What the single leg executes (chainId, source, target, value, calldata), AUTHENTICATED: the core's single-call commitment recomputed over it
+   * equals `request.executionCommitment`. null for an intent with several legs (its commitment is a batch form, not recomputed here).
+   */
+  execution: PolicyExecution | null;
 }
 
 export type BuildResult = { ok: true; value: PresentedRequest } | { ok: false; detail: string };
@@ -112,7 +118,18 @@ export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransa
   if (!HASH_RE.test(txHash)) return bad('tx_hash');
   const mapped = mapLeg(legs[0], txHash, operationId);
   let request: Record<string, string | number>;
-  if (mapped.ok) request = mapped.request;
+  let execution: PolicyExecution | null = null;
+  if (mapped.ok) {
+    request = mapped.request;
+    if (legs.length === 1) {
+      // AUTHENTICATE the execution a decision service will decode (DAX7C-F1): the commitment the intent STATES must be the core's single-call
+      // commitment of the bytes this leg executes. The signer never sends a request it cannot verify itself, and never votes on one.
+      const e = mapped.execution;
+      const bytes = new Uint8Array(Buffer.from(e.calldata.slice(2), 'hex'));
+      if (singleCommitment(e.chainId, e.target, e.value, bytes) !== request['executionCommitment']) return bad('execution_commitment_mismatch');
+      execution = e;
+    }
+  }
   else if (legs.length !== 1) request = unboundPlaceholder(txHash, operationId);
   else return bad(mapped.detail);
 
@@ -128,6 +145,7 @@ export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransa
       grantRefHash: grantRef === null ? null : grantRef.grantHash,
       assertedSubject,
       operationId,
+      execution,
     },
   };
 }
@@ -140,7 +158,7 @@ function unboundPlaceholder(txHash: string, operationId: string): Record<string,
   return { chainId: 1, kind: 'native.transfer', source: ZERO20, target: ZERO20, beneficiary: ZERO20, asset: 'native', amount: '0', executionCommitment: ZERO32, operationId, txHash };
 }
 
-type Mapped = { ok: true; request: Record<string, string | number> } | { ok: false; detail: string };
+type Mapped = { ok: true; request: Record<string, string | number>; execution: PolicyExecution } | { ok: false; detail: string };
 
 /** One leg of the intent as the ten members of the request (the mapping of the header comment). */
 function mapLeg(leg: unknown, txHash: string, operationId: string): Mapped {
@@ -200,5 +218,8 @@ function mapLeg(leg: unknown, txHash: string, operationId: string): Mapped {
     asset = target;
     amount = dec.amount;
   }
-  return { ok: true, request: { chainId, kind, source, target, beneficiary, asset, amount, executionCommitment: commitment, operationId, txHash } };
+  // the execution of this leg: the same chainId, source and target as the request, the native value as a decimal string ('0' for a call that sends
+  // none) and exactly the calldata bytes, `0x` and lower-case hex (`0x` alone for a native transfer)
+  const execution: PolicyExecution = { chainId, source, target, value: value ?? '0', calldata: '0x' + callData.toLowerCase() };
+  return { ok: true, request: { chainId, kind, source, target, beneficiary, asset, amount, executionCommitment: commitment, operationId, txHash }, execution };
 }

@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { DecisionJournal } from '../src/binding/journal.js';
 import { NonceStore } from '../src/binding/nonces.js';
 import { DECISION_RECORD_MEMBER } from '../src/binding/verify.js';
-import { ADDR, APPROVER, GRANT_HASH, H, KEY, SEAT, fakeWorld, intentBody, leg, record, subjectClaim } from './support/binding-fixtures.js';
+import { ADDR, APPROVER, GRANT_HASH, H, KEY, SEAT, commitmentOfLeg, fakeWorld, intentBody, leg, record, subjectClaim } from './support/binding-fixtures.js';
 import { NOW_S, SIGNER, TX, approveFor, requestHashOf, rig, tmp } from './support/binding-rig.js';
 import { createHash } from 'node:crypto';
 import { LocalSigner } from '../src/signer/signer.js';
@@ -56,7 +56,6 @@ describe('adversarial attempts at the signer', () => {
   it('ADV-4 the request is mutated after the approval by one unit, one hex digit, or the asset', async () => {
     const tries: Array<[string, ReturnType<typeof intentBody>]> = [
       ['amount + 1', intentBody({ legs: [leg({ amount: '301' })] })],
-      ['one hex digit of the commitment', intentBody({ legs: [leg({ commitment: H('commit-1').slice(0, -1) + '0' })] })],
       ['the token', intentBody({ legs: [leg({ token: ADDR.other })] })],
       ['native instead of token', intentBody({ legs: [leg({ kind: 'native' })] })],
       ['a spender instead of a recipient', intentBody({ legs: [leg({ kind: 'erc20.approve' })] })],
@@ -66,6 +65,12 @@ describe('adversarial attempts at the signer', () => {
       expect((await r.handle()).lastError, name).toBe('binding: request_mismatch');
       expect(r.acc.submissions).toHaveLength(0);
     }
+    // one hex digit of the stated commitment: the signer recomputes the commitment over the execution it would sign, so the intent is
+    // refused before any decision is compared (presented_malformed, detail execution_commitment_mismatch), and nothing is signed
+    const bad = commitmentOfLeg(leg()).slice(0, -1) + '0';
+    const r = rig({ body: intentBody({ legs: [leg({ commitment: bad })] }), reply: approveFor(BASE) });
+    expect((await r.handle()).lastError).toBe('binding: presented_malformed');
+    expect(r.acc.submissions).toHaveLength(0);
   });
 
   it('ADV-5 time at the edges: valid from issuedAt, expired exactly at expiresAt, a window equal to the cap passes and one second more does not', async () => {

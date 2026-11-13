@@ -373,10 +373,35 @@ export interface PolicyRequest {
    */
   binding?: PolicyBinding;
   /**
+   * What actually executes (DAX-4S round 5, DAX7C-F1): the single call the leg runs, so a decision service can DECODE it instead of reading
+   * the signer's prose (sign what you see). A SIBLING of `binding`, never a member of it (the Console's parser refuses unknown members of
+   * `binding`). Present exactly when `binding` is present AND the intent has one leg that maps to the ten request members; omitted, never
+   * `null`, otherwise. The signer AUTHENTICATES it before sending: the core's single-call commitment recomputed over it equals
+   * `binding.executionCommitment`, else the intent is refused `presented_malformed` (execution_commitment_mismatch) and nothing is sent.
+   */
+  execution?: PolicyExecution;
+  /**
    * How long THIS DECISION REQUEST is valid (policy TTL, default 15 min) — NOT the tx's on-chain
    * deadline. The on-chain deadline is `header.expiresAt`.
    */
   expiresAt: string;              // ISO
+}
+
+/**
+ * The execution of ONE call, exactly as the core's decoder takes it (calldata.ts `DecodeExecution`): the members the single-call commitment
+ * keccak(chainid, target, value, keccak(calldata)) is computed over, plus the calling account.
+ */
+export interface PolicyExecution {
+  /** the same value as `binding.chainId` */
+  chainId: number;
+  /** the calling account, 0x + 40 lower-case hex (`binding.source`) */
+  source: string;
+  /** the called address, 0x + 40 lower-case hex (`binding.target` of the request hash) */
+  target: string;
+  /** the native value sent with the call, in wei, a decimal STRING */
+  value: string;
+  /** exactly the bytes the leg executes: `0x` and lower-case hex (`0x` alone for a native transfer) */
+  calldata: string;
 }
 
 /** The request of DECISION.md section 2, as the signer binds it (see `PolicyRequest.binding`). */

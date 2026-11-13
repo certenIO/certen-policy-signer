@@ -4,6 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { BindingWorld } from '../../src/binding/world.js';
+import { singleCommitment } from '../../src/core/calldata-keccak.js';
 
 export const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 export const H = (label: string): string => '0x' + sha(label);
@@ -27,6 +28,23 @@ export const APPROVER = KEY('officer-a');
 
 const hex = (o: unknown): string => Buffer.from(JSON.stringify(o), 'utf8').toString('hex');
 const word = (v: string): string => v.replace(/^0x/, '').padStart(64, '0');
+
+/**
+ * The genuine single-call execution commitment of an execution payload: keccak(chainid, target, value, keccak(calldata)) by the core's own
+ * function, or null when the payload has none. The signer recomputes it over the execution it sends (DAX-4S round 5), so a fixture leg
+ * states it truthfully unless a test sets `commitment` to lie.
+ */
+export function genuineCommitment(p: Record<string, unknown>): string | null {
+  const cd = p['callData'];
+  if (typeof cd !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(cd)) return null;
+  return singleCommitment(p['chainId'], p['target'], p['value'], new Uint8Array(Buffer.from(cd.slice(2), 'hex')));
+}
+/** the commitment a fixture leg states */
+export const commitmentOfLeg = (l: Record<string, unknown>): string => {
+  const c = genuineCommitment(l['executionPayload'] as Record<string, unknown>);
+  if (c === null) throw new Error('the leg has no commitment');
+  return c;
+};
 
 export interface LegOpts {
   kind?: 'native' | 'erc20.transfer' | 'erc20.approve' | 'erc20.transferFrom';
@@ -62,7 +80,7 @@ export function leg(o: LegOpts = {}): Record<string, unknown> {
   }
   return {
     legId: 'leg-1', chain: 'base-sepolia', chainId, from, to: target, amountWei: value, asset: { symbol: 'FICUSD' },
-    executionPayload: { target, value, callData, chainId, executionCommitment: o.commitment ?? H('commit-1'), ...(o.payloadOverride ?? {}) },
+    executionPayload: { target, value, callData, chainId, executionCommitment: o.commitment ?? genuineCommitment({ target, value, callData, chainId, ...(o.payloadOverride ?? {}) }) ?? H('commit-1'), ...(o.payloadOverride ?? {}) },
     ...(o.legOverride ?? {}),
   };
 }

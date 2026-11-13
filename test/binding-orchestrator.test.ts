@@ -110,7 +110,7 @@ describe('a decision for a mutated transaction is refused (DAX-4-A1)', () => {
     ['beneficiary', intentBody({ legs: [leg({ to: ADDR.vendorB })] })],
     ['source account', intentBody({ legs: [leg({ from: ADDR.other })] })],
     ['chain', intentBody({ legs: [leg({ chainId: 11155111 })] })],
-    ['execution commitment', intentBody({ legs: [leg({ commitment: H('commit-2') })] })],
+    // (the execution commitment cannot change alone: see binding-request.test.ts, a stated commitment that is not the one of the bytes is presented_malformed)
   ];
   for (const [name, mutated] of mutations) {
     it(`refuses when the ${name} changed after the decision`, async () => {
