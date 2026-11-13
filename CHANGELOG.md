@@ -34,12 +34,11 @@ Anything in that list appears here with a migration note before it ships in a re
   `PolicyRequest.binding` carries the ten members of the request to bind (a seat that requires binding only). `legCount` is derived from
   the legs and always supplied (a two-leg intent is `multi_leg_unsupported`). The request mapping refuses what the strict decoder refuses
   (checksum-case addresses, a missing 0x, a dirty address word). Pausing what is paused answers 200 `status: already_paused`.
-- **Reader settled on the real node (DAX-4S round 3).** A data entry has no timestamp on Accumulate v3: the reader now takes the entries of a
-  data account from its MAIN chain (the data-chain query collapses byte-identical entries onto the later transaction) and dates each by the
-  time of the minor block in `value.received` (one query per distinct block, remembered). `lastBlockTime` is no longer read as an entry time.
-  `GET /relay/keybook/:book` now answers `{ pages:[{ url, keyHashes, delegates, threshold }] }` (delegate seats included; the quorum roster of
-  the Console) and `GET /relay/chainlen/:account` answers `{ length }`. The shared core copy is at d9082fa (`block-time.ts`, `main-chain-entry.ts`).
-  Read-only precheck on Kermit: head v3 and subject resolved, 20 node queries cold, 4 steady state (`scripts/verify/reader-live-precheck.ts`).
+- **`binding` carries `legCount` and the intent's `grantRef` (DAX-4S round 4).** `PolicyRequest.binding` had the ten members of the request hash and
+  no `legCount`, and was sent for a one-leg transaction only, so a Console that requires `legCount` (DE-76) held every real request. It now
+  always carries `legCount`, is sent for a several-leg intent too (the decision service refuses it by name, `multi_leg_unsupported`) and
+  forwards blob 0 `grantRef` {grantId, version, grantHash} when the intent names a Grant. No `leafExpiry` is sent (no carrier on the wire).
+  A Console that copies `src/types.ts` must re-sync (`PolicyBinding.legCount`, `PolicyBinding.grantRef`).
 - **Reader settled on the real node (DAX-4S round 3).** A data entry has no timestamp on Accumulate v3: the reader now takes the entries of a
   data account from its MAIN chain (the data-chain query collapses byte-identical entries onto the later transaction) and dates each by the
   time of the minor block in `value.received` (one query per distinct block, remembered). `lastBlockTime` is no longer read as an entry time.

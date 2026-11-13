@@ -222,9 +222,11 @@ POST <policy.url>    content-type: application/json
     "path": ["acc://alice.acme/id/1", "acc://acme.acme/treasury/1"]  // the path the vote travels, first hop first
   },
   "attachmentKind": "vote",           // attachment_model: wrapper only — "wrapper_create" | "seat_attach" | "vote" (see below)
-  "binding": {                        // DAX-4S: only for a scope with a `binding` block, and only when the transaction is ONE action (below)
+  "binding": {                        // DAX-4S: only for a scope with a `binding` block, when the transaction can be read as an intent (below)
     "chainId": 84532, "kind": "erc20.transfer", "source": "0x…", "target": "0x…", "beneficiary": "0x…", "asset": "0x…", "amount": "1500000",
-    "executionCommitment": "0x…", "validatorOperationId": "0x…", "txHash": "0x…"
+    "executionCommitment": "0x…", "validatorOperationId": "0x…", "txHash": "0x…",
+    "legCount": 1,                    // the legs of the intent; always sent; above 1 the decision service refuses it by name (multi_leg_unsupported)
+    "grantRef": { "grantId": "…", "version": 1, "grantHash": "0x…" }   // only when blob 0 of the intent names a Grant (the producer's claim)
   },
   "display":       [["Principal", "acc://acme.acme/orders"], ["Body type", "writeData"], ["Payer", "acc://acme.acme"]],  // Phase 7: what a human is shown
   "summaryHash":   "77533e7e…",       // tcl-summary/v1 of `display` (lowercase hex); tx hash and vote are NOT inside
@@ -270,8 +272,12 @@ A scope configured with `binding` accepts a decision only when the reply carries
 section 3) that names the exact transaction, an approver identity the seat lists, this seat, the pinned policy hash (when set), the Grant
 head and an unused nonce. The request tells the decision service what the signer will bind: `binding` is the ten members of the core's
 request hash, with `validatorOperationId` the validator's operation id recomputed from the four blobs of the pending transaction (never the
-intent_id, never the blob-3 intent_hash). It is ABSENT for a legacy scope and for a transaction that is not ONE bindable action (several
-legs, an unsupported call): such a decision is refused by name (`multi_leg_unsupported`, `presented_malformed`). The reply keeps `decision`,
+intent_id, never the blob-3 intent_hash), plus `legCount` (always) and `grantRef` (only when blob 0 of the intent carries one; omitted,
+never `null`). It is ABSENT for a legacy scope and for a transaction the signer cannot read as an intent (an unsupported call, a malformed
+`grantRef`): such a decision is refused by name (`presented_malformed`). A SEVERAL-LEG intent carries its `binding` with `legCount` above 1
+so the decision service refuses it by name (`multi_leg_unsupported`) and so does the signer; neither side silently skips it. There is no
+`leafExpiry`: the on-chain leaf expiry is not a field of the pending transaction (the deployed account computes its leaf from its own
+parameters), so a decision service that wants it must supply it from another source. The reply keeps `decision`,
 `reason` and `evidence` as before and gains `record`; a scope without `binding` ignores the member.
 
 ### Display and summary hash (Phase 7)
