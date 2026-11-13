@@ -34,6 +34,18 @@ Anything in that list appears here with a migration note before it ships in a re
   `PolicyRequest.binding` carries the ten members of the request to bind (a seat that requires binding only). `legCount` is derived from
   the legs and always supplied (a two-leg intent is `multi_leg_unsupported`). The request mapping refuses what the strict decoder refuses
   (checksum-case addresses, a missing 0x, a dirty address word). Pausing what is paused answers 200 `status: already_paused`.
+- **Reader settled on the real node (DAX-4S round 3).** A data entry has no timestamp on Accumulate v3: the reader now takes the entries of a
+  data account from its MAIN chain (the data-chain query collapses byte-identical entries onto the later transaction) and dates each by the
+  time of the minor block in `value.received` (one query per distinct block, remembered). `lastBlockTime` is no longer read as an entry time.
+  `GET /relay/keybook/:book` now answers `{ pages:[{ url, keyHashes, delegates, threshold }] }` (delegate seats included; the quorum roster of
+  the Console) and `GET /relay/chainlen/:account` answers `{ length }`. The shared core copy is at d9082fa (`block-time.ts`, `main-chain-entry.ts`).
+  Read-only precheck on Kermit: head v3 and subject resolved, 20 node queries cold, 4 steady state (`scripts/verify/reader-live-precheck.ts`).
+- **Reader settled on the real node (DAX-4S round 3).** A data entry has no timestamp on Accumulate v3: the reader now takes the entries of a
+  data account from its MAIN chain (the data-chain query collapses byte-identical entries onto the later transaction) and dates each by the
+  time of the minor block in `value.received` (one query per distinct block, remembered). `lastBlockTime` is no longer read as an entry time.
+  `GET /relay/keybook/:book` now answers `{ pages:[{ url, keyHashes, delegates, threshold }] }` (delegate seats included; the quorum roster of
+  the Console) and `GET /relay/chainlen/:account` answers `{ length }`. The shared core copy is at d9082fa (`block-time.ts`, `main-chain-entry.ts`).
+  Read-only precheck on Kermit: head v3 and subject resolved, 20 node queries cold, 4 steady state (`scripts/verify/reader-live-precheck.ts`).
 - **Decision binding (DAX-4S).** `binding` (top level or per scope) makes the signer accept a decision only when its certen.decision/v1
   `record` names the exact transaction about to be signed (the request hash is recomputed from the transaction, with the validator
   operation id recomputed from its four blobs), an authorised approver identity, this seat, the pinned policy hash, the head of the

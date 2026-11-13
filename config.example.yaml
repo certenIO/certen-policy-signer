@@ -326,7 +326,7 @@ admin:
   # Console decision service, sent as x-relay-client + x-api-key. Each key is its own secret (>= 16 chars,
   # not the admin, governance or relay token). Scopes: proof, tx, pending, governance (governance also
   # needs x-governance-key and only ever touches pages this signer holds).
-  # relay_clients:   # scope `chain` serves GET /relay/data|authorities|history|keybook/:account (read-only, v3 only, through the reader cache)
+  # relay_clients:   # scope `chain` serves GET /relay/data|authorities|history|keybook|chainlen/:account (read-only, v3 only, through the reader cache)
   #   - { name: "compliance-decision", key: "env:SIGNER_RELAY_KEY_COMPLIANCE", scopes: [proof, tx, pending] }
 
 # Officer intake (Phase 7; docs/OPERATIONS.md "Officer intake"). Personal signatures made on a person's own
