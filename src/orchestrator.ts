@@ -281,7 +281,7 @@ export class Orchestrator {
    */
   private async refuseBinding(tx: ResolvedTx, key: string, out: Extract<BindingOutcome, { ok: false }>, verb: string, seat: string): Promise<SigningRequest> {
     const reason = `binding: ${out.reason}`;
-    this.d.logger.warn({ tx: tx.txHash, key, reason: out.reason, detail: out.detail, decision: verb }, 'decision refused by the binding check; signing nothing');
+    this.d.logger.warn({ tx: tx.txHash, key, reason: out.reason, detail: out.detail, cause: out.cause, decision: verb }, 'decision refused by the binding check; signing nothing');
     // DE-97: the refusal receipt, the `binding.refused` entry of the journal: the request the signer built, the seat, the reason and, where they could be
     // read, the nonce of the refused decision and the transaction. A different decision (another nonce) refused for the same reason is a new receipt.
     const receipt = refusalReceiptOf({ requestHash: out.requestHash, seat, reason: out.reason, nonce: out.nonce, txHash: out.txHash });
@@ -291,7 +291,7 @@ export class Orchestrator {
     const latest = await this.d.store.getReceipt(key);
     const le = latest?.policyEvidence;
     const lr = le?.['refusalReceipt'] as { nonce?: string } | undefined;
-    const same = le?.['blockedBy'] === 'decision_binding' && le['reason'] === out.reason && (le['detail'] ?? null) === (out.detail ?? null) && (lr?.nonce ?? '') === (receipt.nonce ?? '');
+    const same = le?.['blockedBy'] === 'decision_binding' && le['reason'] === out.reason && (le['detail'] ?? null) === (out.detail ?? null) && (le['cause'] ?? null) === (out.cause ?? null) && (lr?.nonce ?? '') === (receipt.nonce ?? '');
     if (!same) {
       try {
         await this.d.binding!.refusals.record(receipt);
@@ -303,7 +303,7 @@ export class Orchestrator {
       await this.saveReceipt({
         ...this.receiptKey(tx), operationId: tx.operationId, reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
-        policyEvidence: { blockedBy: 'decision_binding', reason: out.reason, ...(out.detail !== undefined ? { detail: out.detail } : {}), refusalReceipt: receipt, refusalJournal: journalled },
+        policyEvidence: { blockedBy: 'decision_binding', reason: out.reason, ...(out.detail !== undefined ? { detail: out.detail } : {}), ...(out.cause !== undefined ? { cause: out.cause } : {}), refusalReceipt: receipt, refusalJournal: journalled },
       });
     }
     return this.d.store.update(key, { status: 'awaiting_policy', lastError: reason });

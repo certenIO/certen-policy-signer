@@ -270,7 +270,7 @@ curl -H "x-api-key: $ADMIN_API_KEY" localhost:8080/v1/admin/pause    # who pause
 
 A seat that requires binding decides nothing until its policy is PINNED. `binding.policy_hash` is the rule-set hash the seat loads at boot; the pin step pins exactly that hash.
 Until it has, every decision is refused `policy_pin_missing` (a deny that would be a reject vote included); after the hash in the config changes the seat is `pin_stale` and
-refuses `policy_hash_mismatch` (detail `pin_stale`) until the step is repeated.
+refuses `policy_hash_mismatch` (cause `pin_stale`) until the step is repeated.
 
 ```
 curl -H "x-api-key: $ADMIN_API_KEY" localhost:8080/v1/admin/pin      # every seat: the hash it loaded, its pin, its phase (pin_pending, pinned, pin_stale)

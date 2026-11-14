@@ -32,7 +32,7 @@ export interface PinSeat {
   loadedHash: string;
 }
 
-export type PinGateResult = { ok: true; pin: string } | { ok: false; reason: 'policy_pin_missing' | 'policy_not_loaded' | 'policy_hash_mismatch'; detail?: string };
+export type PinGateResult = { ok: true; pin: string } | { ok: false; reason: 'policy_pin_missing' | 'policy_not_loaded' | 'policy_hash_mismatch'; cause?: string };
 /** what the binding check asks before it reads anything of a decision */
 export interface PinGate {
   gate(seat: string): PinGateResult;
@@ -89,7 +89,7 @@ export class PinStore implements PinControl {
     if (s === undefined) return { ok: false, reason: 'policy_pin_missing' };
     if (s.pin === null) return { ok: false, reason: 'policy_pin_missing' };
     if (s.loaded === null) return { ok: false, reason: 'policy_not_loaded' };
-    if (s.pin !== s.loaded) return { ok: false, reason: 'policy_hash_mismatch', detail: 'pin_stale' };
+    if (s.pin !== s.loaded) return { ok: false, reason: 'policy_hash_mismatch', cause: 'pin_stale' };
     return { ok: true, pin: s.pin };
   }
 

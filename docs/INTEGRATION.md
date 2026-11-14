@@ -360,7 +360,8 @@ amounts are fine". The signer's own value ceiling refuses to sign in this case; 
 unless you have another way to bound what you cannot see. A well-formed payload never sets it.
 
 **Token amounts are in `values` too.** A leg's `amountWei` is the *native* value forwarded with a call.
-When the leg's calldata is an ERC-20 `transfer`, `transferFrom` or `approve`, the token amount (in the
+When the leg's calldata is an ERC-20 `transfer` or `approve` in the strict form the binding itself accepts (lower-case `0x` hex, a clean
+address pad, no trailing bytes; `transferFrom` is not read), the token amount (in the
 token's base units) is added to `values` and the call is spelled out in `calldataDecoded`. Before this,
 a contract call moving a million USDC reached the engine as a zero-value leg. A leg whose calldata is
 something else entirely — an escrow `confirm`, a governance call — keeps its native value in `values`

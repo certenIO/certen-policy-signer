@@ -4,7 +4,7 @@
  *
  * What it does, in order:
  *   0. the PIN GATE (DE-93): a seat whose policy pin is missing, or stale (its loaded rule-set hash is not its pin), decides nothing: the refusal
- *      (`policy_pin_missing`, `policy_hash_mismatch` with detail `pin_stale`) comes before anything of the decision is read, a deny included;
+ *      (`policy_pin_missing`, `policy_hash_mismatch` with cause `pin_stale`, the core name) comes before anything of the decision is read, a deny included;
  *   1. builds the request FROM THE TRANSACTION (src/binding/request.ts): a transaction that cannot be bound is refused
  *      `presented_malformed` with the reason in `detail`;
  *   2. reads the reply's `record` member: an absent record (a legacy reply) on a seat that requires binding is
@@ -84,9 +84,9 @@ export interface BoundDecision {
  * the request could not be read as ONE request), the nonce of the decision it refused (the empty string when none could be read) and the transaction.
  */
 export interface RefusalFacts { requestHash: string; nonce: string; txHash: string }
-export type BindingOutcome = BoundDecision | ({ ok: false; reason: string; detail?: string } & RefusalFacts);
+export type BindingOutcome = BoundDecision | ({ ok: false; reason: string; detail?: string; cause?: string } & RefusalFacts);
 
-const refuse = (facts: RefusalFacts, reason: string, detail?: string): BindingOutcome => (detail === undefined ? { ok: false, reason, ...facts } : { ok: false, reason, detail, ...facts });
+const refuse = (facts: RefusalFacts, reason: string, detail?: string, cause?: string): BindingOutcome => ({ ok: false, reason, ...(detail === undefined ? {} : { detail }), ...(cause === undefined ? {} : { cause }), ...facts });
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 export async function verifyBinding(a: {
@@ -116,7 +116,7 @@ export async function verifyBinding(a: {
 
   // 0. the pin gate (DE-93): before anything of the step is read
   const pin = runtime.pins.gate(rules.seat);
-  if (!pin.ok) return refuse(rfacts, pin.reason, pin.detail);
+  if (!pin.ok) return refuse(rfacts, pin.reason, undefined, pin.cause);
   if (!built.ok) return refuse(rfacts, built.reason ?? 'presented_malformed', built.detail);
   const { request, grantRef, grantRefHash, assertedSubject } = built.value;
   // DE-76: a legCount other than 1 is refused by the core (multi_leg_unsupported) after the presented transaction is read, so a
