@@ -7,7 +7,10 @@
  * beneficiary, asset, amount, executionCommitment, operationId, txHash) and the execution it commits to (chainId, source,
  * target, value, calldata). The request's decoded members are not trusted: the execution is decoded, the request must agree
  * with the execution (chain, source, target, and the single-call commitment recomputed from the raw calldata) and with what the
- * decoder says (kind, beneficiary, asset, amount). The module only recomputes the single-call commitment of
+ * decoder says (kind, beneficiary, asset, amount). A call the decoder cannot describe has NO typed kind (strict matching, DE-91,
+ * finding DAX7A-F2): its request must be of kind raw with the mapping of DE-90 (beneficiary = target, asset = native, amount =
+ * the native value), every one of which is verified here; a typed kind claimed for it is request_decode_mismatch{kind}, never a
+ * RAW screen over a claim nobody checked. The module only recomputes the single-call commitment of
  * CertenAccountV7.computeSingleCommitment; a request carrying a multi-leg batch commitment is refused as
  * request_execution_mismatch{executionCommitment}.
  *
@@ -66,8 +69,6 @@ export const BOUND_REQUEST_MEMBERS = ['chainId', 'kind', 'source', 'target', 'be
 
 const DECODED_MEMBERS = ['mode', 'kind', 'chainId', 'source', 'beneficiary', 'asset', 'assetSymbol', 'amountBase', 'amountText'] as const;
 const RAW_MEMBERS = ['mode', 'chainId', 'source', 'target', 'value', 'calldataHash', 'text'] as const;
-/** request members a raw approval cannot verify: they are the producer's claims about calldata nobody decoded */
-const RAW_UNVERIFIED = ['kind', 'beneficiary', 'asset', 'amount'];
 
 function refuse(reason: string, member?: string, detail?: string): DisplayRefusal {
   const out: DisplayRefusal = { ok: false, reason };
@@ -114,8 +115,13 @@ function expectedInner(bound: unknown, registry: unknown, policy: unknown): Expe
   if (request['executionCommitment'] !== singleCommitment(chainId, target, value, bytes.bytes)) return refuse('request_execution_mismatch', 'executionCommitment');
 
   if (d.status === 'undecoded') {
+    // DE-91, DE-90: a call that no typed kind describes is bound as raw (or not bound at all); the three mapped members are verified against the authenticated execution
+    if (request['kind'] !== 'raw') return refuse('request_decode_mismatch', 'kind');
+    if (request['beneficiary'] !== target) return refuse('request_decode_mismatch', 'beneficiary');
+    if (request['asset'] !== 'native') return refuse('request_decode_mismatch', 'asset');
+    if (request['amount'] !== value) return refuse('request_decode_mismatch', 'amount');
     const raw: RawDisplaySet = { mode: 'raw', chainId, source, target, value, calldataHash: d.calldataHash!, text: d.text! };
-    return { ok: true, mode: 'raw', expected: raw, unverified: [...RAW_UNVERIFIED] };
+    return { ok: true, mode: 'raw', expected: raw, unverified: [] };
   }
 
   // the request against what the decoder says the bytes mean

@@ -33,8 +33,10 @@ export interface CheckActionInput {
   now: unknown;
   /** usage of the CURRENT window computed by the ledger: decimal cumulative amount and a count */
   usage: unknown;
-  /** an accepted exception lifts the per-transaction limit and nothing else */
+  /** an accepted exception that lifts `perTransaction` lifts the per-transaction limit and nothing else */
   liftPerTransaction?: unknown;
+  /** an approved single-use exception that lifts `rawEffect` covers this raw action (GR-85); it lifts the unknown-effect refusal and nothing else, and it does nothing for a typed action */
+  rawException?: unknown;
 }
 
 export type CheckActionResult =
@@ -64,6 +66,8 @@ function readAction(v: unknown): Action | null {
   if (typeof beneficiary !== 'string' || !ADDRESS_RE.test(beneficiary)) return null;
   if (typeof asset !== 'string' || !(asset === 'native' || ADDRESS_RE.test(asset))) return null;
   if (!isAmount(amount)) return null;
+  // a raw action maps asset to native (GRANT.md section 6a, DE-90): any other asset is not a raw action
+  if (kind === 'raw' && asset !== 'native') return null;
   return { kind, chainId, source, beneficiary, asset, amount };
 }
 
@@ -126,8 +130,8 @@ function holds(c: Condition, a: Action, now: number): boolean {
 /**
  * Is this action inside the current Grant? The refusals are evaluated in the order of GRANT.md section 6 so that two
  * implementations name the same reason: malformed Grant, malformed action, malformed time or usage, subject
- * (unproven, then mismatch), validity, scope (action, source, beneficiary, asset), per-transaction, cumulative, count,
- * conditions; otherwise a permit with the first tier whose ceiling covers the amount and that tier's required books.
+ * (unproven, then mismatch), validity, scope (action, source, beneficiary, asset), raw_requires_exception (an action of kind raw
+ * that no approved exception lifting rawEffect covers, GR-85), per-transaction, cumulative, count, conditions; otherwise a permit with the first tier whose ceiling covers the amount and that tier's required books.
  */
 export function checkAction(input: CheckActionInput): CheckActionResult {
   const g = validateGrant(input.grant);
@@ -140,6 +144,7 @@ export function checkAction(input: CheckActionInput): CheckActionResult {
   const usage = readUsage(input.usage);
   if (usage === null) return denied('check_input_malformed', 'usage');
   if (input.liftPerTransaction !== undefined && typeof input.liftPerTransaction !== 'boolean') return denied('check_input_malformed', 'liftPerTransaction');
+  if (input.rawException !== undefined && typeof input.rawException !== 'boolean') return denied('check_input_malformed', 'rawException');
 
   const s = input.subject;
   if (!isPlainObject(s) || Object.keys(s).length !== 2 || typeof s['adi'] !== 'string' || typeof s['type'] !== 'string' || !(SUBJECT_TYPES as readonly string[]).includes(s['type'])) return denied('subject_unproven');
@@ -154,6 +159,9 @@ export function checkAction(input: CheckActionInput): CheckActionResult {
   if (!grant.scope.accounts.some((x) => x.chainId === action.chainId && x.address === action.source)) return denied('source_not_in_scope');
   if (!grant.scope.beneficiaries.some((x) => x.chainId === action.chainId && x.address === action.beneficiary)) return denied('beneficiary_not_in_scope');
   if (!grant.scope.assets.some((x) => x.chainId === action.chainId && x.token === action.asset)) return denied('asset_not_in_scope');
+
+  // GR-85: a raw call's token effect is unknown to every layer, so it needs an approved single-use exception that lifts rawEffect; judged after scope and before the limits; a typed action is never affected
+  if (action.kind === 'raw' && input.rawException !== true) return denied('raw_requires_exception');
 
   const limit = grant.limits.find((l) => l.asset.chainId === action.chainId && l.asset.token === action.asset);
   if (limit === undefined) return denied('asset_not_in_scope');
@@ -222,6 +230,8 @@ export function evaluateLineage(input: { entries: unknown; now: unknown }): Line
     if (g.version !== i + 1) return lineageDenied('lineage_version_gap', 'entry ' + i + ' has version ' + g.version);
     if (i > 0) {
       const p = grants[i - 1]!;
+      // GR-64 step 7: every version of one lineage carries the grantId of version 1, before the prior hash is looked at
+      if (g.grantId !== first.grantId) return lineageDenied('lineage_grantid_mixed', 'version ' + g.version);
       if (g.priorHash !== prevHash) return lineageDenied('lineage_prior_mismatch', 'version ' + g.version);
       if (g.subject.adi !== first.subject.adi || g.subject.type !== first.subject.type) return lineageDenied('lineage_subject_changed', 'version ' + g.version);
       if (g.grantor.adi !== first.grantor.adi || g.grantor.keyBook !== first.grantor.keyBook) return lineageDenied('lineage_grantor_changed', 'version ' + g.version);

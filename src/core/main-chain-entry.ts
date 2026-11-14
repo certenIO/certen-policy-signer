@@ -8,7 +8,8 @@
  * entries in chain order.
  *
  * Pure: no clock, no I/O. A record that cannot be read exactly is reported as malformed so that the reader treats the whole account as
- * unreadable; it is never skipped and never turned into an empty entry.
+ * unreadable; it is never skipped and never turned into an empty entry. A WriteData that is not delivered (`value.status`) is malformed too
+ * (entry_not_delivered): the signer, the Console and chain-check all refuse it through this one function (DAX4S-F26).
  */
 import { fromHex } from './bytes.js';
 
@@ -27,6 +28,8 @@ export function mainChainEntryOf(record: unknown): MainChainEntry {
   const body = obj(obj(message['transaction'])?.['body']);
   if (body === null || typeof body['type'] !== 'string') return { kind: 'malformed', reason: 'transaction_body_missing' };
   if (body['type'] !== 'writeData') return { kind: 'other', type: body['type'] };
+  // GR-67: a WriteData whose delivery status is not exactly 'delivered' is not an entry; it makes the account unreadable (never a shorter list)
+  if (value['status'] !== 'delivered') return { kind: 'malformed', reason: 'entry_not_delivered' };
   const txId = value['id'];
   if (typeof txId !== 'string' || !txId.startsWith('acc://')) return { kind: 'malformed', reason: 'transaction_id_missing' };
   const data = obj(body['entry'])?.['data'];

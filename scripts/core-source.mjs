@@ -10,7 +10,7 @@
  *
  * Nothing else names the commit: scripts/sync-core.mjs and test/core-drift.test.ts both import this file.
  */
-export const CORE_SOURCE_COMMIT = '4ff146c1a985dab7c7d162e35e9006639ede2086';
+export const CORE_SOURCE_COMMIT = 'cef78ccc8a4e8fb63b3339d78bd7be5ead384228';
 /** the directory of the canonical files inside transaction-controls */
 export const CORE_SOURCE_DIR = 'packages/core/src';
 /** the folder of the copies, relative to the signer repository root */
@@ -46,4 +46,11 @@ export const CORE_FILES = [
   'calldata-registry.ts',
   'calldata.ts',
   'calldata-display.ts',
+  // DAX-4S round 6: the leaf expiry bound (leaf-expiry), the raw kind and its strict mapping (raw-approval, with the one wire parser it
+  // imports, decision-wire), the policy pin step machine (policy-pin) and the refusal receipt (refusal-receipt)
+  'leaf-expiry.ts',
+  'decision-wire.ts',
+  'raw-approval.ts',
+  'policy-pin.ts',
+  'refusal-receipt.ts',
 ];

@@ -6,7 +6,8 @@ import { CoreError, ADDRESS_RE, HASH_RE, MAX_UINT256, isAmount, isPlainObject, u
 import { canonicalize, parseJson } from './jcs.js';
 
 export const GRANT_SCHEMA = 'certen.grant/v1';
-export const ACTION_KINDS = ['erc20.transfer', 'erc20.approve', 'native.transfer'] as const;
+/** the closed action set (GR-84): three typed kinds and `raw`, the kind of a single call that no typed kind describes (GRANT.md section 6a); a decoder never answers raw */
+export const ACTION_KINDS = ['erc20.transfer', 'erc20.approve', 'native.transfer', 'raw'] as const;
 export type ActionKind = (typeof ACTION_KINDS)[number];
 export const SUBJECT_TYPES = ['agent', 'merchant', 'client'] as const;
 export type SubjectType = (typeof SUBJECT_TYPES)[number];
@@ -205,6 +206,8 @@ function validate(v: unknown): void {
   const scope = obj(g['scope'], '$.scope', ['actions', 'accounts', 'beneficiaries', 'assets']);
   const actions = arr(scope['actions'], '$.scope.actions', ACTION_KINDS.length);
   for (const a of actions) if (typeof a !== 'string' || !(ACTION_KINDS as readonly string[]).includes(a)) fail('grant_field_invalid', '$.scope.actions');
+  // GR-84: each kind at most once
+  if (new Set(actions).size !== actions.length) fail('grant_field_invalid', '$.scope.actions');
   arr(scope['accounts'], '$.scope.accounts', LIMITS.scopeEntries).forEach((a, i) => chainAddress(a, '$.scope.accounts[' + i + ']'));
   arr(scope['beneficiaries'], '$.scope.beneficiaries', LIMITS.scopeEntries).forEach((a, i) => chainAddress(a, '$.scope.beneficiaries[' + i + ']'));
   const assets = arr(scope['assets'], '$.scope.assets', LIMITS.scopeEntries, 1).map((a, i) => assetRef(a, '$.scope.assets[' + i + ']'));

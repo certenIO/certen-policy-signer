@@ -69,7 +69,8 @@ export function createChainWorld(o: ChainWorldOptions): BindingWorld {
       if (asserted === null) return done(head);
 
       const res = await readSubjectRegistry(reader, { grant: g.grant, asserted, expectType: g.grant.subject.type });
-      if (!res.ok) return done(head, { ok: false, detail: `${res.state}:${why(res)}` });
+      // an unproven subject names its state; an input the resolver refused (`resolve_input_malformed`, DAX-2 round 6) has none and names the reason
+      if (!res.ok) return done(head, { ok: false, detail: 'state' in res ? `${res.state}:${why(res)}` : why(res) });
       return done(head, { ok: true, value: { adi: res.subject.adi, type: res.subject.type as 'agent' | 'merchant' | 'client' } });
     },
   };

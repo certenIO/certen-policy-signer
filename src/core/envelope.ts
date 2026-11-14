@@ -292,7 +292,7 @@ const TOO_LARGE = ['grant_too_large', 'registration_too_large', 'envelope_too_la
  * entry_not_canonical (element 0, then 1), payload_tag_mismatch, grant_hash_mismatch or registration_hash_mismatch.
  * An element beyond its size limit is refused by the name of its limit (grant_too_large, ...).
  */
-export function decodeEntry(input: { account: unknown; elements: unknown }): DecodedEntry {
+export function decodeEntry(input: { account: unknown; elements: unknown; /** the ONLINE reader reads certen.subject/v2 only (GR-89): a v1 record is entry_undecodable, judged before the envelope is read */ v2Only?: boolean }): DecodedEntry {
   const account = input.account;
   if (account !== 'grants' && account !== 'subjects') return refuseEntry('entry_account_invalid');
   const els = input.elements;
@@ -318,6 +318,7 @@ export function decodeEntry(input: { account: unknown; elements: unknown }): Dec
     const p = parseRegistrationTextUnhashed(text0);
     if (!p.ok) return TOO_LARGE.includes(p.reason) ? refuseEntry(p.reason, 0) : refuseEntry('entry_undecodable', 0, p.reason);
     if (p.canonical !== text0) return refuseEntry('entry_not_canonical', 0);
+    if (input.v2Only === true && p.registration.schema !== 'certen.subject/v2') return refuseEntry('entry_undecodable', 0, 'registration_schema_v1');
     registration = p.registration;
   }
   const e = parseEnvelopeText(text1);
