@@ -32,6 +32,7 @@
 import { DecodeContext, DecodedAction, SummaryDecoder, TxBody } from '../types.js';
 import type { IntentGrant, LegAsset, LegCall } from '../../types.js';
 import { AbiFunction, decodeCalldata } from '../abi.js';
+import { readCalldata } from '../../core/calldata.js';
 
 /**
  * A contract pinned by (chainId, address) to an ABI. Phase 6.1 (`decoders.evm_abi[]`). Only a pinned
@@ -107,8 +108,8 @@ export function decodeCertenIntent(body: { [k: string]: unknown }): CertenIntent
  * that moves tokens — `transfer(to, 1_000_000 USDC)` on the token contract — forwards no native value,
  * so its `amountWei` is "0" and, before this decoder read calldata, the policy engine saw a zero-value
  * leg and any ceiling passed it. Native value was regulated; token value was not. Verified in code on
- * 2026-09-03 and fixed here: the three ERC-20 selectors that move or authorise value are decoded by
- * hand (selector + 32-byte words — no ABI library needed) and their amounts join `values`.
+ * 2026-09-03 and fixed here: the ERC-20 selectors the strict core decoder reads (transfer, approve) are decoded (see decodeErc20Calldata) and
+ * their amounts join `values`.
  *
  * A leg whose calldata is present but NOT one of these is an arbitrary contract call. Its native value is
  * still in `values`; whatever the call does internally is not something this signer can price. That is
@@ -117,12 +118,6 @@ export function decodeCertenIntent(body: { [k: string]: unknown }): CertenIntent
  * `confirm`) that carries no value and moves no tokens — and those are exactly what this signer exists
  * to approve. An engine that wants to refuse opaque calls can read the count and do so.
  */
-const ERC20_SELECTORS: Record<string, { name: string; params: string[]; amountIndex: number }> = {
-  a9059cbb: { name: 'transfer', params: ['to', 'amount'], amountIndex: 1 },
-  '23b872dd': { name: 'transferFrom', params: ['from', 'to', 'amount'], amountIndex: 2 },
-  '095ea7b3': { name: 'approve', params: ['spender', 'amount'], amountIndex: 1 },
-};
-
 export interface DecodedErc20Call {
   fn: string;
   args: Record<string, string>;
@@ -131,25 +126,23 @@ export interface DecodedErc20Call {
   text: string;
 }
 
-/** Decode `transfer`, `transferFrom` or `approve` calldata, or `undefined` for anything else. */
+/**
+ * Decode `transfer` or `approve` calldata, or `undefined` for anything else.
+ *
+ * ONE DECODER, ONE MEANING (DAX-W7, OQ-R6-2). This reader tells the policy engine what a call is, and the binding (what a signature
+ * commits to) maps the same call through the strict core decoder. The two used to disagree: this reader accepted upper-case hex, a
+ * dirty address pad, a missing 0x prefix and `transferFrom`, which the mapping refuses, so the engine could be told something the
+ * binding would never sign. It now reads through the core's `readCalldata` and so refuses exactly what the core refuses: an
+ * unknown selector (`transferFrom` included), a dirty pad, trailing bytes, upper case, no prefix. A call it does not read is an
+ * opaque call (counted in `opaqueCallLegs`); it is never described as if it were understood.
+ */
 export function decodeErc20Calldata(callData: unknown): DecodedErc20Call | undefined {
-  if (typeof callData !== 'string') return undefined;
-  const hex = (callData.startsWith('0x') ? callData.slice(2) : callData).toLowerCase();
-  if (hex.length < 8 || !/^[0-9a-f]*$/.test(hex)) return undefined;
-  const spec = ERC20_SELECTORS[hex.slice(0, 8)];
-  if (!spec) return undefined;
-  const body = hex.slice(8);
-  // Exactly one 32-byte word per parameter. Trailing bytes would mean calldata this decoder does not
-  // understand, and a wrong guess here is worse than declining.
-  if (body.length !== spec.params.length * 64) return undefined;
-  const args: Record<string, string> = {};
-  spec.params.forEach((name, i) => {
-    const word = body.slice(i * 64, i * 64 + 64);
-    args[name] = name === 'amount' ? BigInt('0x' + word).toString() : '0x' + word.slice(24);
-  });
-  const amount = args[spec.params[spec.amountIndex]];
-  const text = `${spec.name}(${spec.params.map((p) => `${p} = ${args[p]}`).join(', ')})`;
-  return { fn: spec.name, args, amount, text };
+  const r = readCalldata(callData);
+  if (!r.ok || r.shape !== 'erc20') return undefined;
+  const fn = r.kind === 'erc20.transfer' ? 'transfer' : 'approve';
+  const who = r.kind === 'erc20.transfer' ? 'to' : 'spender';
+  const args: Record<string, string> = { [who]: r.address, amount: r.amount };
+  return { fn, args, amount: r.amount, text: `${fn}(${who} = ${r.address}, amount = ${r.amount})` };
 }
 
 /** Is there calldata on this leg at all? "0x" and "" are a native transfer. */

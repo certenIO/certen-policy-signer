@@ -77,11 +77,11 @@ describe('the pin is persisted: a restart keeps it, a changed rule set leaves th
     expect(b.pins.snapshot()[0]).toMatchObject({ pin: P1, loaded: P1, phase: 'pinned' });
   });
 
-  it('a seat whose loaded hash differs from its pin is pin_stale: policy_hash_mismatch with detail pin_stale, then pins again and names the previous pin', async () => {
+  it('a seat whose loaded hash differs from its pin is pin_stale: policy_hash_mismatch with cause pin_stale (the core name), then pins again and names the previous pin', async () => {
     const dir = tmp();
     await mk(dir, P1).pins.pin({ seat: SEAT, hash: P1, by: BY, reason: WHY });
     const { journal, pins } = mk(dir, P2); // the rule set changed: the seat loads P2
-    expect(pins.gate(SEAT)).toEqual({ ok: false, reason: 'policy_hash_mismatch', detail: 'pin_stale' });
+    expect(pins.gate(SEAT)).toEqual({ ok: false, reason: 'policy_hash_mismatch', cause: 'pin_stale' });
     expect(pins.snapshot()[0]).toMatchObject({ pin: P1, loaded: P2, phase: 'pin_stale' });
     // it cannot be pinned to the OLD hash (the step pins what the seat loaded)
     expect(await pins.pin({ seat: SEAT, hash: P1, by: BY, reason: WHY })).toMatchObject({ ok: false, reason: 'pin_hash_not_loaded' });
@@ -137,7 +137,7 @@ describe('the gate comes before anything of the step is read (DE-93): through th
     expect(out.lastError).toBe('binding: policy_hash_mismatch');
     const refused = r.journal.entries().filter((e) => e.kind === 'binding.refused');
     expect(refused).toHaveLength(1);
-    expect((await r.store.getReceipt(r.tx))?.policyEvidence).toMatchObject({ blockedBy: 'decision_binding', reason: 'policy_hash_mismatch', detail: 'pin_stale' });
+    expect((await r.store.getReceipt(r.tx))?.policyEvidence).toMatchObject({ blockedBy: 'decision_binding', reason: 'policy_hash_mismatch', cause: 'pin_stale' });
     expect(r.nonces.list()).toEqual([]);
   });
 

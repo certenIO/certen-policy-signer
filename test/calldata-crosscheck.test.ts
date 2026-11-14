@@ -78,8 +78,9 @@ function judge(g: Golden): { mapping: Verdict; reader: Verdict; note: string } {
  * SCOPE: u01, u02, u03 (`token_unknown`: the signer binds raw units and addresses and has no registry).
  * INPUT SHAPE: u25 (a display policy the signer has no use for) and u27 (an extra member in the execution input: an intent leg
  * legitimately carries many members).
- * READER (the calldata DESCRIPTION shown to a policy engine, `decodeErc20Calldata`, not changed): UNSAFE-SIDE u08, u31 (dirty padding
- * read as the low 20 bytes), u11 (no prefix), u15 and u19 (it decodes transferFrom, which the strict lane leaves undecoded).
+ * READER (the calldata DESCRIPTION shown to a policy engine, `decodeErc20Calldata`): RAISED in DAX-W7 (OQ-R6-2) to read through the SAME strict core decode
+ * (`readCalldata`), so g15 (upper case), u08 and u31 (dirty padding), u11 (no prefix), u15 and u19 (transferFrom) are no longer read: the reader
+ * agrees with the strict decoder on all of them and no reader disagreement remains except the safe-side wrapper cases g17 and g18.
  */
 const KNOWN: Record<string, { mapping: Verdict; reader: Verdict }> = {
   g17: { mapping: 'safe_side', reader: 'safe_side' },
@@ -87,12 +88,6 @@ const KNOWN: Record<string, { mapping: Verdict; reader: Verdict }> = {
   u01: { mapping: 'scope', reader: 'scope' },
   u02: { mapping: 'scope', reader: 'scope' },
   u03: { mapping: 'scope', reader: 'agree' },
-  g15: { mapping: 'agree', reader: 'unsafe_side' },
-  u08: { mapping: 'agree', reader: 'unsafe_side' },
-  u31: { mapping: 'agree', reader: 'unsafe_side' },
-  u11: { mapping: 'agree', reader: 'unsafe_side' },
-  u15: { mapping: 'agree', reader: 'unsafe_side' },
-  u19: { mapping: 'agree', reader: 'unsafe_side' },
   u25: { mapping: 'input_shape', reader: 'agree' },
   u27: { mapping: 'input_shape', reader: 'agree' },
 };

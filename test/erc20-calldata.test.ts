@@ -33,10 +33,22 @@ function body(legs: Array<Record<string, unknown>>) {
 const leg = (o: Record<string, unknown>) => ({ legId: 'l0', chain: 'ethereum-sepolia', asset: { symbol: 'ETH', decimals: 18 }, to: TO, ...o });
 
 describe('decodeErc20Calldata', () => {
-  it('decodes transfer, transferFrom and approve', () => {
+  it('decodes transfer and approve', () => {
     expect(decodeErc20Calldata(transferCalldata(1_000_000n))).toMatchObject({ fn: 'transfer', amount: '1000000', args: { to: TO.toLowerCase() } });
-    expect(decodeErc20Calldata(transferFromCalldata(5n))).toMatchObject({ fn: 'transferFrom', amount: '5' });
     expect(decodeErc20Calldata(approveCalldata(2n ** 255n))).toMatchObject({ fn: 'approve', amount: (2n ** 255n).toString() });
+  });
+  // DAX-W7 (OQ-R6-2): one decoder, one meaning. The reader tells the policy engine what a call is, and the binding maps the same call
+  // through the strict core decoder; so the reader refuses exactly what the core refuses (it used to read all of these).
+  it('refuses what the strict core decoder refuses: transferFrom, upper-case hex, no 0x prefix, a dirty address pad, trailing bytes', () => {
+    const t = transferCalldata(5n);
+    expect(decodeErc20Calldata(transferFromCalldata(5n))).toBeUndefined(); // an unknown selector for the strict decoder
+    expect(decodeErc20Calldata('0x' + t.slice(2).toUpperCase())).toBeUndefined(); // upper case in any position (calldata_hex_invalid)
+    expect(decodeErc20Calldata('0xa9059cbb' + addr(TO).slice(0, -1) + 'F' + word(5n))).toBeUndefined(); // one upper-case digit
+    expect(decodeErc20Calldata(t.slice(2))).toBeUndefined(); // no prefix (calldata_prefix_invalid)
+    expect(decodeErc20Calldata('0X' + t.slice(2))).toBeUndefined(); // an upper-case X
+    expect(decodeErc20Calldata('0xa9059cbb' + 'ff' + addr(TO).slice(2) + word(5n))).toBeUndefined(); // a dirty address pad (address_pad_dirty)
+    expect(decodeErc20Calldata(t + '00')).toBeUndefined(); // trailing bytes (calldata_trailing_bytes)
+    expect(decodeErc20Calldata(' ' + t)).toBeUndefined(); // nothing is trimmed
   });
   it('declines native calldata, unknown selectors and malformed word counts', () => {
     expect(decodeErc20Calldata('0x')).toBeUndefined();
