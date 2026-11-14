@@ -1,0 +1,3077 @@
+{
+ "_provenance": {
+  "what": "REAL, public Kermit API v3 answers recorded by the DAX-3A live run (accounts d3adfbd25-*, FICTIONAL lab parties, testnet), 18 of the 20 recorded answers; the minor-block answers keep recordType, index, time and source and omit the entries list (a block lists every entry it executed; unused here)",
+  "source": "tools/chain-check/test/fixtures/live-dax3a-answers.json (transaction-controls, branch pl/dax-4a-core-decision)",
+  "sourceSha256": "2767295a33d68707f532b6b5d4bccf66eade6619cda3d052a10b3d0068f5a650",
+  "kept": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   12,
+   13,
+   14,
+   15,
+   16,
+   17,
+   18
+  ],
+  "omitted": {
+   "0": "network-status",
+   "19": "repeat of 6"
+  }
+ },
+ "answers": [
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-grantor.acme/certen-grants",
+    "query": {
+     "queryType": "default"
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "account",
+     "account": {
+      "type": "dataAccount",
+      "url": "acc://d3adfbd25-grantor.acme/certen-grants",
+      "authorities": [
+       {
+        "url": "acc://d3adfbd25-grantor.acme/book"
+       }
+      ]
+     },
+     "pending": {
+      "recordType": "range",
+      "records": [
+       {
+        "recordType": "txID",
+        "value": "acc://dc618428d46f9482ff711206dcaea6344be00992826b958504bed0f4bfc6956c@d3adfbd25-grantor.acme/certen-grants"
+       },
+       {
+        "recordType": "txID",
+        "value": "acc://f1f0c9568b6dcb00bfed133a21b951fd5f0206372feb04befe4c378628604144@d3adfbd25-grantor.acme/certen-grants"
+       },
+       {
+        "recordType": "txID",
+        "value": "acc://f890a22120a103f835f4b232786edfd55bbaa0f364ea1bcefe9c5ab315a04651@d3adfbd25-grantor.acme/certen-grants"
+       }
+      ],
+      "start": 0,
+      "total": 3
+     },
+     "lastBlockTime": "2026-11-12T22:21:35Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-grantor.acme/certen-grants",
+    "query": {
+     "queryType": "chain",
+     "name": "main",
+     "range": {
+      "start": 0,
+      "count": 100,
+      "expand": true
+     }
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "range",
+     "records": [
+      {
+       "recordType": "chainEntry",
+       "name": "main",
+       "type": "transaction",
+       "index": 0,
+       "entry": "2283c22313ca6187b712c38d9526d004ba99c5b051e561efeddd6af91f32ce1f",
+       "value": {
+        "recordType": "message",
+        "id": "acc://2283c22313ca6187b712c38d9526d004ba99c5b051e561efeddd6af91f32ce1f@d3adfbd25-grantor.acme",
+        "message": {
+         "type": "transaction",
+         "transaction": {
+          "header": {
+           "principal": "acc://d3adfbd25-grantor.acme",
+           "initiator": "a5ac044ecf5d2614fccf081d4faf8165451b42686ac20e943ddbd837e798c06f"
+          },
+          "body": {
+           "type": "createDataAccount",
+           "url": "acc://d3adfbd25-grantor.acme/certen-grants",
+           "authorities": [
+            "acc://d3adfbd25-grantor.acme/book"
+           ]
+          }
+         }
+        },
+        "status": "delivered",
+        "statusNo": 201,
+        "result": {
+         "type": "unknown"
+        },
+        "received": 16875362,
+        "produced": {
+         "recordType": "range",
+         "start": 0,
+         "total": 0
+        },
+        "cause": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "txID",
+           "value": "acc://2c954a41bfd8d4dfb7e1ac18bdd1f5447b3f360e5581c2bcefde3de7cf6e1164@d3adfbd25-grantor.acme/book"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://512bfe69ae5273a0d3d5a04d36a1a01047784e493512804e4ad5f57496cd1c71@d3adfbd25-grantor.acme"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://e45f43617aba7d6b70256815e3eb77cf18731262e8edcaea2871a52815d6f3cb@d3adfbd25-grantor.acme/book"
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "signatures": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "identity",
+            "url": "acc://d3adfbd25-grantor.acme",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://512bfe69ae5273a0d3d5a04d36a1a01047784e493512804e4ad5f57496cd1c71@d3adfbd25-grantor.acme",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme",
+               "txID": "acc://2283c22313ca6187b712c38d9526d004ba99c5b051e561efeddd6af91f32ce1f@d3adfbd25-grantor.acme",
+               "cause": "acc://23b9b252f896e1709425e5aab9766fed5605306683f54c48821b11e7e0b4ed99@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://77d2b627df639af57a945366bf89cb4a1fb0133d30454c494ab7bb8dee04bfaf@d3adfbd25-grantor.acme",
+              "message": {
+               "type": "creditPayment",
+               "paid": 2500,
+               "payer": "acc://d3adfbd25-grantor.acme/book/1",
+               "initiator": true,
+               "txID": "acc://2283c22313ca6187b712c38d9526d004ba99c5b051e561efeddd6af91f32ce1f@d3adfbd25-grantor.acme",
+               "cause": "acc://23b9b252f896e1709425e5aab9766fed5605306683f54c48821b11e7e0b4ed99@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://dcb1a6f6b003a2e6fcf24e8e39831727be4a5c6c2cdb129e59cb77cfe9765631@d3adfbd25-grantor.acme",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "authority",
+                "origin": "acc://d3adfbd25-grantor.acme/book/1",
+                "authority": "acc://d3adfbd25-grantor.acme/book",
+                "txID": "acc://2283c22313ca6187b712c38d9526d004ba99c5b051e561efeddd6af91f32ce1f@d3adfbd25-grantor.acme",
+                "cause": "acc://23b9b252f896e1709425e5aab9766fed5605306683f54c48821b11e7e0b4ed99@d3adfbd25-grantor.acme/book/1"
+               },
+               "txID": "acc://2283c22313ca6187b712c38d9526d004ba99c5b051e561efeddd6af91f32ce1f@d3adfbd25-grantor.acme"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 3
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyBook",
+            "url": "acc://d3adfbd25-grantor.acme/book",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ],
+            "pageCount": 1
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://e45f43617aba7d6b70256815e3eb77cf18731262e8edcaea2871a52815d6f3cb@d3adfbd25-grantor.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/book",
+               "txID": "acc://2283c22313ca6187b712c38d9526d004ba99c5b051e561efeddd6af91f32ce1f@d3adfbd25-grantor.acme",
+               "cause": "acc://23b9b252f896e1709425e5aab9766fed5605306683f54c48821b11e7e0b4ed99@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://2c954a41bfd8d4dfb7e1ac18bdd1f5447b3f360e5581c2bcefde3de7cf6e1164@d3adfbd25-grantor.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/book",
+               "txID": "acc://2283c22313ca6187b712c38d9526d004ba99c5b051e561efeddd6af91f32ce1f@d3adfbd25-grantor.acme",
+               "cause": "acc://512bfe69ae5273a0d3d5a04d36a1a01047784e493512804e4ad5f57496cd1c71@d3adfbd25-grantor.acme"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 2
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyPage",
+            "keyBook": "acc://d3adfbd25-grantor.acme/book",
+            "url": "acc://d3adfbd25-grantor.acme/book/1",
+            "creditBalance": 13050,
+            "acceptThreshold": 1,
+            "threshold": 1,
+            "version": 3,
+            "keys": [
+             {
+              "publicKeyHash": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "publicKey": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "lastUsedOn": 1794521421474000
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://23b9b252f896e1709425e5aab9766fed5605306683f54c48821b11e7e0b4ed99@d3adfbd25-grantor.acme/book/1",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "ed25519",
+                "publicKey": "6b2169edc05fcb7b88cae1b31a346244ec3116bcbd764fb9d5d7c19ffc54ef8b",
+                "signature": "9c25df7b4a1ca17c945dec4d42f902a4372c15f509ec6b13790f10d222506604ec6fbeccd264745e1715a3fd611d8007c0ab94a30caa5804b917a9d49f7dd20b",
+                "signer": "acc://d3adfbd25-grantor.acme/book/1",
+                "signerVersion": 1,
+                "timestamp": 1794516064820000,
+                "transactionHash": "2283c22313ca6187b712c38d9526d004ba99c5b051e561efeddd6af91f32ce1f"
+               },
+               "txID": "acc://2283c22313ca6187b712c38d9526d004ba99c5b051e561efeddd6af91f32ce1f@d3adfbd25-grantor.acme"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "sequence": {
+         "type": "sequenced"
+        }
+       },
+       "state": [
+        "2283c22313ca6187b712c38d9526d004ba99c5b051e561efeddd6af91f32ce1f"
+       ]
+      },
+      {
+       "recordType": "chainEntry",
+       "name": "main",
+       "type": "transaction",
+       "index": 1,
+       "entry": "ebcad483e68139658d75e7eb5c1419e48f122de17470428e15b91d380c1df18f",
+       "value": {
+        "recordType": "message",
+        "id": "acc://ebcad483e68139658d75e7eb5c1419e48f122de17470428e15b91d380c1df18f@d3adfbd25-grantor.acme/certen-grants",
+        "message": {
+         "type": "transaction",
+         "transaction": {
+          "header": {
+           "principal": "acc://d3adfbd25-grantor.acme/certen-grants",
+           "initiator": "bb72043239385c37ac63595fddbfc7c3891deb4b38698e6af304947ac4ae07c7",
+           "memo": "DAX3A_GRANT_V1"
+          },
+          "body": {
+           "type": "writeData",
+           "entry": {
+            "type": "doubleHash",
+            "data": [
+             "7b22617070726f76616c73223a5b7b226173736574223a7b22636861696e4964223a38343533322c22746f6b656e223a22307835353535353535353535353535353535353535353535353535353535353535353535353535353535227d2c227469657273223a5b7b227265717569726564223a5b7b22626f6f6b223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f7472656173757279222c227468726573686f6c64223a317d5d2c227570546f223a223130303030227d2c7b227265717569726564223a5b7b22626f6f6b223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f7472656173757279222c227468726573686f6c64223a317d2c7b22626f6f6b223a226163633a2f2f6669632d7269736b2e61636d652f7269736b222c227468726573686f6c64223a317d5d2c227570546f223a6e756c6c7d5d7d5d2c22636f6e646974696f6e73223a7b22616c6c223a5b5d7d2c226772616e744964223a226669632d6c61622d706179222c226772616e746f72223a7b22616469223a226163633a2f2f6433616466626432352d6772616e746f722e61636d65222c226b6579426f6f6b223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f626f6f6b227d2c226973737565644174223a313739343531363436302c226c696d697473223a5b7b226173736574223a7b22636861696e4964223a38343533322c22746f6b656e223a22307835353535353535353535353535353535353535353535353535353535353535353535353535353535227d2c22636f756e74223a7b226d6178223a342c22706572696f645365636f6e6473223a38363430307d2c2263756d756c6174697665223a7b22616d6f756e74223a22313030303030222c22706572696f645365636f6e6473223a38363430307d2c227065725472616e73616374696f6e223a223235303030227d5d2c227072696f7248617368223a6e756c6c2c22736368656d61223a2263657274656e2e6772616e742f7631222c2273636f7065223a7b226163636f756e7473223a5b7b2261646472657373223a22307831313131313131313131313131313131313131313131313131313131313131313131313131313131222c22636861696e4964223a38343533327d5d2c22616374696f6e73223a5b2265726332302e7472616e73666572225d2c22617373657473223a5b7b22636861696e4964223a38343533322c22746f6b656e223a22307835353535353535353535353535353535353535353535353535353535353535353535353535353535227d5d2c2262656e65666963696172696573223a5b7b2261646472657373223a22307832323232323232323232323232323232323232323232323232323232323232323232323232323232222c22636861696e4964223a38343533327d2c7b2261646472657373223a22307833333333333333333333333333333333333333333333333333333333333333333333333333333333222c22636861696e4964223a38343533327d5d7d2c227375626a656374223a7b22616469223a226163633a2f2f6433616466626432352d6167656e742e61636d65222c2274797065223a226167656e74227d2c2276616c6964697479223a7b226e6f744166746572223a313739373130383436302c226e6f744265666f7265223a313739343531363436307d2c2276657273696f6e223a317d",
+             "7b227061796c6f616448617368223a22307861373333656661623934633166616531653033653236356630383639373732303731346437633634363634656261396439623437393230646237623030633131222c227061796c6f6164546167223a2263657274656e3a6772616e743a7631222c227369676e617475726573223a5b7b22616c67223a2265643235353139222c2270616765223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f626f6f6b2f31222c227075626c69634b6579223a2236623231363965646330356663623762383863616531623331613334363234346563333131366263626437363466623964356437633139666663353465663862222c227369676e6174757265223a223865376231623438313234363463316634303163353739313262313665343935626230623963663939653963393833386164323932393138376333613962313032346565613262616439373265633035656565613131306461643135623730343434653364396365653135653933636330663363363338656138303064323038227d5d7d"
+            ]
+           }
+          }
+         }
+        },
+        "status": "delivered",
+        "statusNo": 201,
+        "result": {
+         "type": "writeData",
+         "entryHash": "f42be53455541abadbd7a47aeb1a2ca191829561c8a62cb252bb3c752b48ff4b",
+         "accountUrl": "acc://d3adfbd25-grantor.acme/certen-grants",
+         "accountID": "03dff6f86d75412ff12d34e47bac25c5b02c04ee49324bf9eb1bcec0c9e5c874"
+        },
+        "received": 16875756,
+        "produced": {
+         "recordType": "range",
+         "start": 0,
+         "total": 0
+        },
+        "cause": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "txID",
+           "value": "acc://3a4686375d927e154ea0aa7f48f82054e4ae4ca75761b9bf4c0c7206f9aa18fa@d3adfbd25-grantor.acme/book"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://3e5ee90137a2f0d5ac9fdc5b2cf6fb9af6c979041ab068bdfa7ea6e652687e7d@d3adfbd25-grantor.acme/certen-grants"
+          }
+         ],
+         "start": 0,
+         "total": 2
+        },
+        "signatures": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyBook",
+            "url": "acc://d3adfbd25-grantor.acme/book",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ],
+            "pageCount": 1
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://3a4686375d927e154ea0aa7f48f82054e4ae4ca75761b9bf4c0c7206f9aa18fa@d3adfbd25-grantor.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/book",
+               "txID": "acc://ebcad483e68139658d75e7eb5c1419e48f122de17470428e15b91d380c1df18f@d3adfbd25-grantor.acme/certen-grants",
+               "cause": "acc://3e5ee90137a2f0d5ac9fdc5b2cf6fb9af6c979041ab068bdfa7ea6e652687e7d@d3adfbd25-grantor.acme/certen-grants"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyPage",
+            "keyBook": "acc://d3adfbd25-grantor.acme/book",
+            "url": "acc://d3adfbd25-grantor.acme/book/1",
+            "creditBalance": 13050,
+            "acceptThreshold": 1,
+            "threshold": 1,
+            "version": 3,
+            "keys": [
+             {
+              "publicKeyHash": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "publicKey": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "lastUsedOn": 1794521421474000
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://c1ac01fde1de066d7c1ebc5b1cfea6bcab50c9a838ac6f7143287158eaf16a69@d3adfbd25-grantor.acme/book/1",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "ed25519",
+                "publicKey": "6b2169edc05fcb7b88cae1b31a346244ec3116bcbd764fb9d5d7c19ffc54ef8b",
+                "signature": "5fbbd44b652d15be1fc98b326d8bf12ff513d7e4f5bafd659091543d36fc9fcff6866c861686be1b90d926140d4ec7b6947e3be4146a2f31a23b4f4b553bed0d",
+                "signer": "acc://d3adfbd25-grantor.acme/book/1",
+                "signerVersion": 1,
+                "timestamp": 1794516462234000,
+                "transactionHash": "ebcad483e68139658d75e7eb5c1419e48f122de17470428e15b91d380c1df18f"
+               },
+               "txID": "acc://ebcad483e68139658d75e7eb5c1419e48f122de17470428e15b91d380c1df18f@d3adfbd25-grantor.acme/certen-grants"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "dataAccount",
+            "url": "acc://d3adfbd25-grantor.acme/certen-grants",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://3e5ee90137a2f0d5ac9fdc5b2cf6fb9af6c979041ab068bdfa7ea6e652687e7d@d3adfbd25-grantor.acme/certen-grants",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/certen-grants",
+               "txID": "acc://ebcad483e68139658d75e7eb5c1419e48f122de17470428e15b91d380c1df18f@d3adfbd25-grantor.acme/certen-grants",
+               "cause": "acc://c1ac01fde1de066d7c1ebc5b1cfea6bcab50c9a838ac6f7143287158eaf16a69@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://8bb73f0517e884514c5bae0426cf4b3b4ba5776bb6fda8e721895934a3f0a01a@d3adfbd25-grantor.acme/certen-grants",
+              "message": {
+               "type": "creditPayment",
+               "paid": 70,
+               "payer": "acc://d3adfbd25-grantor.acme/book/1",
+               "initiator": true,
+               "txID": "acc://ebcad483e68139658d75e7eb5c1419e48f122de17470428e15b91d380c1df18f@d3adfbd25-grantor.acme/certen-grants",
+               "cause": "acc://c1ac01fde1de066d7c1ebc5b1cfea6bcab50c9a838ac6f7143287158eaf16a69@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://a93ec6d06f59a18472203ecff1ed893f270d4988a194abdee435e839b70ad27e@d3adfbd25-grantor.acme/certen-grants",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "authority",
+                "origin": "acc://d3adfbd25-grantor.acme/book/1",
+                "authority": "acc://d3adfbd25-grantor.acme/book",
+                "txID": "acc://ebcad483e68139658d75e7eb5c1419e48f122de17470428e15b91d380c1df18f@d3adfbd25-grantor.acme/certen-grants",
+                "cause": "acc://c1ac01fde1de066d7c1ebc5b1cfea6bcab50c9a838ac6f7143287158eaf16a69@d3adfbd25-grantor.acme/book/1"
+               },
+               "txID": "acc://ebcad483e68139658d75e7eb5c1419e48f122de17470428e15b91d380c1df18f@d3adfbd25-grantor.acme/certen-grants"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 3
+           }
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "sequence": {
+         "type": "sequenced"
+        }
+       },
+       "state": [
+        null,
+        "a1084cb557781d2ad36db47199e070a671849b66a5fca18f9b6b48616b78a675"
+       ]
+      },
+      {
+       "recordType": "chainEntry",
+       "name": "main",
+       "type": "transaction",
+       "index": 2,
+       "entry": "652a3637ca35928f851cc6287bf8f8e9a0c436cea4c8d7f7c517ca661a4f65ce",
+       "value": {
+        "recordType": "message",
+        "id": "acc://652a3637ca35928f851cc6287bf8f8e9a0c436cea4c8d7f7c517ca661a4f65ce@d3adfbd25-grantor.acme/certen-grants",
+        "message": {
+         "type": "transaction",
+         "transaction": {
+          "header": {
+           "principal": "acc://d3adfbd25-grantor.acme/certen-grants",
+           "initiator": "0998f9ada727273923f5f61270419616736b8eb432fa1d7f53be12992ac5834e",
+           "memo": "DAX3A_GRANT_V2"
+          },
+          "body": {
+           "type": "writeData",
+           "entry": {
+            "type": "doubleHash",
+            "data": [
+             "7b22617070726f76616c73223a5b7b226173736574223a7b22636861696e4964223a38343533322c22746f6b656e223a22307835353535353535353535353535353535353535353535353535353535353535353535353535353535227d2c227469657273223a5b7b227265717569726564223a5b7b22626f6f6b223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f7472656173757279222c227468726573686f6c64223a317d5d2c227570546f223a223130303030227d2c7b227265717569726564223a5b7b22626f6f6b223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f7472656173757279222c227468726573686f6c64223a317d2c7b22626f6f6b223a226163633a2f2f6669632d7269736b2e61636d652f7269736b222c227468726573686f6c64223a317d5d2c227570546f223a6e756c6c7d5d7d5d2c22636f6e646974696f6e73223a7b22616c6c223a5b5d7d2c226772616e744964223a226669632d6c61622d706179222c226772616e746f72223a7b22616469223a226163633a2f2f6433616466626432352d6772616e746f722e61636d65222c226b6579426f6f6b223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f626f6f6b227d2c226973737565644174223a313739343531363634332c226c696d697473223a5b7b226173736574223a7b22636861696e4964223a38343533322c22746f6b656e223a22307835353535353535353535353535353535353535353535353535353535353535353535353535353535227d2c22636f756e74223a7b226d6178223a342c22706572696f645365636f6e6473223a38363430307d2c2263756d756c6174697665223a7b22616d6f756e74223a22313030303030222c22706572696f645365636f6e6473223a38363430307d2c227065725472616e73616374696f6e223a223230303030227d5d2c227072696f7248617368223a22307861373333656661623934633166616531653033653236356630383639373732303731346437633634363634656261396439623437393230646237623030633131222c22736368656d61223a2263657274656e2e6772616e742f7631222c2273636f7065223a7b226163636f756e7473223a5b7b2261646472657373223a22307831313131313131313131313131313131313131313131313131313131313131313131313131313131222c22636861696e4964223a38343533327d5d2c22616374696f6e73223a5b2265726332302e7472616e73666572225d2c22617373657473223a5b7b22636861696e4964223a38343533322c22746f6b656e223a22307835353535353535353535353535353535353535353535353535353535353535353535353535353535227d5d2c2262656e65666963696172696573223a5b7b2261646472657373223a22307832323232323232323232323232323232323232323232323232323232323232323232323232323232222c22636861696e4964223a38343533327d2c7b2261646472657373223a22307833333333333333333333333333333333333333333333333333333333333333333333333333333333222c22636861696e4964223a38343533327d5d7d2c227375626a656374223a7b22616469223a226163633a2f2f6433616466626432352d6167656e742e61636d65222c2274797065223a226167656e74227d2c2276616c6964697479223a7b226e6f744166746572223a313739373130383436302c226e6f744265666f7265223a313739343531363436307d2c2276657273696f6e223a327d",
+             "7b227061796c6f616448617368223a22307833306233313066343832626136616661626662373062346630633466316466633962646139303038373338363532663531396265363964666264643865663133222c227061796c6f6164546167223a2263657274656e3a6772616e743a7631222c227369676e617475726573223a5b7b22616c67223a2265636473612d703235362d736861323536222c2270616765223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f626f6f6b2f31222c227075626c69634b6579223a223330353933303133303630373261383634386365336430323031303630383261383634386365336430333031303730333432303030343234303930313163636632316438303565363661613162663939666439663834666265653930373236383639326263313366356235373638353465396162653165323937346138616561393936353765366361393462353437363830306131386566666261393839336334646266393238613832633336373836643430666665222c227369676e6174757265223a223333643239643664626661383939633138666566633336393662306666356439663866613730373732643531376336363235343034313731646233366439323234626132366630376131633261323038336632336332336632303739363035323064663930626365396430373231343963663138356363303564633939383934227d5d7d"
+            ]
+           }
+          }
+         }
+        },
+        "status": "delivered",
+        "statusNo": 201,
+        "result": {
+         "type": "writeData",
+         "entryHash": "d1e353fff0bfe49a84986ebfb2b852ff0bf5b2fd65d6a5a42b3075ed766362e2",
+         "accountUrl": "acc://d3adfbd25-grantor.acme/certen-grants",
+         "accountID": "03dff6f86d75412ff12d34e47bac25c5b02c04ee49324bf9eb1bcec0c9e5c874"
+        },
+        "received": 16875937,
+        "produced": {
+         "recordType": "range",
+         "start": 0,
+         "total": 0
+        },
+        "cause": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "txID",
+           "value": "acc://9ba28d45dfa7472fd9f97c7ae79e6483ba73ac72b733ddd1b8e28c5750915498@d3adfbd25-grantor.acme/certen-grants"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://b903909ca59f7b55ceea488bbe4cfc6aa7a935ecfdb6341ce8a4ed96e7a51773@d3adfbd25-grantor.acme/book"
+          }
+         ],
+         "start": 0,
+         "total": 2
+        },
+        "signatures": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyBook",
+            "url": "acc://d3adfbd25-grantor.acme/book",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ],
+            "pageCount": 1
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://b903909ca59f7b55ceea488bbe4cfc6aa7a935ecfdb6341ce8a4ed96e7a51773@d3adfbd25-grantor.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/book",
+               "txID": "acc://652a3637ca35928f851cc6287bf8f8e9a0c436cea4c8d7f7c517ca661a4f65ce@d3adfbd25-grantor.acme/certen-grants",
+               "cause": "acc://9ba28d45dfa7472fd9f97c7ae79e6483ba73ac72b733ddd1b8e28c5750915498@d3adfbd25-grantor.acme/certen-grants"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyPage",
+            "keyBook": "acc://d3adfbd25-grantor.acme/book",
+            "url": "acc://d3adfbd25-grantor.acme/book/1",
+            "creditBalance": 13050,
+            "acceptThreshold": 1,
+            "threshold": 1,
+            "version": 3,
+            "keys": [
+             {
+              "publicKeyHash": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "publicKey": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "lastUsedOn": 1794521421474000
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://761c700516f44c9a1282357e5078c536a1264259d6df1afd8b3f39644bd2e22a@d3adfbd25-grantor.acme/book/1",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "ecdsaSha256",
+                "publicKey": "3059301306072a8648ce3d020106082a8648ce3d030107034200042409011ccf21d805e66aa1bf99fd9f84fbee907268692bc13f5b576854e9abe1e2974a8aea99657e6ca94b5476800a18effba9893c4dbf928a82c36786d40ffe",
+                "signature": "304502203fdf7253a1c6f51b075e978d84c1538fd7036b22ab714120eddf2d74437c68dc0221008ca7dcecdfd3e9fe6e4a19551eab18f94282caf971fe1713b5c66634d2d36812",
+                "signer": "acc://d3adfbd25-grantor.acme/book/1",
+                "signerVersion": 2,
+                "timestamp": 1794516644926000,
+                "transactionHash": "652a3637ca35928f851cc6287bf8f8e9a0c436cea4c8d7f7c517ca661a4f65ce"
+               },
+               "txID": "acc://652a3637ca35928f851cc6287bf8f8e9a0c436cea4c8d7f7c517ca661a4f65ce@d3adfbd25-grantor.acme/certen-grants"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "dataAccount",
+            "url": "acc://d3adfbd25-grantor.acme/certen-grants",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://9ba28d45dfa7472fd9f97c7ae79e6483ba73ac72b733ddd1b8e28c5750915498@d3adfbd25-grantor.acme/certen-grants",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/certen-grants",
+               "txID": "acc://652a3637ca35928f851cc6287bf8f8e9a0c436cea4c8d7f7c517ca661a4f65ce@d3adfbd25-grantor.acme/certen-grants",
+               "cause": "acc://761c700516f44c9a1282357e5078c536a1264259d6df1afd8b3f39644bd2e22a@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://f259b57f7e332bc1f6f84adf2f4ba1044135d847eb98d34fffcb3d68c4edf6e5@d3adfbd25-grantor.acme/certen-grants",
+              "message": {
+               "type": "creditPayment",
+               "paid": 80,
+               "payer": "acc://d3adfbd25-grantor.acme/book/1",
+               "initiator": true,
+               "txID": "acc://652a3637ca35928f851cc6287bf8f8e9a0c436cea4c8d7f7c517ca661a4f65ce@d3adfbd25-grantor.acme/certen-grants",
+               "cause": "acc://761c700516f44c9a1282357e5078c536a1264259d6df1afd8b3f39644bd2e22a@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://ae11e19e132b2af70ab4b2b78a742b34f04864047c43987f5a2d8dfdee5f56a0@d3adfbd25-grantor.acme/certen-grants",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "authority",
+                "origin": "acc://d3adfbd25-grantor.acme/book/1",
+                "authority": "acc://d3adfbd25-grantor.acme/book",
+                "txID": "acc://652a3637ca35928f851cc6287bf8f8e9a0c436cea4c8d7f7c517ca661a4f65ce@d3adfbd25-grantor.acme/certen-grants",
+                "cause": "acc://761c700516f44c9a1282357e5078c536a1264259d6df1afd8b3f39644bd2e22a@d3adfbd25-grantor.acme/book/1"
+               },
+               "txID": "acc://652a3637ca35928f851cc6287bf8f8e9a0c436cea4c8d7f7c517ca661a4f65ce@d3adfbd25-grantor.acme/certen-grants"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 3
+           }
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "sequence": {
+         "type": "sequenced"
+        }
+       },
+       "state": [
+        "652a3637ca35928f851cc6287bf8f8e9a0c436cea4c8d7f7c517ca661a4f65ce",
+        "a1084cb557781d2ad36db47199e070a671849b66a5fca18f9b6b48616b78a675",
+        null
+       ]
+      },
+      {
+       "recordType": "chainEntry",
+       "name": "main",
+       "type": "transaction",
+       "index": 3,
+       "entry": "cbe4f11f14ab9f41effda6e6f6e6bddd1773297feb82a0a8c59f7ff229279c77",
+       "value": {
+        "recordType": "message",
+        "id": "acc://cbe4f11f14ab9f41effda6e6f6e6bddd1773297feb82a0a8c59f7ff229279c77@d3adfbd25-grantor.acme/certen-grants",
+        "message": {
+         "type": "transaction",
+         "transaction": {
+          "header": {
+           "principal": "acc://d3adfbd25-grantor.acme/certen-grants",
+           "initiator": "82f5414db72d1702e0f48c87f5256a431d0f8fbfbcf8ee850ae5dfb9336e3265",
+           "memo": "DAX3A_REAFFIRM"
+          },
+          "body": {
+           "type": "writeData",
+           "entry": {
+            "type": "doubleHash",
+            "data": [
+             "7b22617070726f76616c73223a5b7b226173736574223a7b22636861696e4964223a38343533322c22746f6b656e223a22307835353535353535353535353535353535353535353535353535353535353535353535353535353535227d2c227469657273223a5b7b227265717569726564223a5b7b22626f6f6b223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f7472656173757279222c227468726573686f6c64223a317d5d2c227570546f223a223130303030227d2c7b227265717569726564223a5b7b22626f6f6b223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f7472656173757279222c227468726573686f6c64223a317d2c7b22626f6f6b223a226163633a2f2f6669632d7269736b2e61636d652f7269736b222c227468726573686f6c64223a317d5d2c227570546f223a6e756c6c7d5d7d5d2c22636f6e646974696f6e73223a7b22616c6c223a5b5d7d2c226772616e744964223a226669632d6c61622d706179222c226772616e746f72223a7b22616469223a226163633a2f2f6433616466626432352d6772616e746f722e61636d65222c226b6579426f6f6b223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f626f6f6b227d2c226973737565644174223a313739343532313432302c226c696d697473223a5b7b226173736574223a7b22636861696e4964223a38343533322c22746f6b656e223a22307835353535353535353535353535353535353535353535353535353535353535353535353535353535227d2c22636f756e74223a7b226d6178223a342c22706572696f645365636f6e6473223a38363430307d2c2263756d756c6174697665223a7b22616d6f756e74223a22313030303030222c22706572696f645365636f6e6473223a38363430307d2c227065725472616e73616374696f6e223a223230303030227d5d2c227072696f7248617368223a22307833306233313066343832626136616661626662373062346630633466316466633962646139303038373338363532663531396265363964666264643865663133222c22736368656d61223a2263657274656e2e6772616e742f7631222c2273636f7065223a7b226163636f756e7473223a5b7b2261646472657373223a22307831313131313131313131313131313131313131313131313131313131313131313131313131313131222c22636861696e4964223a38343533327d5d2c22616374696f6e73223a5b2265726332302e7472616e73666572225d2c22617373657473223a5b7b22636861696e4964223a38343533322c22746f6b656e223a22307835353535353535353535353535353535353535353535353535353535353535353535353535353535227d5d2c2262656e65666963696172696573223a5b7b2261646472657373223a22307832323232323232323232323232323232323232323232323232323232323232323232323232323232222c22636861696e4964223a38343533327d2c7b2261646472657373223a22307833333333333333333333333333333333333333333333333333333333333333333333333333333333222c22636861696e4964223a38343533327d5d7d2c227375626a656374223a7b22616469223a226163633a2f2f6433616466626432352d6167656e742e61636d65222c2274797065223a226167656e74227d2c2276616c6964697479223a7b226e6f744166746572223a313739373130383436302c226e6f744265666f7265223a313739343531363436307d2c2276657273696f6e223a337d",
+             "7b227061796c6f616448617368223a22307838323535613563646564393130393639333835653630643731646263646666633438323635343735666462323763363238313631373365376265643935313766222c227061796c6f6164546167223a2263657274656e3a6772616e743a7631222c227369676e617475726573223a5b7b22616c67223a2265643235353139222c2270616765223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f626f6f6b2f31222c227075626c69634b6579223a2234636632346539623034356639623639353132313938363463343237633238303936376137373835663462656361363964356439636665656235363661306134222c227369676e6174757265223a223230653761336566653439663737323937386265393531666431616635346366326266393735326262306334333662663664616433666465323161363732386334393136396539333736336535663262633238376133643365663064363238323732353763306330346333303065386633653766646230326231396635393065227d5d7d"
+            ]
+           }
+          }
+         }
+        },
+        "status": "delivered",
+        "statusNo": 201,
+        "result": {
+         "type": "writeData",
+         "entryHash": "c89f3994fd7cd01976977938348c4bd57a7624c24792375c19c7cee3a76b8055",
+         "accountUrl": "acc://d3adfbd25-grantor.acme/certen-grants",
+         "accountID": "03dff6f86d75412ff12d34e47bac25c5b02c04ee49324bf9eb1bcec0c9e5c874"
+        },
+        "received": 16880672,
+        "produced": {
+         "recordType": "range",
+         "start": 0,
+         "total": 0
+        },
+        "cause": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "txID",
+           "value": "acc://1994122d73be8155dd26565c65d280713a654dfe86408162eea84883f7b1c9a1@d3adfbd25-grantor.acme/book"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://9bf34fe738a74c2b086f60d0b9fff901774687ff532decd33f7b05eac2f3d9cd@d3adfbd25-grantor.acme/certen-grants"
+          }
+         ],
+         "start": 0,
+         "total": 2
+        },
+        "signatures": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyBook",
+            "url": "acc://d3adfbd25-grantor.acme/book",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ],
+            "pageCount": 1
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://1994122d73be8155dd26565c65d280713a654dfe86408162eea84883f7b1c9a1@d3adfbd25-grantor.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/book",
+               "txID": "acc://cbe4f11f14ab9f41effda6e6f6e6bddd1773297feb82a0a8c59f7ff229279c77@d3adfbd25-grantor.acme/certen-grants",
+               "cause": "acc://9bf34fe738a74c2b086f60d0b9fff901774687ff532decd33f7b05eac2f3d9cd@d3adfbd25-grantor.acme/certen-grants"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyPage",
+            "keyBook": "acc://d3adfbd25-grantor.acme/book",
+            "url": "acc://d3adfbd25-grantor.acme/book/1",
+            "creditBalance": 13050,
+            "acceptThreshold": 1,
+            "threshold": 1,
+            "version": 3,
+            "keys": [
+             {
+              "publicKeyHash": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "publicKey": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "lastUsedOn": 1794521421474000
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://d133d8a7de7af73de02399c750b6d6af0368473b145f094ad6a9cc5180d575a5@d3adfbd25-grantor.acme/book/1",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "ed25519",
+                "publicKey": "4cf24e9b045f9b6951219864c427c280967a7785f4beca69d5d9cfeeb566a0a4",
+                "signature": "82d54ee52e4b2847133c9cc90ae8adfc14d068ad2b84959d334171679b11113db96e610c3cb246eaf296bcf1d8bd7e4cb04b4e8edfd1437c21229ec5efdc7601",
+                "signer": "acc://d3adfbd25-grantor.acme/book/1",
+                "signerVersion": 3,
+                "timestamp": 1794521421474000,
+                "transactionHash": "cbe4f11f14ab9f41effda6e6f6e6bddd1773297feb82a0a8c59f7ff229279c77"
+               },
+               "txID": "acc://cbe4f11f14ab9f41effda6e6f6e6bddd1773297feb82a0a8c59f7ff229279c77@d3adfbd25-grantor.acme/certen-grants"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "dataAccount",
+            "url": "acc://d3adfbd25-grantor.acme/certen-grants",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://9bf34fe738a74c2b086f60d0b9fff901774687ff532decd33f7b05eac2f3d9cd@d3adfbd25-grantor.acme/certen-grants",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/certen-grants",
+               "txID": "acc://cbe4f11f14ab9f41effda6e6f6e6bddd1773297feb82a0a8c59f7ff229279c77@d3adfbd25-grantor.acme/certen-grants",
+               "cause": "acc://d133d8a7de7af73de02399c750b6d6af0368473b145f094ad6a9cc5180d575a5@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://fc20a0f57d1d8c8ec2d93a540b50ec7eb087576f1b74fbb7c172ffc7ec9b2181@d3adfbd25-grantor.acme/certen-grants",
+              "message": {
+               "type": "creditPayment",
+               "paid": 80,
+               "payer": "acc://d3adfbd25-grantor.acme/book/1",
+               "initiator": true,
+               "txID": "acc://cbe4f11f14ab9f41effda6e6f6e6bddd1773297feb82a0a8c59f7ff229279c77@d3adfbd25-grantor.acme/certen-grants",
+               "cause": "acc://d133d8a7de7af73de02399c750b6d6af0368473b145f094ad6a9cc5180d575a5@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://69a26d96c2b3e2477d39eb362525543af84633e4e000ae3bc76cecb8f8c7a1f7@d3adfbd25-grantor.acme/certen-grants",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "authority",
+                "origin": "acc://d3adfbd25-grantor.acme/book/1",
+                "authority": "acc://d3adfbd25-grantor.acme/book",
+                "txID": "acc://cbe4f11f14ab9f41effda6e6f6e6bddd1773297feb82a0a8c59f7ff229279c77@d3adfbd25-grantor.acme/certen-grants",
+                "cause": "acc://d133d8a7de7af73de02399c750b6d6af0368473b145f094ad6a9cc5180d575a5@d3adfbd25-grantor.acme/book/1"
+               },
+               "txID": "acc://cbe4f11f14ab9f41effda6e6f6e6bddd1773297feb82a0a8c59f7ff229279c77@d3adfbd25-grantor.acme/certen-grants"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 3
+           }
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "sequence": {
+         "type": "sequenced"
+        }
+       },
+       "state": [
+        null,
+        null,
+        "fae5121b5b28d8c274451f1c81082ba3dfddf9cbd73dc110e6d1be7bbd44192a"
+       ]
+      }
+     ],
+     "start": 0,
+     "total": 4,
+     "lastBlockTime": "2026-11-12T22:21:36Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-grantor.acme/certen-grants",
+    "query": {
+     "queryType": "block",
+     "minor": 16875756
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "minorBlock",
+     "index": 16875756,
+     "time": "2026-11-12T20:47:34Z",
+     "source": "acc://bvn-BVN3.acme",
+     "lastBlockTime": "2026-11-12T22:21:36Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-grantor.acme/certen-grants",
+    "query": {
+     "queryType": "block",
+     "minor": 16875937
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "minorBlock",
+     "index": 16875937,
+     "time": "2026-11-12T20:50:37Z",
+     "source": "acc://bvn-BVN3.acme",
+     "lastBlockTime": "2026-11-12T22:21:36Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-grantor.acme/certen-grants",
+    "query": {
+     "queryType": "block",
+     "minor": 16880672
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "minorBlock",
+     "index": 16880672,
+     "time": "2026-11-12T22:10:13Z",
+     "source": "acc://bvn-BVN3.acme",
+     "lastBlockTime": "2026-11-12T22:21:36Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-agent.acme",
+    "query": {
+     "queryType": "default"
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "account",
+     "account": {
+      "type": "identity",
+      "url": "acc://d3adfbd25-agent.acme",
+      "authorities": [
+       {
+        "url": "acc://d3adfbd25-agent.acme/book"
+       }
+      ]
+     },
+     "directory": {
+      "recordType": "range",
+      "records": [
+       {
+        "recordType": "url",
+        "value": "acc://d3adfbd25-agent.acme/book"
+       },
+       {
+        "recordType": "url",
+        "value": "acc://d3adfbd25-agent.acme/certen-acceptances"
+       }
+      ],
+      "start": 0,
+      "total": 2
+     },
+     "pending": {
+      "recordType": "range",
+      "start": 0,
+      "total": 0
+     },
+     "lastBlockTime": "2026-11-12T22:21:36Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-grantor.acme/book",
+    "query": {
+     "queryType": "default"
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "account",
+     "account": {
+      "type": "keyBook",
+      "url": "acc://d3adfbd25-grantor.acme/book",
+      "authorities": [
+       {
+        "url": "acc://d3adfbd25-grantor.acme/book"
+       }
+      ],
+      "pageCount": 1
+     },
+     "directory": {
+      "recordType": "range",
+      "records": [
+       {
+        "recordType": "url",
+        "value": "acc://d3adfbd25-grantor.acme/book/1"
+       }
+      ],
+      "start": 0,
+      "total": 1
+     },
+     "pending": {
+      "recordType": "range",
+      "start": 0,
+      "total": 0
+     },
+     "lastBlockTime": "2026-11-12T22:21:36Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-grantor.acme/book/1",
+    "query": {
+     "queryType": "default"
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "account",
+     "account": {
+      "type": "keyPage",
+      "keyBook": "acc://d3adfbd25-grantor.acme/book",
+      "url": "acc://d3adfbd25-grantor.acme/book/1",
+      "creditBalance": 13050,
+      "acceptThreshold": 1,
+      "threshold": 1,
+      "version": 3,
+      "keys": [
+       {
+        "publicKeyHash": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+        "publicKey": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+        "lastUsedOn": 1794521421474000
+       }
+      ]
+     },
+     "pending": {
+      "recordType": "range",
+      "start": 0,
+      "total": 0
+     },
+     "lastBlockTime": "2026-11-12T22:21:36Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-grantor.acme/certen-subjects",
+    "query": {
+     "queryType": "default"
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "account",
+     "account": {
+      "type": "dataAccount",
+      "url": "acc://d3adfbd25-grantor.acme/certen-subjects",
+      "authorities": [
+       {
+        "url": "acc://d3adfbd25-grantor.acme/book"
+       }
+      ]
+     },
+     "pending": {
+      "recordType": "range",
+      "records": [
+       {
+        "recordType": "txID",
+        "value": "acc://63c51cf97082378f778811c8bb80ef54b64ccf62f7e5a566269f3f049e35e395@d3adfbd25-grantor.acme/certen-subjects"
+       },
+       {
+        "recordType": "txID",
+        "value": "acc://ec9a25b213de6d9f3459c6ee89541628bc1c24401e7ae7115b0b759d3a9e95a5@d3adfbd25-grantor.acme/certen-subjects"
+       },
+       {
+        "recordType": "txID",
+        "value": "acc://f86193591b41cbdd2f3e2c10cf6de737db09bac21ec75093d123c2cadd2b28fa@d3adfbd25-grantor.acme/certen-subjects"
+       }
+      ],
+      "start": 0,
+      "total": 3
+     },
+     "lastBlockTime": "2026-11-12T22:21:36Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-grantor.acme/certen-subjects",
+    "query": {
+     "queryType": "chain",
+     "name": "main",
+     "range": {
+      "start": 0,
+      "count": 100,
+      "expand": true
+     }
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "range",
+     "records": [
+      {
+       "recordType": "chainEntry",
+       "name": "main",
+       "type": "transaction",
+       "index": 0,
+       "entry": "91e3052f645747602d5b78db2104bdb6b7940253b7dbe3f187afbfb1d7853cad",
+       "value": {
+        "recordType": "message",
+        "id": "acc://91e3052f645747602d5b78db2104bdb6b7940253b7dbe3f187afbfb1d7853cad@d3adfbd25-grantor.acme",
+        "message": {
+         "type": "transaction",
+         "transaction": {
+          "header": {
+           "principal": "acc://d3adfbd25-grantor.acme",
+           "initiator": "6f044496521e995db44c8ead2af892a013b7641b1820bedaad12d17b6ba87939"
+          },
+          "body": {
+           "type": "createDataAccount",
+           "url": "acc://d3adfbd25-grantor.acme/certen-subjects",
+           "authorities": [
+            "acc://d3adfbd25-grantor.acme/book"
+           ]
+          }
+         }
+        },
+        "status": "delivered",
+        "statusNo": 201,
+        "result": {
+         "type": "unknown"
+        },
+        "received": 16875368,
+        "produced": {
+         "recordType": "range",
+         "start": 0,
+         "total": 0
+        },
+        "cause": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "txID",
+           "value": "acc://12466d7cf7d22c88a7cb7515716d9ffcc158d24771b250185db8c9bf61dba264@d3adfbd25-grantor.acme/book"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://81392ebc1a42ac8ace0e605bbfbcd3d2b11d632b1844f3292e3eff5fed4a0820@d3adfbd25-grantor.acme/book"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://f22eb175863cdc33362bbbd6ac1faa8c4f220ef9183e23e2ca5987f5a9168205@d3adfbd25-grantor.acme"
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "signatures": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "identity",
+            "url": "acc://d3adfbd25-grantor.acme",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://f22eb175863cdc33362bbbd6ac1faa8c4f220ef9183e23e2ca5987f5a9168205@d3adfbd25-grantor.acme",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme",
+               "txID": "acc://91e3052f645747602d5b78db2104bdb6b7940253b7dbe3f187afbfb1d7853cad@d3adfbd25-grantor.acme",
+               "cause": "acc://64a50879dfd9e168173aecfe6745ec906d1ef1494b31238c8c475a30815a483a@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://2b6ce7489752afd98c33fe2c466e28d05680b86d775fee01894ad9dbf76929a3@d3adfbd25-grantor.acme",
+              "message": {
+               "type": "creditPayment",
+               "paid": 2500,
+               "payer": "acc://d3adfbd25-grantor.acme/book/1",
+               "initiator": true,
+               "txID": "acc://91e3052f645747602d5b78db2104bdb6b7940253b7dbe3f187afbfb1d7853cad@d3adfbd25-grantor.acme",
+               "cause": "acc://64a50879dfd9e168173aecfe6745ec906d1ef1494b31238c8c475a30815a483a@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://3f651c9d1e8b6a7e58be2aeb019aaa25ca3dae21433ee1fdb5abf963b2201859@d3adfbd25-grantor.acme",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "authority",
+                "origin": "acc://d3adfbd25-grantor.acme/book/1",
+                "authority": "acc://d3adfbd25-grantor.acme/book",
+                "txID": "acc://91e3052f645747602d5b78db2104bdb6b7940253b7dbe3f187afbfb1d7853cad@d3adfbd25-grantor.acme",
+                "cause": "acc://64a50879dfd9e168173aecfe6745ec906d1ef1494b31238c8c475a30815a483a@d3adfbd25-grantor.acme/book/1"
+               },
+               "txID": "acc://91e3052f645747602d5b78db2104bdb6b7940253b7dbe3f187afbfb1d7853cad@d3adfbd25-grantor.acme"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 3
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyBook",
+            "url": "acc://d3adfbd25-grantor.acme/book",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ],
+            "pageCount": 1
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://12466d7cf7d22c88a7cb7515716d9ffcc158d24771b250185db8c9bf61dba264@d3adfbd25-grantor.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/book",
+               "txID": "acc://91e3052f645747602d5b78db2104bdb6b7940253b7dbe3f187afbfb1d7853cad@d3adfbd25-grantor.acme",
+               "cause": "acc://64a50879dfd9e168173aecfe6745ec906d1ef1494b31238c8c475a30815a483a@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://81392ebc1a42ac8ace0e605bbfbcd3d2b11d632b1844f3292e3eff5fed4a0820@d3adfbd25-grantor.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/book",
+               "txID": "acc://91e3052f645747602d5b78db2104bdb6b7940253b7dbe3f187afbfb1d7853cad@d3adfbd25-grantor.acme",
+               "cause": "acc://f22eb175863cdc33362bbbd6ac1faa8c4f220ef9183e23e2ca5987f5a9168205@d3adfbd25-grantor.acme"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 2
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyPage",
+            "keyBook": "acc://d3adfbd25-grantor.acme/book",
+            "url": "acc://d3adfbd25-grantor.acme/book/1",
+            "creditBalance": 13050,
+            "acceptThreshold": 1,
+            "threshold": 1,
+            "version": 3,
+            "keys": [
+             {
+              "publicKeyHash": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "publicKey": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "lastUsedOn": 1794521421474000
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://64a50879dfd9e168173aecfe6745ec906d1ef1494b31238c8c475a30815a483a@d3adfbd25-grantor.acme/book/1",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "ed25519",
+                "publicKey": "6b2169edc05fcb7b88cae1b31a346244ec3116bcbd764fb9d5d7c19ffc54ef8b",
+                "signature": "5073ec9bf7f903a234f2d3009b5bfcedff62d2932813b1d73eeb4170ab68129235686d195ae35999edfa89a94b4ffd8d9a94a19c1ee1a62168ddb8e39cff3100",
+                "signer": "acc://d3adfbd25-grantor.acme/book/1",
+                "signerVersion": 1,
+                "timestamp": 1794516071497000,
+                "transactionHash": "91e3052f645747602d5b78db2104bdb6b7940253b7dbe3f187afbfb1d7853cad"
+               },
+               "txID": "acc://91e3052f645747602d5b78db2104bdb6b7940253b7dbe3f187afbfb1d7853cad@d3adfbd25-grantor.acme"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "sequence": {
+         "type": "sequenced"
+        }
+       },
+       "state": [
+        "91e3052f645747602d5b78db2104bdb6b7940253b7dbe3f187afbfb1d7853cad"
+       ]
+      },
+      {
+       "recordType": "chainEntry",
+       "name": "main",
+       "type": "transaction",
+       "index": 1,
+       "entry": "6dd15b38b1ed4b22f770087042a48a340126a0e1b8c5904a9ecdebeada415397",
+       "value": {
+        "recordType": "message",
+        "id": "acc://6dd15b38b1ed4b22f770087042a48a340126a0e1b8c5904a9ecdebeada415397@d3adfbd25-grantor.acme/certen-subjects",
+        "message": {
+         "type": "transaction",
+         "transaction": {
+          "header": {
+           "principal": "acc://d3adfbd25-grantor.acme/certen-subjects",
+           "initiator": "455616581332b404738c2ab1536bf2020236cb8903c2545242f0d541d6e77117",
+           "memo": "DAX3A_SUBJECT"
+          },
+          "body": {
+           "type": "writeData",
+           "entry": {
+            "type": "doubleHash",
+            "data": [
+             "7b22616469223a226163633a2f2f6433616466626432352d6167656e742e61636d65222c227072696e636970616c223a7b22616469223a226163633a2f2f6433616466626432352d6772616e746f722e61636d65222c226b6579426f6f6b223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f626f6f6b227d2c227072696f7248617368223a6e756c6c2c22726567697374657265644174223a313739343531363738342c22726573706f6e7369626c6553656174223a22736561743a6669632d6c61622d7472656173757279222c22736368656d61223a2263657274656e2e7375626a6563742f7632222c22737461747573223a22616374697665222c227375626d697474657273223a5b5d2c2274797065223a226167656e74222c2276657273696f6e223a317d",
+             "7b227061796c6f616448617368223a22307861633564616363653963383034326663633839396435383739336131383232636665333066646237386638656535346438363130326135396439663230633532222c227061796c6f6164546167223a2263657274656e3a7375626a6563743a7632222c227369676e617475726573223a5b7b22616c67223a2265643235353139222c2270616765223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f626f6f6b2f31222c227075626c69634b6579223a2236623231363965646330356663623762383863616531623331613334363234346563333131366263626437363466623964356437633139666663353465663862222c227369676e6174757265223a226562333264376465396465333233643836623237326632633235613061643632366632383430663135663563363933643134356536316533633531316237333166336361313363376666376232363530343539363936313665656635346266336465653163356135613161303833343165373463333436373232383864373063227d5d7d"
+            ]
+           }
+          }
+         }
+        },
+        "status": "delivered",
+        "statusNo": 201,
+        "result": {
+         "type": "writeData",
+         "entryHash": "900ce8ac26d93a6e9918664ff00059a4d878b9b42d036a24cfa24605577c54e7",
+         "accountUrl": "acc://d3adfbd25-grantor.acme/certen-subjects",
+         "accountID": "cc5a773595f26016c1e3d7b15d9f877446e48bc05c654b04a4bc26b36729d5ed"
+        },
+        "received": 16876077,
+        "produced": {
+         "recordType": "range",
+         "start": 0,
+         "total": 0
+        },
+        "cause": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "txID",
+           "value": "acc://9db796382d44d44a399fd2a547832022491c708df3cd08cb6efded210db976b5@d3adfbd25-grantor.acme/book"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://ea64b10d754731513ed18132098c515851e3827b86c7ed50381700944a421599@d3adfbd25-grantor.acme/certen-subjects"
+          }
+         ],
+         "start": 0,
+         "total": 2
+        },
+        "signatures": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyBook",
+            "url": "acc://d3adfbd25-grantor.acme/book",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ],
+            "pageCount": 1
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://9db796382d44d44a399fd2a547832022491c708df3cd08cb6efded210db976b5@d3adfbd25-grantor.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/book",
+               "txID": "acc://6dd15b38b1ed4b22f770087042a48a340126a0e1b8c5904a9ecdebeada415397@d3adfbd25-grantor.acme/certen-subjects",
+               "cause": "acc://ea64b10d754731513ed18132098c515851e3827b86c7ed50381700944a421599@d3adfbd25-grantor.acme/certen-subjects"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyPage",
+            "keyBook": "acc://d3adfbd25-grantor.acme/book",
+            "url": "acc://d3adfbd25-grantor.acme/book/1",
+            "creditBalance": 13050,
+            "acceptThreshold": 1,
+            "threshold": 1,
+            "version": 3,
+            "keys": [
+             {
+              "publicKeyHash": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "publicKey": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "lastUsedOn": 1794521421474000
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://426439f8effc85fadc1089689148c0eba472a732cb4748b567d0a789a8733112@d3adfbd25-grantor.acme/book/1",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "ed25519",
+                "publicKey": "6b2169edc05fcb7b88cae1b31a346244ec3116bcbd764fb9d5d7c19ffc54ef8b",
+                "signature": "333c7000b1e295dc4eaf06731845caeec470644062798e15bf0b2ee456dd63a7234282ff151b00e12f89463f1e2b58069869014e362d214402ccf832234ac609",
+                "signer": "acc://d3adfbd25-grantor.acme/book/1",
+                "signerVersion": 2,
+                "timestamp": 1794516786059000,
+                "transactionHash": "6dd15b38b1ed4b22f770087042a48a340126a0e1b8c5904a9ecdebeada415397"
+               },
+               "txID": "acc://6dd15b38b1ed4b22f770087042a48a340126a0e1b8c5904a9ecdebeada415397@d3adfbd25-grantor.acme/certen-subjects"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "dataAccount",
+            "url": "acc://d3adfbd25-grantor.acme/certen-subjects",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://ea64b10d754731513ed18132098c515851e3827b86c7ed50381700944a421599@d3adfbd25-grantor.acme/certen-subjects",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/certen-subjects",
+               "txID": "acc://6dd15b38b1ed4b22f770087042a48a340126a0e1b8c5904a9ecdebeada415397@d3adfbd25-grantor.acme/certen-subjects",
+               "cause": "acc://426439f8effc85fadc1089689148c0eba472a732cb4748b567d0a789a8733112@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://1c78e18622b29d66b1868d4a060347ee44f1f13471b9edbc3c6527f78685163a@d3adfbd25-grantor.acme/certen-subjects",
+              "message": {
+               "type": "creditPayment",
+               "paid": 40,
+               "payer": "acc://d3adfbd25-grantor.acme/book/1",
+               "initiator": true,
+               "txID": "acc://6dd15b38b1ed4b22f770087042a48a340126a0e1b8c5904a9ecdebeada415397@d3adfbd25-grantor.acme/certen-subjects",
+               "cause": "acc://426439f8effc85fadc1089689148c0eba472a732cb4748b567d0a789a8733112@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://2cd058e36ed4909ff302fd8c5f3863014dd3db53fb4855efe589673a4c429952@d3adfbd25-grantor.acme/certen-subjects",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "authority",
+                "origin": "acc://d3adfbd25-grantor.acme/book/1",
+                "authority": "acc://d3adfbd25-grantor.acme/book",
+                "txID": "acc://6dd15b38b1ed4b22f770087042a48a340126a0e1b8c5904a9ecdebeada415397@d3adfbd25-grantor.acme/certen-subjects",
+                "cause": "acc://426439f8effc85fadc1089689148c0eba472a732cb4748b567d0a789a8733112@d3adfbd25-grantor.acme/book/1"
+               },
+               "txID": "acc://6dd15b38b1ed4b22f770087042a48a340126a0e1b8c5904a9ecdebeada415397@d3adfbd25-grantor.acme/certen-subjects"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 3
+           }
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "sequence": {
+         "type": "sequenced"
+        }
+       },
+       "state": [
+        null,
+        "899f896df4bcf1c71b63dd0a5195edd54b0122bd184c2584fcc60651c55fa57d"
+       ]
+      },
+      {
+       "recordType": "chainEntry",
+       "name": "main",
+       "type": "transaction",
+       "index": 2,
+       "entry": "99ddeb7e35188f4f3e2a7595bf5eee8164e1ec71a9fea1779ed720ffedc06385",
+       "value": {
+        "recordType": "message",
+        "id": "acc://99ddeb7e35188f4f3e2a7595bf5eee8164e1ec71a9fea1779ed720ffedc06385@d3adfbd25-grantor.acme/certen-subjects",
+        "message": {
+         "type": "transaction",
+         "transaction": {
+          "header": {
+           "principal": "acc://d3adfbd25-grantor.acme/certen-subjects",
+           "initiator": "4671b19e4f6a14f10a8386f5e9d80a2dac582bbb736e3044e74af82e9c58f00f",
+           "memo": "DAX3A_SUBJECT_V2"
+          },
+          "body": {
+           "type": "writeData",
+           "entry": {
+            "type": "doubleHash",
+            "data": [
+             "7b22616469223a226163633a2f2f6433616466626432352d6167656e742e61636d65222c227072696e636970616c223a7b22616469223a226163633a2f2f6433616466626432352d6772616e746f722e61636d65222c226b6579426f6f6b223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f626f6f6b227d2c227072696f7248617368223a22307861633564616363653963383034326663633839396435383739336131383232636665333066646237386638656535346438363130326135396439663230633532222c22726567697374657265644174223a313739343531393836302c22726573706f6e7369626c6553656174223a22736561743a6669632d6c61622d7472656173757279222c22736368656d61223a2263657274656e2e7375626a6563742f7632222c22737461747573223a2273757370656e646564222c227375626d697474657273223a5b5d2c2274797065223a226167656e74222c2276657273696f6e223a327d",
+             "7b227061796c6f616448617368223a22307863383531656634653336333232366464366332303736656365343438313365623539616431383464383331313737353666643434343630663938653964633261222c227061796c6f6164546167223a2263657274656e3a7375626a6563743a7632222c227369676e617475726573223a5b7b22616c67223a2265643235353139222c2270616765223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f626f6f6b2f31222c227075626c69634b6579223a2236623231363965646330356663623762383863616531623331613334363234346563333131366263626437363466623964356437633139666663353465663862222c227369676e6174757265223a226532613338386133346261363265303164656533376264346538653966623538356261643665343538356662656163316534666236646262333234653537663730653062356566313235323731653061313039343230623433613833626133666637643065613030353431343533363736613062626665656535323237333035227d5d7d"
+            ]
+           }
+          }
+         }
+        },
+        "status": "delivered",
+        "statusNo": 201,
+        "result": {
+         "type": "writeData",
+         "entryHash": "935872955a6147b09707b841fa9e36594f0e9d5c0c6a3fbbfb44d8211d170657",
+         "accountUrl": "acc://d3adfbd25-grantor.acme/certen-subjects",
+         "accountID": "cc5a773595f26016c1e3d7b15d9f877446e48bc05c654b04a4bc26b36729d5ed"
+        },
+        "received": 16879125,
+        "produced": {
+         "recordType": "range",
+         "start": 0,
+         "total": 0
+        },
+        "cause": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "txID",
+           "value": "acc://892408257ee334744e207f843360032e0c9704ae63385ce6b51db3315a49f05f@d3adfbd25-grantor.acme/book"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://c231bb7aa015c16c7a015fc7e2b482757b9d89de83fcc273d67f24117d60a29e@d3adfbd25-grantor.acme/certen-subjects"
+          }
+         ],
+         "start": 0,
+         "total": 2
+        },
+        "signatures": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyBook",
+            "url": "acc://d3adfbd25-grantor.acme/book",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ],
+            "pageCount": 1
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://892408257ee334744e207f843360032e0c9704ae63385ce6b51db3315a49f05f@d3adfbd25-grantor.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/book",
+               "txID": "acc://99ddeb7e35188f4f3e2a7595bf5eee8164e1ec71a9fea1779ed720ffedc06385@d3adfbd25-grantor.acme/certen-subjects",
+               "cause": "acc://c231bb7aa015c16c7a015fc7e2b482757b9d89de83fcc273d67f24117d60a29e@d3adfbd25-grantor.acme/certen-subjects"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyPage",
+            "keyBook": "acc://d3adfbd25-grantor.acme/book",
+            "url": "acc://d3adfbd25-grantor.acme/book/1",
+            "creditBalance": 13050,
+            "acceptThreshold": 1,
+            "threshold": 1,
+            "version": 3,
+            "keys": [
+             {
+              "publicKeyHash": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "publicKey": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "lastUsedOn": 1794521421474000
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://6c4290573adfb6ae5a1e4c1135db6be730b0c277d0a86d713cadfeb23a2305e5@d3adfbd25-grantor.acme/book/1",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "ed25519",
+                "publicKey": "6b2169edc05fcb7b88cae1b31a346244ec3116bcbd764fb9d5d7c19ffc54ef8b",
+                "signature": "3da791784a67c30cd7d786ec0ef60b6d75873fffc9b66ff612486e8d1de54e77da653b510c1009185b69c5304a84866d5a426bc9f9a31369dbf503717d4cc404",
+                "signer": "acc://d3adfbd25-grantor.acme/book/1",
+                "signerVersion": 2,
+                "timestamp": 1794519861644000,
+                "transactionHash": "99ddeb7e35188f4f3e2a7595bf5eee8164e1ec71a9fea1779ed720ffedc06385"
+               },
+               "txID": "acc://99ddeb7e35188f4f3e2a7595bf5eee8164e1ec71a9fea1779ed720ffedc06385@d3adfbd25-grantor.acme/certen-subjects"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "dataAccount",
+            "url": "acc://d3adfbd25-grantor.acme/certen-subjects",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://c231bb7aa015c16c7a015fc7e2b482757b9d89de83fcc273d67f24117d60a29e@d3adfbd25-grantor.acme/certen-subjects",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/certen-subjects",
+               "txID": "acc://99ddeb7e35188f4f3e2a7595bf5eee8164e1ec71a9fea1779ed720ffedc06385@d3adfbd25-grantor.acme/certen-subjects",
+               "cause": "acc://6c4290573adfb6ae5a1e4c1135db6be730b0c277d0a86d713cadfeb23a2305e5@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://5c4081968bb8dc241387b594eabed524734c4e04cfa412df4338fd7ac2b45f1c@d3adfbd25-grantor.acme/certen-subjects",
+              "message": {
+               "type": "creditPayment",
+               "paid": 40,
+               "payer": "acc://d3adfbd25-grantor.acme/book/1",
+               "initiator": true,
+               "txID": "acc://99ddeb7e35188f4f3e2a7595bf5eee8164e1ec71a9fea1779ed720ffedc06385@d3adfbd25-grantor.acme/certen-subjects",
+               "cause": "acc://6c4290573adfb6ae5a1e4c1135db6be730b0c277d0a86d713cadfeb23a2305e5@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://c9615a3392dd19c1c8261bc8f9757eb285e4a9c0934a394cefbcd1e25ea81777@d3adfbd25-grantor.acme/certen-subjects",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "authority",
+                "origin": "acc://d3adfbd25-grantor.acme/book/1",
+                "authority": "acc://d3adfbd25-grantor.acme/book",
+                "txID": "acc://99ddeb7e35188f4f3e2a7595bf5eee8164e1ec71a9fea1779ed720ffedc06385@d3adfbd25-grantor.acme/certen-subjects",
+                "cause": "acc://6c4290573adfb6ae5a1e4c1135db6be730b0c277d0a86d713cadfeb23a2305e5@d3adfbd25-grantor.acme/book/1"
+               },
+               "txID": "acc://99ddeb7e35188f4f3e2a7595bf5eee8164e1ec71a9fea1779ed720ffedc06385@d3adfbd25-grantor.acme/certen-subjects"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 3
+           }
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "sequence": {
+         "type": "sequenced"
+        }
+       },
+       "state": [
+        "99ddeb7e35188f4f3e2a7595bf5eee8164e1ec71a9fea1779ed720ffedc06385",
+        "899f896df4bcf1c71b63dd0a5195edd54b0122bd184c2584fcc60651c55fa57d",
+        null
+       ]
+      },
+      {
+       "recordType": "chainEntry",
+       "name": "main",
+       "type": "transaction",
+       "index": 3,
+       "entry": "8768f53ff3c545b3dd73ad889568ae9582dcaa07224357eb01eec1440303ece1",
+       "value": {
+        "recordType": "message",
+        "id": "acc://8768f53ff3c545b3dd73ad889568ae9582dcaa07224357eb01eec1440303ece1@d3adfbd25-grantor.acme/certen-subjects",
+        "message": {
+         "type": "transaction",
+         "transaction": {
+          "header": {
+           "principal": "acc://d3adfbd25-grantor.acme/certen-subjects",
+           "initiator": "005914ae640dfc1223e96142840b0b5612f974892ab6d8781bb76420cb2fb5dc",
+           "memo": "DAX3A_SUBJECT_V3"
+          },
+          "body": {
+           "type": "writeData",
+           "entry": {
+            "type": "doubleHash",
+            "data": [
+             "7b22616469223a226163633a2f2f6433616466626432352d6167656e742e61636d65222c227072696e636970616c223a7b22616469223a226163633a2f2f6433616466626432352d6772616e746f722e61636d65222c226b6579426f6f6b223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f626f6f6b227d2c227072696f7248617368223a22307863383531656634653336333232366464366332303736656365343438313365623539616431383464383331313737353666643434343630663938653964633261222c22726567697374657265644174223a313739343531393838392c22726573706f6e7369626c6553656174223a22736561743a6669632d6c61622d7472656173757279222c22736368656d61223a2263657274656e2e7375626a6563742f7632222c22737461747573223a22616374697665222c227375626d697474657273223a5b5d2c2274797065223a226167656e74222c2276657273696f6e223a337d",
+             "7b227061796c6f616448617368223a22307830623761313661393730633536373861303138666163633432663938316130623566336366326438623034366164346535653063626137663234616435313863222c227061796c6f6164546167223a2263657274656e3a7375626a6563743a7632222c227369676e617475726573223a5b7b22616c67223a2265643235353139222c2270616765223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f626f6f6b2f31222c227075626c69634b6579223a2236623231363965646330356663623762383863616531623331613334363234346563333131366263626437363466623964356437633139666663353465663862222c227369676e6174757265223a223730303061656266363961623562316633643837646665616561303063303135313333393736646431313939316639656332643338623234386631663132363364393135393733633061376464383532643666643835373330323733383037333436366435646465333638333532353435633861633262316634356135343062227d5d7d"
+            ]
+           }
+          }
+         }
+        },
+        "status": "delivered",
+        "statusNo": 201,
+        "result": {
+         "type": "writeData",
+         "entryHash": "a0ed0c651a2f560017ee7f1ff2766797d18f9191b508409436bf0434df5ea4ba",
+         "accountUrl": "acc://d3adfbd25-grantor.acme/certen-subjects",
+         "accountID": "cc5a773595f26016c1e3d7b15d9f877446e48bc05c654b04a4bc26b36729d5ed"
+        },
+        "received": 16879158,
+        "produced": {
+         "recordType": "range",
+         "start": 0,
+         "total": 0
+        },
+        "cause": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "txID",
+           "value": "acc://36d0e223ae8f77aefa9b8f7cbbc7c650b8c28a971d81b87dd5d4ace5a283626e@d3adfbd25-grantor.acme/book"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://d60b91a664319330a297d8a1eeb45014cf93f8cb8df1a52d1625d4cce308db8f@d3adfbd25-grantor.acme/certen-subjects"
+          }
+         ],
+         "start": 0,
+         "total": 2
+        },
+        "signatures": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyBook",
+            "url": "acc://d3adfbd25-grantor.acme/book",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ],
+            "pageCount": 1
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://36d0e223ae8f77aefa9b8f7cbbc7c650b8c28a971d81b87dd5d4ace5a283626e@d3adfbd25-grantor.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/book",
+               "txID": "acc://8768f53ff3c545b3dd73ad889568ae9582dcaa07224357eb01eec1440303ece1@d3adfbd25-grantor.acme/certen-subjects",
+               "cause": "acc://d60b91a664319330a297d8a1eeb45014cf93f8cb8df1a52d1625d4cce308db8f@d3adfbd25-grantor.acme/certen-subjects"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyPage",
+            "keyBook": "acc://d3adfbd25-grantor.acme/book",
+            "url": "acc://d3adfbd25-grantor.acme/book/1",
+            "creditBalance": 13050,
+            "acceptThreshold": 1,
+            "threshold": 1,
+            "version": 3,
+            "keys": [
+             {
+              "publicKeyHash": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "publicKey": "23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd",
+              "lastUsedOn": 1794521421474000
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://f8e377da9a16c1b02e130daf27d6c2aeadd4a1760855982d7785496c2045def1@d3adfbd25-grantor.acme/book/1",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "ed25519",
+                "publicKey": "6b2169edc05fcb7b88cae1b31a346244ec3116bcbd764fb9d5d7c19ffc54ef8b",
+                "signature": "0793f90cfcfbe4386582e8c149e2d72ab334625c3230a48f3cce2a7ca2617a15b1950176fdf49a5491df0ea5078cd3fc828e538c966fde8bcab46b43d08ca805",
+                "signer": "acc://d3adfbd25-grantor.acme/book/1",
+                "signerVersion": 2,
+                "timestamp": 1794519894890000,
+                "transactionHash": "8768f53ff3c545b3dd73ad889568ae9582dcaa07224357eb01eec1440303ece1"
+               },
+               "txID": "acc://8768f53ff3c545b3dd73ad889568ae9582dcaa07224357eb01eec1440303ece1@d3adfbd25-grantor.acme/certen-subjects"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "dataAccount",
+            "url": "acc://d3adfbd25-grantor.acme/certen-subjects",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-grantor.acme/book"
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://d60b91a664319330a297d8a1eeb45014cf93f8cb8df1a52d1625d4cce308db8f@d3adfbd25-grantor.acme/certen-subjects",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-grantor.acme/certen-subjects",
+               "txID": "acc://8768f53ff3c545b3dd73ad889568ae9582dcaa07224357eb01eec1440303ece1@d3adfbd25-grantor.acme/certen-subjects",
+               "cause": "acc://f8e377da9a16c1b02e130daf27d6c2aeadd4a1760855982d7785496c2045def1@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://620326401644ca608ad280d2cc6b417e0510adaef1e281a4d2dd6fcd9adcfd40@d3adfbd25-grantor.acme/certen-subjects",
+              "message": {
+               "type": "creditPayment",
+               "paid": 40,
+               "payer": "acc://d3adfbd25-grantor.acme/book/1",
+               "initiator": true,
+               "txID": "acc://8768f53ff3c545b3dd73ad889568ae9582dcaa07224357eb01eec1440303ece1@d3adfbd25-grantor.acme/certen-subjects",
+               "cause": "acc://f8e377da9a16c1b02e130daf27d6c2aeadd4a1760855982d7785496c2045def1@d3adfbd25-grantor.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://3ad9cdf381c1c3f7250d764c7022bddb0cb6c81efbe6e16e5522a0365fc2af81@d3adfbd25-grantor.acme/certen-subjects",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "authority",
+                "origin": "acc://d3adfbd25-grantor.acme/book/1",
+                "authority": "acc://d3adfbd25-grantor.acme/book",
+                "txID": "acc://8768f53ff3c545b3dd73ad889568ae9582dcaa07224357eb01eec1440303ece1@d3adfbd25-grantor.acme/certen-subjects",
+                "cause": "acc://f8e377da9a16c1b02e130daf27d6c2aeadd4a1760855982d7785496c2045def1@d3adfbd25-grantor.acme/book/1"
+               },
+               "txID": "acc://8768f53ff3c545b3dd73ad889568ae9582dcaa07224357eb01eec1440303ece1@d3adfbd25-grantor.acme/certen-subjects"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 3
+           }
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "sequence": {
+         "type": "sequenced"
+        }
+       },
+       "state": [
+        null,
+        null,
+        "a11923d89229c3dbc11b2a1dabd950902667d52bd26b936226761c6b0f0c478e"
+       ]
+      }
+     ],
+     "start": 0,
+     "total": 4,
+     "lastBlockTime": "2026-11-12T22:21:36Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-grantor.acme/certen-subjects",
+    "query": {
+     "queryType": "block",
+     "minor": 16876077
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "minorBlock",
+     "index": 16876077,
+     "time": "2026-11-12T20:52:58Z",
+     "source": "acc://bvn-BVN3.acme",
+     "lastBlockTime": "2026-11-12T22:21:36Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-grantor.acme/certen-subjects",
+    "query": {
+     "queryType": "block",
+     "minor": 16879125
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "minorBlock",
+     "index": 16879125,
+     "time": "2026-11-12T21:44:13Z",
+     "source": "acc://bvn-BVN3.acme",
+     "lastBlockTime": "2026-11-12T22:21:36Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-grantor.acme/certen-subjects",
+    "query": {
+     "queryType": "block",
+     "minor": 16879158
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "minorBlock",
+     "index": 16879158,
+     "time": "2026-11-12T21:44:46Z",
+     "source": "acc://bvn-BVN3.acme",
+     "lastBlockTime": "2026-11-12T22:21:36Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-agent.acme/certen-acceptances",
+    "query": {
+     "queryType": "default"
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "account",
+     "account": {
+      "type": "dataAccount",
+      "url": "acc://d3adfbd25-agent.acme/certen-acceptances",
+      "authorities": [
+       {
+        "url": "acc://d3adfbd25-agent.acme/book"
+       }
+      ]
+     },
+     "pending": {
+      "recordType": "range",
+      "records": [
+       {
+        "recordType": "txID",
+        "value": "acc://3f140911f42f4354cdcd144516a6b031c27e003525dd58bc653e7d624e1eaa8c@d3adfbd25-agent.acme/certen-acceptances"
+       }
+      ],
+      "start": 0,
+      "total": 1
+     },
+     "lastBlockTime": "2026-11-12T22:21:36Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-agent.acme/certen-acceptances",
+    "query": {
+     "queryType": "chain",
+     "name": "main",
+     "range": {
+      "start": 0,
+      "count": 100,
+      "expand": true
+     }
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "range",
+     "records": [
+      {
+       "recordType": "chainEntry",
+       "name": "main",
+       "type": "transaction",
+       "index": 0,
+       "entry": "4712ee81bad887b56a5b0955fbe4ecd1be773ffeabf9d35a7390f89cecd16496",
+       "value": {
+        "recordType": "message",
+        "id": "acc://4712ee81bad887b56a5b0955fbe4ecd1be773ffeabf9d35a7390f89cecd16496@d3adfbd25-agent.acme",
+        "message": {
+         "type": "transaction",
+         "transaction": {
+          "header": {
+           "principal": "acc://d3adfbd25-agent.acme",
+           "initiator": "1308a86725e44801b5d2e130d7a523ae816a82110aebdb4c608d703d9c321af7"
+          },
+          "body": {
+           "type": "createDataAccount",
+           "url": "acc://d3adfbd25-agent.acme/certen-acceptances",
+           "authorities": [
+            "acc://d3adfbd25-agent.acme/book"
+           ]
+          }
+         }
+        },
+        "status": "delivered",
+        "statusNo": 201,
+        "result": {
+         "type": "unknown"
+        },
+        "received": 16888667,
+        "produced": {
+         "recordType": "range",
+         "start": 0,
+         "total": 0
+        },
+        "cause": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "txID",
+           "value": "acc://01b11951471f0cf6c2c1b9be3b48718b4d4f5b79d79cad7f962b8c1cbb5f8a7f@d3adfbd25-agent.acme/book"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://166e2a49617fda17b888a127719eca421ac6c16082fe671cf8059f9fd537deae@d3adfbd25-agent.acme"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://775d2919a03f7f7384d0e3c6a851e101e93640865faa481dfe38d5f3554881ba@d3adfbd25-agent.acme/book"
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "signatures": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "identity",
+            "url": "acc://d3adfbd25-agent.acme",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-agent.acme/book"
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://166e2a49617fda17b888a127719eca421ac6c16082fe671cf8059f9fd537deae@d3adfbd25-agent.acme",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-agent.acme",
+               "txID": "acc://4712ee81bad887b56a5b0955fbe4ecd1be773ffeabf9d35a7390f89cecd16496@d3adfbd25-agent.acme",
+               "cause": "acc://a85fdd62f0a2de1d7c5d874d1e57679913d99ae14aab3aa2fba918575d99ce6f@d3adfbd25-agent.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://791cc9af1f7828badc91a438aabba665cef9ec306843673ef2aa788de4ee1319@d3adfbd25-agent.acme",
+              "message": {
+               "type": "creditPayment",
+               "paid": 2500,
+               "payer": "acc://d3adfbd25-agent.acme/book/1",
+               "initiator": true,
+               "txID": "acc://4712ee81bad887b56a5b0955fbe4ecd1be773ffeabf9d35a7390f89cecd16496@d3adfbd25-agent.acme",
+               "cause": "acc://a85fdd62f0a2de1d7c5d874d1e57679913d99ae14aab3aa2fba918575d99ce6f@d3adfbd25-agent.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://f3a4fbd8cdaf0c5fee183c0cff8751045d498c7f3a6259ed0c089b899a4314fb@d3adfbd25-agent.acme",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "authority",
+                "origin": "acc://d3adfbd25-agent.acme/book/1",
+                "authority": "acc://d3adfbd25-agent.acme/book",
+                "txID": "acc://4712ee81bad887b56a5b0955fbe4ecd1be773ffeabf9d35a7390f89cecd16496@d3adfbd25-agent.acme",
+                "cause": "acc://a85fdd62f0a2de1d7c5d874d1e57679913d99ae14aab3aa2fba918575d99ce6f@d3adfbd25-agent.acme/book/1"
+               },
+               "txID": "acc://4712ee81bad887b56a5b0955fbe4ecd1be773ffeabf9d35a7390f89cecd16496@d3adfbd25-agent.acme"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 3
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyBook",
+            "url": "acc://d3adfbd25-agent.acme/book",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-agent.acme/book"
+             }
+            ],
+            "pageCount": 1
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://775d2919a03f7f7384d0e3c6a851e101e93640865faa481dfe38d5f3554881ba@d3adfbd25-agent.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-agent.acme/book",
+               "txID": "acc://4712ee81bad887b56a5b0955fbe4ecd1be773ffeabf9d35a7390f89cecd16496@d3adfbd25-agent.acme",
+               "cause": "acc://a85fdd62f0a2de1d7c5d874d1e57679913d99ae14aab3aa2fba918575d99ce6f@d3adfbd25-agent.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://01b11951471f0cf6c2c1b9be3b48718b4d4f5b79d79cad7f962b8c1cbb5f8a7f@d3adfbd25-agent.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-agent.acme/book",
+               "txID": "acc://4712ee81bad887b56a5b0955fbe4ecd1be773ffeabf9d35a7390f89cecd16496@d3adfbd25-agent.acme",
+               "cause": "acc://166e2a49617fda17b888a127719eca421ac6c16082fe671cf8059f9fd537deae@d3adfbd25-agent.acme"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 2
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyPage",
+            "keyBook": "acc://d3adfbd25-agent.acme/book",
+            "url": "acc://d3adfbd25-agent.acme/book/1",
+            "creditBalance": 4920,
+            "acceptThreshold": 1,
+            "threshold": 1,
+            "version": 2,
+            "keys": [
+             {
+              "publicKeyHash": "bb4ab885c41e28ffb3e5e1855847f61a4cd4c4968c25447b55a5ce3798d249b1",
+              "publicKey": "bb4ab885c41e28ffb3e5e1855847f61a4cd4c4968c25447b55a5ce3798d249b1",
+              "lastUsedOn": 1794521935098000
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://a85fdd62f0a2de1d7c5d874d1e57679913d99ae14aab3aa2fba918575d99ce6f@d3adfbd25-agent.acme/book/1",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "ed25519",
+                "publicKey": "26ab7be7533783728b6648b5906d02bb1d603dc138d4bbd4c9469daa0ec67b97",
+                "signature": "d1c1a435fa90cc8774f90ccc75f712a9c605771d9f7074cd569ec88ace14fce7c61d1dcae172a604eacea9e64220430f958d6a5a8f009b37f84bdd2c9051180f",
+                "signer": "acc://d3adfbd25-agent.acme/book/1",
+                "signerVersion": 1,
+                "timestamp": 1794516077317000,
+                "transactionHash": "4712ee81bad887b56a5b0955fbe4ecd1be773ffeabf9d35a7390f89cecd16496"
+               },
+               "txID": "acc://4712ee81bad887b56a5b0955fbe4ecd1be773ffeabf9d35a7390f89cecd16496@d3adfbd25-agent.acme"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "sequence": {
+         "type": "sequenced"
+        }
+       },
+       "state": [
+        "4712ee81bad887b56a5b0955fbe4ecd1be773ffeabf9d35a7390f89cecd16496"
+       ]
+      },
+      {
+       "recordType": "chainEntry",
+       "name": "main",
+       "type": "transaction",
+       "index": 1,
+       "entry": "7f5b97a3d813f646ec88b309e0e6edf6420edddfe6c914df83c8f15426837199",
+       "value": {
+        "recordType": "message",
+        "id": "acc://7f5b97a3d813f646ec88b309e0e6edf6420edddfe6c914df83c8f15426837199@d3adfbd25-agent.acme/certen-acceptances",
+        "message": {
+         "type": "transaction",
+         "transaction": {
+          "header": {
+           "principal": "acc://d3adfbd25-agent.acme/certen-acceptances",
+           "initiator": "c5563b0f437def3e845f7644e4d9d527a7abddb6767bd92f4f0c9aee34158764",
+           "memo": "DAX3A_ACCEPTANCE"
+          },
+          "body": {
+           "type": "writeData",
+           "entry": {
+            "type": "doubleHash",
+            "data": [
+             "7b22616374696f6e223a22616363657074222c227072696e636970616c223a226163633a2f2f6433616466626432352d6772616e746f722e61636d65222c227265676973747279223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f63657274656e2d7375626a65637473222c22736368656d61223a2263657274656e2e616363657074616e63652f7631222c227375626a656374223a226163633a2f2f6433616466626432352d6167656e742e61636d65227d"
+            ]
+           }
+          }
+         }
+        },
+        "status": "delivered",
+        "statusNo": 201,
+        "result": {
+         "type": "writeData",
+         "entryHash": "3b2223e6b5b2d46b4be320167139227d0ce819d47544ba2da76293c78ec861b7",
+         "accountUrl": "acc://d3adfbd25-agent.acme/certen-acceptances",
+         "accountID": "0aa005be0bf4163241f876192b29fc39c4d010100df7f338edf2d8a4189f51c1"
+        },
+        "received": 16889363,
+        "produced": {
+         "recordType": "range",
+         "start": 0,
+         "total": 0
+        },
+        "cause": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "txID",
+           "value": "acc://67c4cd232ca196ed89deb986b565051929fdaf7a50702d71f45c2d7c0349d009@d3adfbd25-agent.acme/certen-acceptances"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://d55cd9b20de9fda72a102e9344baaba8c09a604f939cf67da3cc4c547da98817@d3adfbd25-agent.acme/book"
+          }
+         ],
+         "start": 0,
+         "total": 2
+        },
+        "signatures": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyBook",
+            "url": "acc://d3adfbd25-agent.acme/book",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-agent.acme/book"
+             }
+            ],
+            "pageCount": 1
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://d55cd9b20de9fda72a102e9344baaba8c09a604f939cf67da3cc4c547da98817@d3adfbd25-agent.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-agent.acme/book",
+               "txID": "acc://7f5b97a3d813f646ec88b309e0e6edf6420edddfe6c914df83c8f15426837199@d3adfbd25-agent.acme/certen-acceptances",
+               "cause": "acc://67c4cd232ca196ed89deb986b565051929fdaf7a50702d71f45c2d7c0349d009@d3adfbd25-agent.acme/certen-acceptances"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyPage",
+            "keyBook": "acc://d3adfbd25-agent.acme/book",
+            "url": "acc://d3adfbd25-agent.acme/book/1",
+            "creditBalance": 4920,
+            "acceptThreshold": 1,
+            "threshold": 1,
+            "version": 2,
+            "keys": [
+             {
+              "publicKeyHash": "bb4ab885c41e28ffb3e5e1855847f61a4cd4c4968c25447b55a5ce3798d249b1",
+              "publicKey": "bb4ab885c41e28ffb3e5e1855847f61a4cd4c4968c25447b55a5ce3798d249b1",
+              "lastUsedOn": 1794521935098000
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://937e4fa94a9593888338b8a4e0dfd41f5b8e6a46fa94484e3a82a32e3bf6e487@d3adfbd25-agent.acme/book/1",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "ed25519",
+                "publicKey": "26ab7be7533783728b6648b5906d02bb1d603dc138d4bbd4c9469daa0ec67b97",
+                "signature": "682b7dc10aaf7f70bedb82d2966a04c20f7a92a0daffa58bdb3f6626c075cab834c950a684395cb52e243e55e65f9277285e1a5a22a9fc7ccb8736e267ab9109",
+                "signer": "acc://d3adfbd25-agent.acme/book/1",
+                "signerVersion": 1,
+                "timestamp": 1794516779268000,
+                "transactionHash": "7f5b97a3d813f646ec88b309e0e6edf6420edddfe6c914df83c8f15426837199"
+               },
+               "txID": "acc://7f5b97a3d813f646ec88b309e0e6edf6420edddfe6c914df83c8f15426837199@d3adfbd25-agent.acme/certen-acceptances"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "dataAccount",
+            "url": "acc://d3adfbd25-agent.acme/certen-acceptances",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-agent.acme/book"
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://67c4cd232ca196ed89deb986b565051929fdaf7a50702d71f45c2d7c0349d009@d3adfbd25-agent.acme/certen-acceptances",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-agent.acme/certen-acceptances",
+               "txID": "acc://7f5b97a3d813f646ec88b309e0e6edf6420edddfe6c914df83c8f15426837199@d3adfbd25-agent.acme/certen-acceptances",
+               "cause": "acc://937e4fa94a9593888338b8a4e0dfd41f5b8e6a46fa94484e3a82a32e3bf6e487@d3adfbd25-agent.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://61c12f87bb066370dc5f893038989bc3f203f1d116cc67fbb252b251e5006386@d3adfbd25-agent.acme/certen-acceptances",
+              "message": {
+               "type": "creditPayment",
+               "paid": 20,
+               "payer": "acc://d3adfbd25-agent.acme/book/1",
+               "initiator": true,
+               "txID": "acc://7f5b97a3d813f646ec88b309e0e6edf6420edddfe6c914df83c8f15426837199@d3adfbd25-agent.acme/certen-acceptances",
+               "cause": "acc://937e4fa94a9593888338b8a4e0dfd41f5b8e6a46fa94484e3a82a32e3bf6e487@d3adfbd25-agent.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://b1fdf1905b77f5855c943c04155ce371b845af7f746d485bd571e2fb5130a10f@d3adfbd25-agent.acme/certen-acceptances",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "authority",
+                "origin": "acc://d3adfbd25-agent.acme/book/1",
+                "authority": "acc://d3adfbd25-agent.acme/book",
+                "txID": "acc://7f5b97a3d813f646ec88b309e0e6edf6420edddfe6c914df83c8f15426837199@d3adfbd25-agent.acme/certen-acceptances",
+                "cause": "acc://937e4fa94a9593888338b8a4e0dfd41f5b8e6a46fa94484e3a82a32e3bf6e487@d3adfbd25-agent.acme/book/1"
+               },
+               "txID": "acc://7f5b97a3d813f646ec88b309e0e6edf6420edddfe6c914df83c8f15426837199@d3adfbd25-agent.acme/certen-acceptances"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 3
+           }
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "sequence": {
+         "type": "sequenced"
+        }
+       },
+       "state": [
+        null,
+        "dc59c0bdc6c1b8069ff9c6d19a967cc0eccf84c58a2972515996ee29f752b12e"
+       ]
+      },
+      {
+       "recordType": "chainEntry",
+       "name": "main",
+       "type": "transaction",
+       "index": 2,
+       "entry": "b618ff6ac73b1cfdea19005d03c3b8baf1e19f4a397681dc9cfbb3113317827f",
+       "value": {
+        "recordType": "message",
+        "id": "acc://b618ff6ac73b1cfdea19005d03c3b8baf1e19f4a397681dc9cfbb3113317827f@d3adfbd25-agent.acme/certen-acceptances",
+        "message": {
+         "type": "transaction",
+         "transaction": {
+          "header": {
+           "principal": "acc://d3adfbd25-agent.acme/certen-acceptances",
+           "initiator": "a03459469e309791d1c29d8156574fb838673389b3861d4e1a6951dc21748bad",
+           "memo": "DAX3A_ACCEPTANCE"
+          },
+          "body": {
+           "type": "writeData",
+           "entry": {
+            "type": "doubleHash",
+            "data": [
+             "7b22616374696f6e223a227265766f6b65222c227072696e636970616c223a226163633a2f2f6433616466626432352d6772616e746f722e61636d65222c227265676973747279223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f63657274656e2d7375626a65637473222c22736368656d61223a2263657274656e2e616363657074616e63652f7631222c227375626a656374223a226163633a2f2f6433616466626432352d6167656e742e61636d65227d"
+            ]
+           }
+          }
+         }
+        },
+        "status": "delivered",
+        "statusNo": 201,
+        "result": {
+         "type": "writeData",
+         "entryHash": "21e15cb6bc4ffef2931ed7901fde1b3d22ead16a9b5b7bb2ffa88da28d6fa71d",
+         "accountUrl": "acc://d3adfbd25-agent.acme/certen-acceptances",
+         "accountID": "0aa005be0bf4163241f876192b29fc39c4d010100df7f338edf2d8a4189f51c1"
+        },
+        "received": 16892425,
+        "produced": {
+         "recordType": "range",
+         "start": 0,
+         "total": 0
+        },
+        "cause": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "txID",
+           "value": "acc://12a03822176e06e40aa65c586c85fad1f832ea431a90a7b7f351698431e020b1@d3adfbd25-agent.acme/book"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://b2a712e08e6b3e22d0817b349d7a00dcdbed5a3f3db8bb4c33d820060663c723@d3adfbd25-agent.acme/certen-acceptances"
+          }
+         ],
+         "start": 0,
+         "total": 2
+        },
+        "signatures": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyBook",
+            "url": "acc://d3adfbd25-agent.acme/book",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-agent.acme/book"
+             }
+            ],
+            "pageCount": 1
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://12a03822176e06e40aa65c586c85fad1f832ea431a90a7b7f351698431e020b1@d3adfbd25-agent.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-agent.acme/book",
+               "txID": "acc://b618ff6ac73b1cfdea19005d03c3b8baf1e19f4a397681dc9cfbb3113317827f@d3adfbd25-agent.acme/certen-acceptances",
+               "cause": "acc://b2a712e08e6b3e22d0817b349d7a00dcdbed5a3f3db8bb4c33d820060663c723@d3adfbd25-agent.acme/certen-acceptances"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyPage",
+            "keyBook": "acc://d3adfbd25-agent.acme/book",
+            "url": "acc://d3adfbd25-agent.acme/book/1",
+            "creditBalance": 4920,
+            "acceptThreshold": 1,
+            "threshold": 1,
+            "version": 2,
+            "keys": [
+             {
+              "publicKeyHash": "bb4ab885c41e28ffb3e5e1855847f61a4cd4c4968c25447b55a5ce3798d249b1",
+              "publicKey": "bb4ab885c41e28ffb3e5e1855847f61a4cd4c4968c25447b55a5ce3798d249b1",
+              "lastUsedOn": 1794521935098000
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://37dcc128853ec6328b6156ce9cf17e36aa612dd5f04997ccd834d93a92ef4c28@d3adfbd25-agent.acme/book/1",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "ed25519",
+                "publicKey": "26ab7be7533783728b6648b5906d02bb1d603dc138d4bbd4c9469daa0ec67b97",
+                "signature": "2e73198fb72727142abc468e423141f1b9d1cf41a164c559bde627655a11f569a02637d47bed13ce9ea7e3b1d9f0c2277dfe2ab951c929a78298458b69951102",
+                "signer": "acc://d3adfbd25-agent.acme/book/1",
+                "signerVersion": 1,
+                "timestamp": 1794519868068000,
+                "transactionHash": "b618ff6ac73b1cfdea19005d03c3b8baf1e19f4a397681dc9cfbb3113317827f"
+               },
+               "txID": "acc://b618ff6ac73b1cfdea19005d03c3b8baf1e19f4a397681dc9cfbb3113317827f@d3adfbd25-agent.acme/certen-acceptances"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "dataAccount",
+            "url": "acc://d3adfbd25-agent.acme/certen-acceptances",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-agent.acme/book"
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://b2a712e08e6b3e22d0817b349d7a00dcdbed5a3f3db8bb4c33d820060663c723@d3adfbd25-agent.acme/certen-acceptances",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-agent.acme/certen-acceptances",
+               "txID": "acc://b618ff6ac73b1cfdea19005d03c3b8baf1e19f4a397681dc9cfbb3113317827f@d3adfbd25-agent.acme/certen-acceptances",
+               "cause": "acc://37dcc128853ec6328b6156ce9cf17e36aa612dd5f04997ccd834d93a92ef4c28@d3adfbd25-agent.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://ffeea658a96cafb3f144ddf07b466f73925d799e12154f9f06b60687c8973715@d3adfbd25-agent.acme/certen-acceptances",
+              "message": {
+               "type": "creditPayment",
+               "paid": 20,
+               "payer": "acc://d3adfbd25-agent.acme/book/1",
+               "initiator": true,
+               "txID": "acc://b618ff6ac73b1cfdea19005d03c3b8baf1e19f4a397681dc9cfbb3113317827f@d3adfbd25-agent.acme/certen-acceptances",
+               "cause": "acc://37dcc128853ec6328b6156ce9cf17e36aa612dd5f04997ccd834d93a92ef4c28@d3adfbd25-agent.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://fdfbcbe7a68ceb13e6dad0b8d8ae754b971c6d851771154442c1d55d954dd646@d3adfbd25-agent.acme/certen-acceptances",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "authority",
+                "origin": "acc://d3adfbd25-agent.acme/book/1",
+                "authority": "acc://d3adfbd25-agent.acme/book",
+                "txID": "acc://b618ff6ac73b1cfdea19005d03c3b8baf1e19f4a397681dc9cfbb3113317827f@d3adfbd25-agent.acme/certen-acceptances",
+                "cause": "acc://37dcc128853ec6328b6156ce9cf17e36aa612dd5f04997ccd834d93a92ef4c28@d3adfbd25-agent.acme/book/1"
+               },
+               "txID": "acc://b618ff6ac73b1cfdea19005d03c3b8baf1e19f4a397681dc9cfbb3113317827f@d3adfbd25-agent.acme/certen-acceptances"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 3
+           }
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "sequence": {
+         "type": "sequenced"
+        }
+       },
+       "state": [
+        "b618ff6ac73b1cfdea19005d03c3b8baf1e19f4a397681dc9cfbb3113317827f",
+        "dc59c0bdc6c1b8069ff9c6d19a967cc0eccf84c58a2972515996ee29f752b12e",
+        null
+       ]
+      },
+      {
+       "recordType": "chainEntry",
+       "name": "main",
+       "type": "transaction",
+       "index": 3,
+       "entry": "a0929db60f497056a964bbda2d7040e8623487b55a4f169416f2e7b05ed20f05",
+       "value": {
+        "recordType": "message",
+        "id": "acc://a0929db60f497056a964bbda2d7040e8623487b55a4f169416f2e7b05ed20f05@d3adfbd25-agent.acme/certen-acceptances",
+        "message": {
+         "type": "transaction",
+         "transaction": {
+          "header": {
+           "principal": "acc://d3adfbd25-agent.acme/certen-acceptances",
+           "initiator": "394cc1b7837b4303218615afd29e7c75c507e7f782d4ae05297ce8d3cc75787d",
+           "memo": "DAX3A_ACCEPTANCE"
+          },
+          "body": {
+           "type": "writeData",
+           "entry": {
+            "type": "doubleHash",
+            "data": [
+             "7b22616374696f6e223a22616363657074222c227072696e636970616c223a226163633a2f2f6433616466626432352d6772616e746f722e61636d65222c227265676973747279223a226163633a2f2f6433616466626432352d6772616e746f722e61636d652f63657274656e2d7375626a65637473222c22736368656d61223a2263657274656e2e616363657074616e63652f7631222c227375626a656374223a226163633a2f2f6433616466626432352d6167656e742e61636d65227d"
+            ]
+           }
+          }
+         }
+        },
+        "status": "delivered",
+        "statusNo": 201,
+        "result": {
+         "type": "writeData",
+         "entryHash": "3b2223e6b5b2d46b4be320167139227d0ce819d47544ba2da76293c78ec861b7",
+         "accountUrl": "acc://d3adfbd25-agent.acme/certen-acceptances",
+         "accountID": "0aa005be0bf4163241f876192b29fc39c4d010100df7f338edf2d8a4189f51c1"
+        },
+        "received": 16892445,
+        "produced": {
+         "recordType": "range",
+         "start": 0,
+         "total": 0
+        },
+        "cause": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "txID",
+           "value": "acc://1fb24f3d76eaf8cce903c8b5f7eecb7aeb630ebf6332f5a133512b92b2ce134b@d3adfbd25-agent.acme/certen-acceptances"
+          },
+          {
+           "recordType": "txID",
+           "value": "acc://9b9666224c08cdc2fdbd786b1a74a9294bc8230ba05110c36e4fb69b9f3d0903@d3adfbd25-agent.acme/book"
+          }
+         ],
+         "start": 0,
+         "total": 2
+        },
+        "signatures": {
+         "recordType": "range",
+         "records": [
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyBook",
+            "url": "acc://d3adfbd25-agent.acme/book",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-agent.acme/book"
+             }
+            ],
+            "pageCount": 1
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://9b9666224c08cdc2fdbd786b1a74a9294bc8230ba05110c36e4fb69b9f3d0903@d3adfbd25-agent.acme/book",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-agent.acme/book",
+               "txID": "acc://a0929db60f497056a964bbda2d7040e8623487b55a4f169416f2e7b05ed20f05@d3adfbd25-agent.acme/certen-acceptances",
+               "cause": "acc://1fb24f3d76eaf8cce903c8b5f7eecb7aeb630ebf6332f5a133512b92b2ce134b@d3adfbd25-agent.acme/certen-acceptances"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "keyPage",
+            "keyBook": "acc://d3adfbd25-agent.acme/book",
+            "url": "acc://d3adfbd25-agent.acme/book/1",
+            "creditBalance": 4920,
+            "acceptThreshold": 1,
+            "threshold": 1,
+            "version": 2,
+            "keys": [
+             {
+              "publicKeyHash": "bb4ab885c41e28ffb3e5e1855847f61a4cd4c4968c25447b55a5ce3798d249b1",
+              "publicKey": "bb4ab885c41e28ffb3e5e1855847f61a4cd4c4968c25447b55a5ce3798d249b1",
+              "lastUsedOn": 1794521935098000
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://ffe55f1a00d020d22dfb3784538e8227d5cf1ad9684626c1638bb889bba2425d@d3adfbd25-agent.acme/book/1",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "ed25519",
+                "publicKey": "26ab7be7533783728b6648b5906d02bb1d603dc138d4bbd4c9469daa0ec67b97",
+                "signature": "f273d738e858a3d436b74caf37216b73492d675fe135b9a0c86ed99da4f404a6ff5e68632a03046f94fb61fda91b6dc938e0d77abefd619fc87c8fa18c55e304",
+                "signer": "acc://d3adfbd25-agent.acme/book/1",
+                "signerVersion": 1,
+                "timestamp": 1794519888883000,
+                "transactionHash": "a0929db60f497056a964bbda2d7040e8623487b55a4f169416f2e7b05ed20f05"
+               },
+               "txID": "acc://a0929db60f497056a964bbda2d7040e8623487b55a4f169416f2e7b05ed20f05@d3adfbd25-agent.acme/certen-acceptances"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 1
+           }
+          },
+          {
+           "recordType": "signatureSet",
+           "account": {
+            "type": "dataAccount",
+            "url": "acc://d3adfbd25-agent.acme/certen-acceptances",
+            "authorities": [
+             {
+              "url": "acc://d3adfbd25-agent.acme/book"
+             }
+            ]
+           },
+           "signatures": {
+            "recordType": "range",
+            "records": [
+             {
+              "recordType": "message",
+              "id": "acc://1fb24f3d76eaf8cce903c8b5f7eecb7aeb630ebf6332f5a133512b92b2ce134b@d3adfbd25-agent.acme/certen-acceptances",
+              "message": {
+               "type": "signatureRequest",
+               "authority": "acc://d3adfbd25-agent.acme/certen-acceptances",
+               "txID": "acc://a0929db60f497056a964bbda2d7040e8623487b55a4f169416f2e7b05ed20f05@d3adfbd25-agent.acme/certen-acceptances",
+               "cause": "acc://ffe55f1a00d020d22dfb3784538e8227d5cf1ad9684626c1638bb889bba2425d@d3adfbd25-agent.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://31fe8de8179cafbb9aea0a72abfab4bca6751a2648ff8d6b79ca1a05d160efdc@d3adfbd25-agent.acme/certen-acceptances",
+              "message": {
+               "type": "creditPayment",
+               "paid": 20,
+               "payer": "acc://d3adfbd25-agent.acme/book/1",
+               "initiator": true,
+               "txID": "acc://a0929db60f497056a964bbda2d7040e8623487b55a4f169416f2e7b05ed20f05@d3adfbd25-agent.acme/certen-acceptances",
+               "cause": "acc://ffe55f1a00d020d22dfb3784538e8227d5cf1ad9684626c1638bb889bba2425d@d3adfbd25-agent.acme/book/1"
+              },
+              "historical": true
+             },
+             {
+              "recordType": "message",
+              "id": "acc://a80ee6041c52b47b54595aad5158e436110ad72a684bc068914f5cddd94b23d7@d3adfbd25-agent.acme/certen-acceptances",
+              "message": {
+               "type": "signature",
+               "signature": {
+                "type": "authority",
+                "origin": "acc://d3adfbd25-agent.acme/book/1",
+                "authority": "acc://d3adfbd25-agent.acme/book",
+                "txID": "acc://a0929db60f497056a964bbda2d7040e8623487b55a4f169416f2e7b05ed20f05@d3adfbd25-agent.acme/certen-acceptances",
+                "cause": "acc://ffe55f1a00d020d22dfb3784538e8227d5cf1ad9684626c1638bb889bba2425d@d3adfbd25-agent.acme/book/1"
+               },
+               "txID": "acc://a0929db60f497056a964bbda2d7040e8623487b55a4f169416f2e7b05ed20f05@d3adfbd25-agent.acme/certen-acceptances"
+              },
+              "historical": true
+             }
+            ],
+            "start": 0,
+            "total": 3
+           }
+          }
+         ],
+         "start": 0,
+         "total": 3
+        },
+        "sequence": {
+         "type": "sequenced"
+        }
+       },
+       "state": [
+        null,
+        null,
+        "423cb73fbd722652be67a7e9234841cb7e9a9197832c403bfeefd44d267e5993"
+       ]
+      }
+     ],
+     "start": 0,
+     "total": 4,
+     "lastBlockTime": "2026-11-12T22:21:37Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-agent.acme/certen-acceptances",
+    "query": {
+     "queryType": "block",
+     "minor": 16889363
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "minorBlock",
+     "index": 16889363,
+     "time": "2026-11-12T20:52:51Z",
+     "source": "acc://bvn-BVN1.acme",
+     "lastBlockTime": "2026-11-12T22:21:37Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-agent.acme/certen-acceptances",
+    "query": {
+     "queryType": "block",
+     "minor": 16892425
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "minorBlock",
+     "index": 16892425,
+     "time": "2026-11-12T21:44:20Z",
+     "source": "acc://bvn-BVN1.acme",
+     "lastBlockTime": "2026-11-12T22:21:37Z"
+    },
+    "id": 1
+   }
+  },
+  {
+   "method": "query",
+   "params": {
+    "scope": "acc://d3adfbd25-agent.acme/certen-acceptances",
+    "query": {
+     "queryType": "block",
+     "minor": 16892445
+    }
+   },
+   "response": {
+    "jsonrpc": "2.0",
+    "result": {
+     "recordType": "minorBlock",
+     "index": 16892445,
+     "time": "2026-11-12T21:44:40Z",
+     "source": "acc://bvn-BVN1.acme",
+     "lastBlockTime": "2026-11-12T22:21:37Z"
+    },
+    "id": 1
+   }
+  }
+ ]
+}

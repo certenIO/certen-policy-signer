@@ -26,7 +26,10 @@ export class Resolver {
   }
 
   async resolve(ref: PendingRef): Promise<ResolveResult> {
-    const pend = await this.acc.getPendingTx(ref.txHash, ref.signerUrl);
+    // Read the transaction where it lives. A discoverer that knows the principal (every pending-list hit
+    // does: the txID is `<hash>@<principal>`) says so; otherwise the signer page, as it always was. In the
+    // wrapper model the signer page is Trust Stamp's, which the transaction never touches.
+    const pend = await this.acc.getPendingTx(ref.txHash, ref.principal ?? ref.signerUrl);
     if (pend.unavailable) return { kind: 'unavailable', error: 'the node could not be queried' };
     if (!pend.found) return { kind: 'gone', reason: 'not_found' };
     if (pend.executed) return { kind: 'gone', reason: 'executed' };
@@ -58,6 +61,7 @@ export class Resolver {
         ...(expiryUnreadable ? { headerExpiryUnreadable: expiryUnreadable } : {}),
         rawTransaction: pend.rawTransaction,
         lastUsedOn: info.lastUsedOn,
+        ...(ref.delegators ? { delegators: ref.delegators } : {}),
       },
     };
   }

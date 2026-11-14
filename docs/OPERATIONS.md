@@ -107,7 +107,7 @@ attacker's key from the page but does nothing about whatever they already signed
 ### Suspected compromise — do this first, ask questions after
 
 ```bash
-curl -XPOST -H "x-api-key: $ADMIN_API_KEY" localhost:8080/v1/admin/pause    # stop signing NOW
+curl -XPOST -H "x-api-key: $ADMIN_API_KEY" -H 'content-type: application/json' -d '{"by":"seat:<your-seat>","reason":"<why, at least 10 characters>"}' localhost:8080/v1/admin/pause    # stop signing NOW
 npx tsx scripts/rotate-key.ts --config <cfg> --new-vault-key org-accum-v2 --mode update
 ```
 
@@ -262,9 +262,46 @@ Accumulate "not found": 404.
 ## Emergency stop
 
 ```bash
-curl -XPOST -H "x-api-key: $ADMIN_API_KEY" localhost:8080/v1/admin/pause
-curl -XPOST -H "x-api-key: $ADMIN_API_KEY" localhost:8080/v1/admin/resume
+curl -XPOST -H "x-api-key: $ADMIN_API_KEY" -H 'content-type: application/json' -d '{"by":"seat:<your-seat>","reason":"<why, at least 10 characters>"}' localhost:8080/v1/admin/pause
+curl -XPOST -H "x-api-key: $ADMIN_API_KEY" -H 'content-type: application/json' -d '{"by":"seat:<your-seat>","reason":"<why, at least 10 characters>"}' localhost:8080/v1/admin/resume
+curl -H "x-api-key: $ADMIN_API_KEY" localhost:8080/v1/admin/pause    # who paused, why, since when
 ```
+
+A pause names a **seat** (`by`, `seat:<name>`) and a **reason** (at least ten characters); without them it is refused by name
+(`seat_required`, `reason_required`). Without `scope` and `id` it stops every seat this signer serves (each page has a seat id:
+`wallet.seat` / `scopes[].seat`, else one derived from the page URL, shown by `GET /v1/admin/pause`). `{"scope":"seat","id":"seat:…"}`
+stops one seat and `{"scope":"subject","id":"acc://<adi>"}` stops one subject; a resume lifts only its own scope and id. The pause is
+written to disk (`pause-state.json`, with a hash-chained `decision-journal.jsonl`, beside `store.path`) before the call returns, is read
+again before **every** signature (a reject vote included) and survives a restart of the signer. With no `store.path` it lives in memory only.
+
+### Decision binding (`binding`)
+
+The Accumulate facts behind a Grant (READER-MODEL-V2) are read through ONE cache shared with the Console relay routes: keyed by account
+and main-chain length (one chain-length query per account per evaluation says whether anything changed), a hard TTL of at most 30
+seconds (`reader.cache_ttl_seconds`, a revocation or supersede is visible within it), failures and incomplete answers never cached, one
+read in flight per fact, at most `reader.max_concurrency` node queries at once, exponential back-off after a node-side error. A steady
+state evaluation makes at most four node queries; `/metrics` shows `reader_node_queries_total`, `reader_cache_hits_total`,
+`reader_cache_misses_total`, `reader_cache_invalidations_total`, `reader_coalesced_total` and `reader_backoff_refusals_total`, and the
+journal entry that spends a nonce records the cost and the age of the facts it was bound on. The Grant is read from the grantor accounts
+only (`binding.grantor_adi`, `binding.grantor_book`); no key page is read, so a key rotation does not change a verdict.
+
+How the reader sees a data account on Accumulate v3 (settled by the DAX-3A run on Kermit, 2026-11-12): a data entry record carries no
+timestamp. Its entries are the WriteData transactions of the account's **main chain** (the `data` chain query dates two byte-identical
+entries, accept / revoke / accept, by the later one, so it is never asked), and the chain time of an entry is the time of the **minor
+block** named by its `value.received`, read with a `block` query on the account: one-second resolution, so two entries of one second
+compare equal and the library tie rule (the later list position wins) applies. A block time is chain history: it is remembered for the life
+of the process (bounded), so a new entry costs one block query. Cost measured on Kermit (evidence `live-precheck-kermit-2026-11-12.json`):
+a cold evaluation of the lab scene made 20 node queries (4 chain-length probes, 4 account reads, 3 main-chain pages, 9 distinct executing
+blocks), the next evaluation made 4. A cold read grows with the number of distinct executing blocks of the entries (one query each, once)
+and with one page per 100 records. A WriteData that is on the main chain but not `delivered`, a record that cannot be read exactly and a
+block query that fails make the account unreadable (a named refusal), never an entry without a time.
+
+A scope with a `binding` block accepts a decision only when its `record` (certen.decision/v1) names the exact transaction about to be
+signed, an authorised approver, this seat, the pinned policy hash (when set) and an unspent nonce; a reply without one is refused. Every
+accepted nonce is written to the journal before the signature is made, so a decision cannot be used twice, a restart included. Refusals are
+named in the receipt (`binding: <reason>`) and sign nothing. `binding` requires `store.path`. Voiding the nonces of a re-issued decision:
+`POST /v1/admin/decisions/void {"nonces":[…],"reason":"…"}`. Keep the journal's pin (`store.pin_path`) on a medium the signer's writer cannot edit
+if you need a deleted or truncated journal to be a refusal to start.
 
 Pause halts **all** signing immediately, including reject votes — a reject is still a signature, and a
 paused signer that goes on submitting rejections is not paused. Pending transactions stay pending; nothing
@@ -346,11 +383,11 @@ you are approving nothing. Size it: container start + self-check + first poll �
 
 **Upgrade:**
 
-1. `POST /v1/admin/pause` — stop signing cleanly.
+1. `POST /v1/admin/pause` (with `by` and `reason`) — stop signing cleanly.
 2. Wait for in-flight signing to finish (watch the logs; seconds).
 3. `docker compose up -d --build`, or roll the Deployment. The state volume carries history across.
 4. Confirm `SR6 self-check OK` and `/healthz` 200 with `poller.healthy: true`.
-5. `POST /v1/admin/resume`.
+5. `POST /v1/admin/resume` (with `by` and `reason`).
 
 ---
 
@@ -390,6 +427,16 @@ admin key does not open these routes and a client key does not open the admin ro
 | `POST /relay/evm/:chainId/call` `{to, data}` | tx | `{ result }` of `eth_call` on a `relay.evm` chain |
 | `GET /relay/pending/:hash` | pending | the PolicyRequest this signer built for the tx, or 404 |
 | `POST /relay/governance` `{page, operations}` | governance + `x-governance-key` | `{ txid, status, txids }`; `status: refused` + `refusal` (400, or 503 `page_unreadable`) when the key-page guard refuses |
+| `GET /relay/data/:account` | chain | `{ entries:[{ txId, time, elements:[hex] }] }` main-chain WriteData entries in chain order; `time` = block time, Unix seconds (omitted only when the node gave none: the Console then reads the account as unreadable) |
+| `GET /relay/authorities/:account` | chain | `{ authorities:[book url] }` now |
+| `GET /relay/history/:account` | chain | `{ types:[string], incomplete }` the account's own main chain from its creation |
+| `GET /relay/keybook/:book` | chain | `{ pages:[{ url, keyHashes:[64 hex], delegates:[book url], threshold }] }` the roster of the Console's quorum (cached by the TTL alone; no online Grant or registration verdict reads it) |
+| `GET /relay/chainlen/:account` | chain | `{ length }` the main-chain length: one node query, the key the reader cache uses |
+
+`:account` of the chain routes is the acc:// URL percent-encoded as ONE path segment; `data`, `history` and `chainlen` answer only for
+the three CERTEN data accounts (certen-grants, certen-subjects, certen-acceptances), `authorities` also for an ADI root, `keybook` for a key
+book URL (not a page). A fact the node cannot give is 502 `unreadable`. The answers are pinned against copies of the Console's strict parsers
+(`test/binding-console-contract.test.ts`).
 
 The gateway is `relay.gateway`, else the top-level `gateway` block. Governance operations are the typed
 `add-key`, `remove-key`, `set-threshold`, `add-delegate`, `remove-delegate` (1–10 per call, applied in order
@@ -486,7 +533,12 @@ people -- runs its seat with `wallet.human_scopes`. Each entry is a key page wit
 
 A human-only page must be listed in `officer_intake.human_pages` (with intake enabled) and must not also be
 a keyed scope or `wallet.signer_url`; any key field on the entry refuses the boot. A `policy` block is
-required. FICTIONAL example: `summit-inspection-tcl1` book/1, people on sign-link:
+required. A human-only page is a **seat** like a keyed scope: an entry may carry `seat` (`seat:<name>`) and `binding` (the top-level
+`binding` applies when it does not), the pause with no scope pauses it, and a decision for it that requires binding is checked (and its
+nonce consumed, DAX-4S) before it is recorded as `awaiting_human`; the receipt of that record carries the same `binding` members as a
+signed one, and a replay, a mutated request or an unbound reply is refused by name and records nothing. A paused seat records no
+`awaiting_human` either. The person's own signature through officer intake is not a decision and is not bound. Human-only seats and
+`attachment_model: wrapper` cannot be combined (refused at boot). FICTIONAL example: `summit-inspection-tcl1` book/1, people on sign-link:
 
 ```yaml
 wallet:

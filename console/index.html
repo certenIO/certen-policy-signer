@@ -105,7 +105,8 @@
     <div class="note">
       <strong>Pause stops everything, including reject votes.</strong> A reject is still a signature, so a
       paused signer that kept submitting rejections would not be paused. While paused, transactions simply
-      stay pending — nothing is lost, and the backlog is handled when you resume.
+      stay pending — nothing is lost, and the backlog is handled when you resume. A pause is saved with the
+      seat that set it and its reason, and it survives a restart of the signer.
     </div>
   </section>
 
@@ -295,7 +296,12 @@ async function refreshStatus() {
 }
 
 async function setPaused(p) {
-  const r = await signer('/v1/admin/' + (p ? 'pause' : 'resume'), 'POST');
+  // A pause and a resume name a seat and give a reason (at least 10 characters); both are saved with the pause and shown in the log.
+  const by = prompt('Your seat, recorded with this ' + (p ? 'pause' : 'resume') + ' (seat:<name>):');
+  if (!by) return;
+  const reason = prompt('Reason, recorded with this ' + (p ? 'pause' : 'resume') + ' (at least 10 characters):');
+  if (!reason) return;
+  const r = await signer('/v1/admin/' + (p ? 'pause' : 'resume'), 'POST', { by, reason });
   if (!r.ok) alert('Failed: ' + JSON.stringify(r.data));
   refreshStatus();
 }

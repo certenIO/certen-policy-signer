@@ -34,7 +34,7 @@ const PAGE = 'acc://fictional-risk-tcl1.acme/book/1';
 const SIGNER = new LocalSigner(new Uint8Array(32).fill(8));
 const keyHashOf = async (s: LocalSigner) => createHash('sha256').update(await s.publicKey()).digest('hex');
 const sigs = (list: Array<{ publicKeyHash: string; delegators?: string[] }>): TxSignatures =>
-  ({ status: 'pending', delivered: false, signatures: list.map((s) => ({ type: 'ed25519', publicKeyHash: s.publicKeyHash, delegators: s.delegators ?? [] })) });
+  ({ status: 'pending', delivered: false, signatures: list.map((s) => ({ type: 'ed25519', publicKeyHash: s.publicKeyHash, delegators: s.delegators ?? [], hops: [...(s.delegators ?? [])].reverse() })) });
 const UNREADABLE: TxSignatures = { status: '', delivered: false, signatures: [], unavailable: 'FICTIONAL node down' };
 
 describe('awaitOwnSignature', () => {
@@ -54,7 +54,7 @@ describe('awaitOwnSignature', () => {
   });
   it('matches the vote: an earlier REJECT by the same key is not this APPROVE (security review 2026-10-02)', async () => {
     const withVote = (vote?: 'approve' | 'reject'): TxSignatures =>
-      ({ status: 'pending', delivered: false, signatures: [{ type: 'ed25519', publicKeyHash: 'aa'.repeat(32), delegators: [], ...(vote ? { vote } : {}) }] });
+      ({ status: 'pending', delivered: false, signatures: [{ type: 'ed25519', publicKeyHash: 'aa'.repeat(32), delegators: [], hops: [], ...(vote ? { vote } : {}) }] });
     expect(await awaitOwnSignature({ ...base, getTxSignatures: async () => withVote('reject') })).toBe('absent');
     expect(await awaitOwnSignature({ ...base, vote: 'reject', getTxSignatures: async () => withVote('reject') })).toBe('landed');
     // The chain omits an accept vote: an absent vote is an approve.
@@ -103,7 +103,7 @@ describe('the machine vote: a submit with no answer is decided from the chain', 
   }
   it('landed -> the vote counts as cast', async () => {
     const kh = await keyHashOf(SIGNER);
-    const onChain = (vote?: 'reject'): TxSignatures => ({ status: 'pending', delivered: false, signatures: [{ type: 'ed25519', publicKeyHash: kh, delegators: [], ...(vote ? { vote } : {}) }] });
+    const onChain = (vote?: 'reject'): TxSignatures => ({ status: 'pending', delivered: false, signatures: [{ type: 'ed25519', publicKeyHash: kh, delegators: [], hops: [], ...(vote ? { vote } : {}) }] });
     const { b } = backend(() => onChain('reject'));
     const r = await b.cast(tx, 'reject');
     expect(r.ok).toBe(true);

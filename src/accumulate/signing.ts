@@ -46,6 +46,18 @@ export function computeTimestamp(lastUsedOnMicros: number, nowMicros: number): n
   return Math.max(lastUsedOnMicros + 2_000_000, nowMicros + 1_000_000);
 }
 
+/**
+ * Outermost-first delegators (the order `unwrapDelegation` and `ChainSignature.delegators` give) to hop
+ * order (first hop first), the order `buildPreimage` wraps in and the network stores.
+ *
+ * The network collects delegators walking the nesting from the outside, then reverses them "since the
+ * structure nesting is effectively inverted" (accumulate-core `block/sig_user.go:158-184`). This is that
+ * reversal. A copy, never in place: callers keep the outermost-first list for display.
+ */
+export function toHopOrder(outerFirst: string[]): string[] {
+  return [...outerFirst].reverse();
+}
+
 export interface PreimageParams {
   /** The key as its signature type carries it: raw for Ed25519, PKIX/SPKI DER for ECDSA, PKCS#1 for RSA. */
   publicKey: Uint8Array;
@@ -61,8 +73,21 @@ export interface PreimageParams {
   signerVersion: number;
   timestamp: number;       // micros
   vote: Vote;
-  /** Delegate model: outer->inner delegator page URLs wrapping the key signature. */
+  /** Delegate model: delegator page URLs in HOP ORDER (first hop = innermost wrapper), as the network stores them. */
   delegators?: string[];
+  /**
+   * Free text and opaque bytes carried IN the key signature. Wrapper runbook, change 4.
+   *
+   * Both are inside the signed metadata (everything but the signature bytes and the transaction hash,
+   * accumulate-core `protocol/signature.go:385-390`), so `data` lets a vote commit to evidence: Trust
+   * Stamp puts the digest of the live check here. Optional and omitted when absent or empty, so every
+   * signature built without them stays byte-identical to before.
+   *
+   * All three builders below read them from the same place. If the hashed form and a wire form ever
+   * disagree, the network recomputes a different metadata hash and refuses the signature as invalid.
+   */
+  memo?: string;
+  data?: Uint8Array;
 }
 
 export interface Preimage {
@@ -76,6 +101,16 @@ export interface Preimage {
     timestamp: number;
     voteCode: number;
     delegators?: string[];
+    memo?: string;
+    data?: Uint8Array;
+  };
+}
+
+/** The memo and data to put on a key signature: only the ones actually present, so absent stays absent. */
+function evidenceFields(p: { memo?: string; data?: Uint8Array }): { memo?: string; data?: Uint8Array } {
+  return {
+    ...(p.memo ? { memo: p.memo } : {}),
+    ...(p.data && p.data.length ? { data: p.data } : {}),
   };
 }
 
@@ -92,6 +127,7 @@ function buildSigMetaObject(p: PreimageParams) {
     signerVersion: p.signerVersion,
     timestamp: p.timestamp,
     vote: voteCode, // 0 (Accept) is omitted by marshaling; mirrors api-bridge
+    ...evidenceFields(p),
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let sig: any = new Signature(fields);
@@ -127,6 +163,7 @@ export function buildPreimage(txHash: Uint8Array, p: PreimageParams): Preimage {
       timestamp: p.timestamp,
       voteCode: VOTE_CODE[p.vote],
       delegators: p.delegators,
+      ...evidenceFields(p),
     },
   };
 }
@@ -144,6 +181,8 @@ export interface SignatureObject {
   timestamp: number;
   transactionHash: string;  // 64 hex
   vote?: string;            // lowercase enum ('reject'|'abstain'|'suggest'); omitted when Accept(0)
+  memo?: string;            // omitted when absent; signed (part of the metadata)
+  data?: string;            // hex; omitted when absent; signed (part of the metadata)
 }
 
 export function buildSignatureObject(
@@ -161,6 +200,9 @@ export function buildSignatureObject(
     transactionHash: txHashHex.startsWith('0x') ? txHashHex.slice(2) : txHashHex,
   };
   if (pre.metadata.voteCode !== 0) obj.vote = VOTE_NAME[pre.metadata.voteCode] ?? String(pre.metadata.voteCode);
+  const ev = evidenceFields(pre.metadata);
+  if (ev.memo) obj.memo = ev.memo;
+  if (ev.data) obj.data = bytesToHex(ev.data);
   return obj;
 }
 
@@ -188,6 +230,7 @@ export function buildDelegatedSignatureObject(
     ...(pre.metadata.voteCode !== 0 ? { vote: pre.metadata.voteCode } : {}),
     signature: signatureBytes,
     transactionHash: hexToBytes(txHashHex),
+    ...evidenceFields(pre.metadata),
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let sig: any = inner;

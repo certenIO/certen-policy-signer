@@ -215,6 +215,10 @@ trigger:
   poller:
     enabled: true
     interval_seconds: 20
+    # attachment_model: wrapper only. Each cycle reads every enrolled wrapper book's pending list (one read
+    # per wrapper, this many at once); the registry defaults to wrappers.json beside store.path.
+    # wrapper_concurrency: 8
+    # wrapper_registry_path: /var/lib/certen-signer/wrappers.json
   webhook:
     # Push instead of poll. Requires hmac_secret: without one the route returns 403 rather than
     # existing unauthenticated.
@@ -284,12 +288,33 @@ behavior:
   # this, compared as a big integer. Optional. This is a backstop for an engine bug, not a policy.
   # value_ceiling: "1000000"
 
+  # Refuse an approval whose decision evidence carries no valid `signatureData` (hex, exactly 32 bytes).
+  # When present it is put IN the signature (the key signature's `data`, which is signed), so the vote
+  # commits to the evidence it stands for. Not available with gateway.enabled.
+  # require_signature_data: false
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 #  DURABLE STATE — idempotency (never vote twice) and the receipt audit trail.
 #  Omit the path and BOTH die with the process: a restart can double-vote and the audit trail is lost.
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 store:
   path: "/data/signer-state.json"
+  # pin_path: "/mnt/pin/decision-journal.pin.json"   # where the head pin of decision-journal.jsonl is kept; a medium the signer's
+  #                                                  # writer cannot edit makes a deleted or truncated journal a refusal to start
+
+# Decision binding (DAX-4S). Present = every decision for the seat must carry a certen.decision/v1 `record` that names the exact
+# transaction about to be signed, an authorised approver, this seat, the pinned policy hash and an unspent nonce. A reply without one
+# is refused. Requires store.path (the nonces consumed live in a journal beside it). A scope may state its own `binding` and `seat`;
+# a page without one keeps the unbound legacy reply. Every page has a seat id: `seat` here, else one derived from the page URL.
+# binding:
+#   authorized_approvers:                  # identities, never display names: key:<sha256 of the key, 64 hex> or adi:<acc:// URL>
+#     - "key:0000000000000000000000000000000000000000000000000000000000000000"
+#   max_window_seconds: 5400               # cap on a decision's expiresAt - issuedAt (at most 86400); no default
+#   # policy_hash: "0x…"                   # pin of the seat's active rule set; omitted = the hash is recorded and NOT compared
+#   # require_grant: true                  # a Grant must be named by both the decision and the transaction
+#   # grantor_adi: "acc://grantor.acme"    # whose Grants this seat takes (needed whenever a transaction names one)
+#   # grantor_book: "acc://grantor.acme/book"   # the key book that must own the grantor accounts (certen-grants, certen-subjects)
+#   #   (a subject resolves ONLY through the grantor registry and its own certen-acceptances account: no registry list)
 
 health:
   bind: "0.0.0.0:8080"
@@ -306,7 +331,7 @@ admin:
   # Console decision service, sent as x-relay-client + x-api-key. Each key is its own secret (>= 16 chars,
   # not the admin, governance or relay token). Scopes: proof, tx, pending, governance (governance also
   # needs x-governance-key and only ever touches pages this signer holds).
-  # relay_clients:
+  # relay_clients:   # scope `chain` serves GET /relay/data|authorities|history|keybook|chainlen/:account (read-only, v3 only, through the reader cache)
   #   - { name: "compliance-decision", key: "env:SIGNER_RELAY_KEY_COMPLIANCE", scopes: [proof, tx, pending] }
 
 # Officer intake (Phase 7; docs/OPERATIONS.md "Officer intake"). Personal signatures made on a person's own

@@ -6,7 +6,9 @@ import { KeyPageOp, KeyPageResult } from './ops/keypage.js';
 import { PageState } from './ops/rotate.js';
 import { KeyPageGuardError } from './ops/keypage-guard.js';
 import { Orchestrator } from './orchestrator.js';
-import { Store } from './store/store.js';
+import { bookOf } from './delegation/path.js';
+import { WrapperRegistry } from './registry/wrappers.js';
+import { Store, keyOf } from './store/store.js';
 import { Keyring } from './signer/keyring.js';
 import { AccumulateClient } from './accumulate/client.js';
 import { metrics } from './metrics.js';
@@ -17,8 +19,9 @@ import { NotifyEvent } from './notify.js';
 import { RelayHandler, RELAY_PREFIX } from './relay.js';
 import { RelayClientsHandler, RELAY_CLIENT_PREFIX } from './relay-clients.js';
 import { OfficerIntakeHandler, OFFICER_PATHS } from './officer/intake.js';
+import type { PauseControl, PauseOutcome } from './binding/pause-store.js';
 
-export interface PauseController { paused: boolean; }
+export type { PauseControl } from './binding/pause-store.js';
 
 /** Anything whose staleness should make the wallet report unhealthy (the poller, in practice). */
 export interface HealthSource {
@@ -35,11 +38,18 @@ export interface HealthSource {
 }
 
 export interface ServerDeps {
+  /** Wrapper mode: the enrolment registry behind `/v1/admin/wrappers`. Absent => that route is 404. */
+  wrapperRegistry?: WrapperRegistry;
+  /** Wrapper mode: our own book, which every subscriber's book must sort after. */
+  wrapperOurBook?: string;
   orchestrator: Orchestrator;
   store: Store;
   keyring: Keyring;
   accumulate: AccumulateClient;
-  pause: PauseController;
+  /** The PERSISTED pause (seat and subject scopes, DECISION.md section 6): `/healthz` reads it, `/v1/admin/pause` and `/resume` change it. */
+  pause: PauseControl;
+  /** Voids decision nonces (`POST /v1/admin/decisions/void`). Absent => that route is 404. */
+  nonces?: { voidNonces(nonces: string[], reason: string): Promise<{ voided: string[] }> };
   logger: Logger;
   webhookHmacSecret?: string;
   /** Header the caller signs the webhook body in. Defaults to DEFAULT_SIGNATURE_HEADER; the legacy name
@@ -89,6 +99,17 @@ function json(res: http.ServerResponse, code: number, obj: unknown) {
   res.writeHead(code, { 'content-type': 'application/json' });
   res.end(s);
 }
+/**
+ * The rows a `/v1/requests/:key` route addresses. A work key (`<hash>:<path>`, one wrapper path) names ONE row; a bare tx hash names
+ * every page-keyed row of the transaction: the keyed seat's and each human-only seat's (review #1), never a wrapper path's.
+ */
+async function requestRows(store: Store, key: string) {
+  if (key.includes(':')) {
+    const row = await store.get(key);
+    return row ? [row] : [];
+  }
+  return store.listForTx(key);
+}
 /** Constant-time credential comparison (a plain !== leaks the secret's prefix through timing). */
 function safeEqual(given: string | string[] | undefined, expected: string): boolean {
   if (typeof given !== 'string') return false;
@@ -130,7 +151,8 @@ export function createServer(d: ServerDeps): http.Server {
       // silently going unsigned, which must not report 200.
       if (method === 'GET' && (path === '/healthz' || path === '/health')) {
         const reasons: string[] = [];
-        if (d.pause.paused) reasons.push('paused');   // deliberate (SR8) — degraded, not unhealthy
+        const paused = d.pause.anyPaused();
+        if (paused) reasons.push('paused');   // deliberate (SR8) — degraded, not unhealthy
         const keyOk = await d.keyring.healthy();       // every scope's key provider reachable
         if (!keyOk) reasons.push('key_provider_unreachable');
         const pollerOk = d.poller ? d.poller.healthy() : true;
@@ -144,7 +166,7 @@ export function createServer(d: ServerDeps): http.Server {
         if (stalled.length) reasons.push(...stalled.map((p) => `poller_stalled:${p}`));
         return json(res, ok ? 200 : 503, {
           ok,
-          paused: d.pause.paused,
+          paused,
           reasons,
           poller: d.poller ? { healthy: pollerOk, lastSuccess: d.poller.lastSuccess() || null } : undefined,
           // Only when there is more than one; a single-scope signer would just be repeating `poller`.
@@ -175,10 +197,18 @@ export function createServer(d: ServerDeps): http.Server {
         if (!verifyHmac(d.webhookHmacSecret, sig as string, body)) {
           return json(res, 401, { error: 'bad signature' });
         }
-        const { tx_hash, signer_url } = JSON.parse(body || '{}');
+        const { tx_hash, signer_url, principal, wrapper_book } = JSON.parse(body || '{}');
         if (!tx_hash || !signer_url) return json(res, 400, { error: 'tx_hash and signer_url required' });
         metrics.inc('wallet_pending_seen_total');
-        d.orchestrator.handle({ txHash: tx_hash, signerUrl: signer_url }).catch((e) => d.logger.error({ err: e.message }, 'handle failed'));
+        // `principal` and `wrapper_book` are ROUTING HINTS (wrapper runbook, change 1): where to read the
+        // transaction and the votes. Nothing is taken on their word — the path is derived from the votes
+        // recorded at that wrapper book, and a wrong hint finds none. A hint that is not an acc:// URL is
+        // dropped rather than passed on.
+        const hint = (v: unknown) => (typeof v === 'string' && /^acc:\/\/[^\s]+$/i.test(v) ? v : undefined);
+        const p = hint(principal);
+        const wb = hint(wrapper_book);
+        d.orchestrator.handleAll({ txHash: tx_hash, signerUrl: signer_url, ...(p ? { principal: p } : {}), ...(wb ? { wrapperBook: wb } : {}) })
+          .catch((e) => d.logger.error({ err: e.message }, 'handle failed'));
         return json(res, 202, { accepted: true, tx_hash });
       }
       // NOTE: there is no /v1/decisions callback. Async policy mode is not implemented (the config rejects
@@ -218,44 +248,120 @@ export function createServer(d: ServerDeps): http.Server {
         return json(res, 200, { requests: await d.store.listRecent(limit, statuses) });
       }
 
-      // GET /v1/requests/:tx
-      let m = /^\/v1\/requests\/([a-f0-9]{64})$/.exec(path);
+      // GET /v1/requests/:key — the tx hash, or `<hash>:<16 hex>` for one wrapper path's vote.
+      let m = /^\/v1\/requests\/([a-f0-9]{64}(?::[a-f0-9]{16})?)$/.exec(path);
       if (method === 'GET' && m) {
         // Every page's record for this transaction (review #1: a keyed seat and a human-only seat each keep
         // their own). `request` is the keyed seat's when there is one, else the first; `seats` lists them all.
-        const rows = await d.store.listForTx(m[1]);
+        const rows = await requestRows(d.store, m[1]);
         const reqRow = rows.find((r) => !r.recordId) ?? rows[0];
         if (!reqRow) return json(res, 404, { error: 'not found' });
-        const receipt = await d.store.getReceipt(reqRow.recordId ?? reqRow.txHash);
-        const seats = await Promise.all(rows.map(async (r) => ({ page: r.signerUrl, request: r, receipt: await d.store.getReceipt(r.recordId ?? r.txHash) })));
+        const receipt = await d.store.getReceipt(keyOf(reqRow));
+        const seats = await Promise.all(rows.map(async (r) => ({ page: r.signerUrl, request: r, receipt: await d.store.getReceipt(keyOf(r)) })));
         // G-64: WHY the seat is holding (`pending`, only while it is) and the last hold once it ended
         // (`pendingFinal`). Also on `request`; repeated here so a reader need not know the row's shape.
         return json(res, 200, { request: reqRow, receipt, pending: reqRow.pending ?? null, pendingFinal: reqRow.pendingFinal ?? null, seats });
       }
-      // POST /v1/requests/:tx/retry
-      m = /^\/v1\/requests\/([a-f0-9]{64})\/retry$/.exec(path);
+      // POST /v1/requests/:key/retry
+      m = /^\/v1\/requests\/([a-f0-9]{64}(?::[a-f0-9]{16})?)\/retry$/.exec(path);
       if (method === 'POST' && m) {
-        const rows = await d.store.listForTx(m[1]);
+        // One row for a work key (`hash:path`), else every page-keyed row of the transaction (a keyed seat's and each human-only seat's).
+        const rows = await requestRows(d.store, m[1]);
         if (!rows.length) return json(res, 404, { error: 'not found' });
-        for (const r of rows) d.orchestrator.handle({ txHash: m[1], signerUrl: r.signerUrl }).catch(() => {});
+        for (const reqRow of rows) {
+          // The transaction, not the stored path: in wrapper mode the paths are re-derived from chain state,
+          // so a retry can never replay a path the chain no longer supports.
+          d.orchestrator.handleAll({
+            txHash: reqRow.txHash, signerUrl: reqRow.signerUrl, ...(reqRow.principal ? { principal: reqRow.principal } : {}),
+            // Where to read, not what to sign: the path is re-derived from the votes recorded there.
+            ...(reqRow.delegators?.length ? { wrapperBook: bookOf(reqRow.delegators[0]!) } : {}),
+          }).catch(() => {});
+        }
         return json(res, 202, { retrying: m[1] });
+      }
+      // GET|POST /v1/admin/wrappers — the enrolment registry (wrapper mode). POST registers a wrapper as
+      // ENROLLING, before its creation transaction is submitted, so discovery watches it and the creation
+      // vote is recognised. It never makes a wrapper active: that happens only when the creation executes
+      // on chain and the result passes the wrapper check (wrapper runbook, change 6).
+      if (path === '/v1/admin/wrappers' && (method === 'GET' || method === 'POST')) {
+        if (!d.wrapperRegistry) return json(res, 404, { error: 'not in wrapper mode' });
+        if (method === 'GET') return json(res, 200, { wrappers: await d.wrapperRegistry.list() });
+        let b: any;
+        try { b = JSON.parse((await readBody(req)) || '{}'); } catch { return json(res, 400, { error: 'body must be JSON' }); }
+        const book = typeof b.wrapper_book === 'string' ? b.wrapper_book.replace(/\/+$/, '') : '';
+        if (!/^acc:\/\/[^\s/]+(\/[^\s/]+)+$/i.test(book) || /\/\d+$/.test(book)) return json(res, 400, { error: 'wrapper_book must be an acc:// key book URL' });
+        if (typeof b.subject_id !== 'string' || !b.subject_id || b.subject_id.length > 256) return json(res, 400, { error: 'subject_id required (at most 256 characters)' });
+        // The subscriber's own book, the wrapper's other delegate. The creation vote requires exactly this
+        // book, so the wrapper we join is the one the subject enrolled.
+        const subscriberBook = typeof b.subscriber_book === 'string' ? b.subscriber_book.replace(/\/+$/, '') : '';
+        if (!/^acc:\/\/[^\s/]+(\/[^\s/]+)+$/i.test(subscriberBook) || /\/\d+$/.test(subscriberBook)) return json(res, 400, { error: 'subscriber_book must be an acc:// key book URL (the subscriber\'s own book, not a page)' });
+        if (!d.wrapperOurBook) return json(res, 500, { error: 'wrapper mode without our own book configured' });
+        if (subscriberBook.toLowerCase() === d.wrapperOurBook.replace(/\/+$/, '').toLowerCase()) return json(res, 400, { error: 'subscriber_book cannot be our own book' });
+        const existing = await d.wrapperRegistry.get(book);
+        if (existing && existing.status !== 'enrolling') return json(res, 409, { error: 'already an active wrapper', wrapper: existing });
+        // The subject is what every later vote through this wrapper stands for. Re-registering under a
+        // different subject is refused rather than silently re-pointed, even before activation.
+        if (existing && (existing.subjectId !== b.subject_id || (existing.subscriberBook && existing.subscriberBook.toLowerCase() !== subscriberBook.toLowerCase()))) {
+          return json(res, 409, { error: 'already enrolling for a different subject or subscriber book', wrapper: existing });
+        }
+        const entry = { wrapperBook: book, wrapperPage: `${book}/1`, subjectId: b.subject_id, subscriberBook, enrolledAt: 0, seats: [], status: 'enrolling' as const };
+        await d.wrapperRegistry.upsert(entry);
+        d.logger.info({ audit: 'wrapper_enrolling', wrapper: book, subject: b.subject_id, subscriberBook }, 'wrapper registered as enrolling');
+        return json(res, 201, { wrapper: entry });
       }
       // GET /v1/config/version — the signer-config version stamped on every PolicyRequest and Receipt (6.3).
       if (method === 'GET' && path === '/v1/config/version') {
         return json(res, 200, { configVersion: d.configVersion ?? null });
       }
-      // POST /v1/admin/pause | resume
-      if (method === 'POST' && path === '/v1/admin/pause') {
-        d.pause.paused = true;
-        d.logger.warn('SIGNING PAUSED');
-        d.notify?.('signer.paused');
-        return json(res, 200, { paused: true });
+      // GET|POST /v1/admin/pause, POST /v1/admin/resume — the PERSISTED pause (DAX-4S, DECISION.md section 6).
+      //
+      // Body `{scope?, id?, by, reason}`: `scope` is `seat` or `subject` and `id` the seat id or the subject ADI; without a scope the
+      // call acts on EVERY configured seat (the old "stop everything"; a pause on a subject is never lifted by it). `by` is a named
+      // seat (`seat:<name>`) and `reason` at least ten characters: a pause without a seat, a resume without a reason and a resume
+      // of what is not paused are refused by name (DE-26); pausing what is already paused answers 200 `status: already_paused` (idempotent, DE-78). `by` is the caller's declaration, authenticated only as far as the admin
+      // key is. The pause is durable before the answer is sent, survives a restart, and is read again before every signature.
+      if (method === 'GET' && path === '/v1/admin/pause') {
+        const st = d.pause.snapshot();
+        return json(res, 200, { paused: st.pauses.length > 0, pauses: st.pauses, seats: d.pause.seats() });
       }
-      if (method === 'POST' && path === '/v1/admin/resume') {
-        d.pause.paused = false;
-        d.logger.warn('SIGNING RESUMED');
-        d.notify?.('signer.resumed');
-        return json(res, 200, { paused: false });
+      if (method === 'POST' && (path === '/v1/admin/pause' || path === '/v1/admin/resume')) {
+        const pausing = path === '/v1/admin/pause';
+        let b: any;
+        try { b = JSON.parse((await readBody(req)) || '{}'); } catch { return json(res, 400, { error: 'body must be JSON' }); }
+        if (b === null || typeof b !== 'object' || Array.isArray(b)) return json(res, 400, { error: 'body must be a JSON object' });
+        const by = typeof b.by === 'string' ? b.by : '';
+        const reason = typeof b.reason === 'string' ? b.reason : '';
+        let out: PauseOutcome;
+        if (b.scope === undefined && b.id === undefined) {
+          out = pausing ? await d.pause.setAllSeats(by, reason) : await d.pause.resumeAllSeats(by, reason);
+        } else {
+          const op = { scope: b.scope, id: b.id, by, reason };
+          out = pausing ? await d.pause.set(op) : await d.pause.resume(op);
+        }
+        if (!out.ok) {
+          const status = out.reason === 'not_paused' ? 409 : out.reason.startsWith('journal_') ? 500 : 400;
+          d.logger.warn({ audit: pausing ? 'pause_refused' : 'resume_refused', reason: out.reason, detail: out.detail }, 'pause change refused');
+          return json(res, status, { error: out.reason, ...(out.detail !== undefined ? { detail: out.detail } : {}) });
+        }
+        d.logger.warn({ audit: pausing ? 'signing_paused' : 'signing_resumed', scope: b.scope ?? 'all seats', id: b.id, by, reason }, pausing ? 'SIGNING PAUSED' : 'SIGNING RESUMED');
+        d.notify?.(pausing ? 'signer.paused' : 'signer.resumed');
+        return json(res, 200, { paused: out.state.pauses.length > 0, pauses: out.state.pauses, ...(out.status ? { status: out.status } : {}) });
+      }
+      // POST /v1/admin/decisions/void {nonces, reason} — marks decision nonces spent without a decision being accepted: the old
+      // nonce of a decision a recheck voided (re-issued, denied, expired), so the old decision cannot be used even by a seat that
+      // pins no policy. Idempotent and durable.
+      if (method === 'POST' && path === '/v1/admin/decisions/void') {
+        if (!d.nonces) return json(res, 404, { error: 'not found' });
+        let b: any;
+        try { b = JSON.parse((await readBody(req)) || '{}'); } catch { return json(res, 400, { error: 'body must be JSON' }); }
+        if (!Array.isArray(b?.nonces) || typeof b?.reason !== 'string' || b.reason.length === 0) return json(res, 400, { error: 'nonces (array) and reason required' });
+        try {
+          const r = await d.nonces.voidNonces(b.nonces, b.reason);
+          d.logger.warn({ audit: 'nonces_voided', count: r.voided.length, reason: b.reason }, 'decision nonces voided');
+          return json(res, 200, r);
+        } catch (e) {
+          return json(res, e instanceof Error && (e as { reason?: string }).reason === 'nonce_malformed' ? 400 : 500, { error: (e as { reason?: string }).reason ?? 'void failed' });
+        }
       }
 
       // GET /v1/admin/pubkey — the wallet's signing key(s) + Accumulate key hash(es), per page (for setup / SR6).

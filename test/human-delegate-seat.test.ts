@@ -36,7 +36,7 @@ const readPage = async (p: string): Promise<PageState> => {
   return st;
 };
 const viaDelegate = (keyHash: string, vote: 'approve' | 'reject' = 'approve'): ChainSignature =>
-  ({ type: 'ed25519', publicKeyHash: keyHash, delegators: [HUMAN], signer: DELEGATE_P1, vote });
+  ({ type: 'ed25519', publicKeyHash: keyHash, delegators: [HUMAN], hops: [HUMAN], signer: DELEGATE_P1, vote });
 const set = (...signatures: ChainSignature[]): TxSignatures => ({ status: 'pending', delivered: false, signatures });
 
 describe('a delegate seat counts only when the delegate book reached its own threshold', () => {
@@ -64,7 +64,7 @@ describe('a delegate seat counts only when the delegate book reached its own thr
     const twoLevel: PageState = page(2, [D[0]!], [INNER_BOOK]);
     const read = async (p: string) => (p === DELEGATE_P1 ? twoLevel : readPage(p));
     // Signed on the inner page, delegated through the delegate page, then through the human page.
-    const inner = (keyHash: string): ChainSignature => ({ type: 'ed25519', publicKeyHash: keyHash, delegators: [HUMAN, DELEGATE_P1], signer: INNER_P1, vote: 'approve' });
+    const inner = (keyHash: string): ChainSignature => ({ type: 'ed25519', publicKeyHash: keyHash, delegators: [HUMAN, DELEGATE_P1], hops: [DELEGATE_P1, HUMAN], signer: INNER_P1, vote: 'approve' });
     const direct: ChainSignature = viaDelegate(D[0]!);
     // D0 directly on the delegate page + only ONE inner signature: the inner book has not voted, so 1 of 2.
     expect(await countedSignatures(set(direct, inner(I[0]!)), HUMAN, HUMAN_PAGE, read)).toEqual([]);
@@ -76,7 +76,8 @@ describe('a delegate seat counts only when the delegate book reached its own thr
     const chain = Array.from({ length: MAX_DELEGATION_DEPTH + 2 }, (_, i) => `acc://fictional-d${i}-tcl1.acme/book`);
     const deep: Record<string, PageState> = { [HUMAN]: page(1, [], [chain[0]!]) };
     chain.forEach((b, i) => { deep[`${b}/1`] = i + 1 < chain.length ? page(1, [], [chain[i + 1]!]) : page(1, ['aa'.repeat(32)]); });
-    const s: ChainSignature = { type: 'ed25519', publicKeyHash: 'aa'.repeat(32), delegators: [HUMAN, ...chain.slice(0, -1).map((b) => `${b}/1`)], signer: `${chain.at(-1)}/1`, vote: 'approve' };
+    const delegators = [HUMAN, ...chain.slice(0, -1).map((b) => `${b}/1`)];
+    const s: ChainSignature = { type: 'ed25519', publicKeyHash: 'aa'.repeat(32), delegators, hops: [...delegators].reverse(), signer: `${chain.at(-1)}/1`, vote: 'approve' };
     const unread: string[] = [];
     expect(await countedSignatures(set(s), HUMAN, deep[HUMAN]!, async (p) => deep[p]!, unread)).toEqual([]);
     expect(unread.join(' ')).toContain('deeper than');

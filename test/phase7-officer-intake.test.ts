@@ -32,6 +32,7 @@ import { Resolver } from '../src/resolver.js';
 import { MockPolicyClient } from '../src/policy/policy.js';
 import { noKeyKeyring } from '../src/signer/keyring.js';
 import type { AccumulateClient } from '../src/accumulate/client.js';
+import { memoryPauseStore } from '../src/binding/pause-store.js';
 
 const silent = pino({ level: 'silent' });
 const subtle = webcrypto.subtle;
@@ -119,7 +120,7 @@ class FakeChain implements IntakeChain {
   pages = new Map<string, { version: number; threshold: number; keys: Entry[] }>();
   pending = new Map<string, { principal: string; body: any; executed?: boolean }>();
   submitted: any[] = [];
-  sigs = new Map<string, Array<{ type: string; publicKeyHash: string; delegators: string[]; signer?: string; vote?: 'approve' | 'reject' | 'abstain' }>>();
+  sigs = new Map<string, Array<{ type: string; publicKeyHash: string; delegators: string[]; hops: string[]; signer?: string; vote?: 'approve' | 'reject' | 'abstain' }>>();
   land = true;
   readPage = async (page: string): Promise<PageState> => {
     const p = this.pages.get(page.toLowerCase());
@@ -137,16 +138,18 @@ class FakeChain implements IntakeChain {
   async submit(envelope: any) {
     this.submitted.push(envelope);
     let s = envelope.signatures[0];
+    // Read the way RawAccumulateClient does: `delegators` outermost first, `hops` in hop order.
     const delegators: string[] = [];
     // Outermost first, as the chain reader (raw-client unwrapDelegation) reports them.
     while (s.type === 'delegated') { delegators.push(String(s.delegator)); s = s.signature; }
+    const hops = [...delegators].reverse();
     const hash = String(s.transactionHash);
     // A newly originated transaction (a proposal) becomes pending at its principal.
     const t0 = envelope.transaction?.[0];
     if (t0?.header?.initiator && !this.pending.has(hash)) this.pending.set(hash, { principal: String(t0.header.principal), body: t0.body });
     if (this.land) {
       const list = this.sigs.get(hash) ?? [];
-      list.push({ type: s.type, publicKeyHash: createHash('sha256').update(Buffer.from(s.publicKey, 'hex')).digest('hex'), delegators, signer: String(s.signer), vote: s.vote === 'reject' || s.vote === 1 ? 'reject' : 'approve' });
+      list.push({ type: s.type, publicKeyHash: createHash('sha256').update(Buffer.from(s.publicKey, 'hex')).digest('hex'), delegators, hops, signer: String(s.signer), vote: s.vote === 'reject' || s.vote === 1 ? 'reject' : 'approve' });
       this.sigs.set(hash, list);
     }
     return { ok: true };
@@ -224,7 +227,7 @@ beforeEach(async () => {
     recordAwaiting: async ({ txHash, page, op }) => store.savePolicyRequest(awaitingGovernanceRequest(txHash, page, op)),
     propose: intake.propose, logger: silent,
   });
-  server = createServer({ relayClients, officerIntake: intake.handle, orchestrator: {} as any, store, keyring: {} as any, accumulate: {} as any, pause: { paused: false }, logger: silent });
+  server = createServer({ relayClients, officerIntake: intake.handle, orchestrator: {} as any, store, keyring: {} as any, accumulate: {} as any, pause: memoryPauseStore(), logger: silent });
   port = await listen(server);
 });
 afterAll(() => server?.close());
@@ -847,7 +850,7 @@ describe('G-39: open prepares and proposals are persisted and restored', () => {
       state: st, ...(o.now ? { now: o.now } : {}),
     });
     await it.restore();
-    const srv = createServer({ officerIntake: it.handle, orchestrator: {} as any, store: st, keyring: {} as any, accumulate: {} as any, pause: { paused: false }, logger: silent });
+    const srv = createServer({ officerIntake: it.handle, orchestrator: {} as any, store: st, keyring: {} as any, accumulate: {} as any, pause: memoryPauseStore(), logger: silent });
     open.push(srv);
     return { intake: it, store: st, port: await listen(srv) };
   }
@@ -1103,7 +1106,7 @@ describe('a submit error is decided from the chain, for a transaction ref and fo
       getPolicyRequest: (h) => store.getPolicyRequest(h), landedTimeoutMs: 150, pollIntervalMs: 10, logger: silent,
       onLanded: async (r) => { landed.push(r); },
     });
-    const srv = createServer({ officerIntake: it.handle, orchestrator: {} as any, store, keyring: {} as any, accumulate: {} as any, pause: { paused: false }, logger: silent });
+    const srv = createServer({ officerIntake: it.handle, orchestrator: {} as any, store, keyring: {} as any, accumulate: {} as any, pause: memoryPauseStore(), logger: silent });
     open.push(srv);
     return { intake: it, port: await listen(srv), landed, chainState: o };
   }

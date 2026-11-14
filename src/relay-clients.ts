@@ -21,9 +21,11 @@ import type { PageState } from './ops/rotate.js';
 import { checkKeyPageChange, KeyPageGuardError, KeyPageRefusal, operationsFromKeyPageOps } from './ops/keypage-guard.js';
 import type { PolicyRequest } from './types.js';
 import { Logger } from './logger.js';
+import type { CountedReader } from './binding/read-cache.js';
+import { relayAccountRoute } from './binding/relay-routes.js';
 
 export const RELAY_CLIENT_PREFIX = '/relay';
-export type RelayScope = 'proof' | 'tx' | 'pending' | 'governance';
+export type RelayScope = 'proof' | 'tx' | 'pending' | 'governance' | 'chain';
 
 export interface RelayClientsDeps {
   clients: Array<{ name: string; key: string; scopes: RelayScope[] }>;
@@ -48,6 +50,12 @@ export interface RelayClientsDeps {
   recordAwaiting?: (r: { txHash: string; page: string; op: KeyPageOp }) => Promise<void>;
   /** Phase 7: `POST /relay/governance/proposal` (officer intake). Absent => 404. */
   propose?: (page: string, operations: KeyPageOp[], proposer: string) => Promise<{ status: number; body: unknown }>;
+  /**
+   * The Accumulate facts the Console's reader needs (scope `chain`): one evaluation view of the SAME read cache the signer's own
+   * decision binding uses, so the Console's reads and the signer's share the cache, the TTL, the concurrency bound and the
+   * counters. Absent => the chain routes are 503.
+   */
+  chainReader?: () => CountedReader;
   timeoutMs?: number;
   logger: Logger;
   fetchImpl?: typeof fetch;
@@ -69,6 +77,8 @@ function sendRefusal(res: http.ServerResponse, refusal: KeyPageRefusal, txids: s
   });
 }
 
+/** the chain routes: the account is ONE percent-encoded path segment (no raw slash) */
+const CHAIN_ROUTE = new RegExp('^/relay/(data|authorities|history|keybook|chainlen)/([^/]+)$');
 const GOV_TYPES = new Set(['add-key', 'remove-key', 'set-threshold', 'add-delegate', 'remove-delegate']);
 const MAX_GOV_OPS = 10;
 const sameUrl = (a: string, b: string) => a.toLowerCase().replace(/\/+$/, '') === b.toLowerCase().replace(/\/+$/, '');
@@ -126,6 +136,17 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
     const need = (scope: RelayScope) => client.scopes.includes(scope);
 
     let m: RegExpExecArray | null;
+
+    // GET /relay/data|authorities|history|keybook|chainlen/:account  (scope chain; read-only, v3 only, strictly validated: src/binding/relay-routes.ts)
+    if ((m = CHAIN_ROUTE.exec(path))) {
+      if (!need('chain')) return send(res, 403, { error: 'forbidden: scope chain required' });
+      if (method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+      if (url.search !== '') return send(res, 400, { error: 'no query parameters are accepted' });
+      if (!d.chainReader) return send(res, 503, { error: 'chain reader not configured' });
+      const out = await relayAccountRoute(d.chainReader(), m[1] as 'data' | 'authorities' | 'history' | 'keybook' | 'chainlen', m[2]);
+      for (const [k, v] of Object.entries(out.headers)) res.setHeader(k, v);
+      return send(res, out.status, out.body);
+    }
 
     // GET /relay/proof/tx/:hash
     if ((m = /^\/relay\/proof\/tx\/([^/]+)$/.exec(path))) {

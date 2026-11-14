@@ -32,6 +32,11 @@ function keyEntry(e: unknown, prefix = ''): Record<string, string> {
   if (kh) out[prefix ? `${prefix}KeyHash` : 'keyHash'] = kh;
   const dg = str(o.delegate);
   if (dg) out[prefix ? `${prefix}Delegate` : 'delegate'] = dg;
+  // A field that is PRESENT but unreadable is not the same as an absent one: dropping it would describe a
+  // different entry from the one the network will write (a wrapper check would then judge the wrong page).
+  if ((o.keyHash !== undefined && o.keyHash !== null && o.keyHash !== '' && !kh) || (o.delegate !== undefined && o.delegate !== null && o.delegate !== '' && !dg)) {
+    out[prefix ? `${prefix}Unreadable` : 'unreadable'] = 'true';
+  }
   return out;
 }
 
@@ -48,9 +53,12 @@ export function extractGovernance(body: TxBody | undefined, principal: string): 
         case 'add':
         case 'remove': {
           const entry = keyEntry(o.entry);
-          return Object.keys(entry).length ? { type, ...entry } : { type, unrecognized: true };
+          return Object.keys(entry).length && !entry.unreadable ? { type, ...entry } : { type, unrecognized: true };
         }
-        case 'update': return { type, ...keyEntry(o.oldEntry, 'old'), ...keyEntry(o.newEntry, 'new') };
+        case 'update': {
+          const both = { ...keyEntry(o.oldEntry, 'old'), ...keyEntry(o.newEntry, 'new') };
+          return both.oldUnreadable || both.newUnreadable ? { type, unrecognized: true } : { type, ...both };
+        }
         case 'setThreshold':
         case 'setRejectThreshold':
         case 'setResponseThreshold': {

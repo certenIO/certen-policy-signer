@@ -10,7 +10,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AddressInfo } from 'node:net';
 import http from 'node:http';
-import { createServer, PauseController } from '../src/server.js';
+import { createServer } from '../src/server.js';
+import { memoryPauseStore, type PauseControl } from '../src/binding/pause-store.js';
+import { derivedSeat } from '../src/binding/seats.js';
 import { Orchestrator } from '../src/orchestrator.js';
 import { Resolver } from '../src/resolver.js';
 import { FileStore, MemoryStore } from '../src/store/store.js';
@@ -33,7 +35,7 @@ function startServer(opts: { adminApiKey?: string; poller?: { healthy(): boolean
   const acc = new MockAccumulateClient();
   const store = new MemoryStore();
   const signer = new LocalSigner(new Uint8Array(32).fill(9));
-  const pause: PauseController = { paused: false };
+  const pause = memoryPauseStore([derivedSeat('acc://o.acme/book/1')]);
   const keyring = singleKeyring(signer);
   const orchestrator = new Orchestrator({
     accumulate: acc, keyring, policy: new MockPolicyClient({ decision: 'approve' }),
@@ -43,7 +45,7 @@ function startServer(opts: { adminApiKey?: string; poller?: { healthy(): boolean
     orchestrator, store, keyring, accumulate: acc, pause, logger: silent,
     adminApiKey: opts.adminApiKey, poller: opts.poller, metricsPublic: opts.metricsPublic,
   });
-  return new Promise<{ server: http.Server; url: string; pause: PauseController }>((resolve) => {
+  return new Promise<{ server: http.Server; url: string; pause: PauseControl }>((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address() as AddressInfo;
       resolve({ server, url: `http://127.0.0.1:${port}`, pause });
@@ -56,7 +58,7 @@ describe('admin API is never open', () => {
     const { server, url, pause } = await startServer({});
     const res = await fetch(`${url}/v1/admin/pause`, { method: 'POST' });
     expect(res.status).toBe(403);
-    expect(pause.paused).toBe(false);          // the critical part: an anonymous caller could NOT pause signing
+    expect(pause.anyPaused()).toBe(false);     // the critical part: an anonymous caller could NOT pause signing
     const pk = await fetch(`${url}/v1/admin/pubkey`);
     expect(pk.status).toBe(403);               // nor learn which key we sign with
     server.close();
@@ -65,10 +67,15 @@ describe('admin API is never open', () => {
   it('rejects a wrong api_key and accepts the right one', async () => {
     const { server, url, pause } = await startServer({ adminApiKey: 'correct-horse' });
     expect((await fetch(`${url}/v1/admin/pause`, { method: 'POST', headers: { 'x-api-key': 'wrong' } })).status).toBe(401);
-    expect(pause.paused).toBe(false);
-    const ok = await fetch(`${url}/v1/admin/pause`, { method: 'POST', headers: { 'x-api-key': 'correct-horse' } });
+    expect(pause.anyPaused()).toBe(false);
+    // DE-26: a pause names a seat and gives a reason (the old body-less call is refused by name)
+    const bare = await fetch(`${url}/v1/admin/pause`, { method: 'POST', headers: { 'x-api-key': 'correct-horse' } });
+    expect(bare.status).toBe(400);
+    expect((await bare.json() as { error: string }).error).toBe('seat_required');
+    expect(pause.anyPaused()).toBe(false);
+    const ok = await fetch(`${url}/v1/admin/pause`, { method: 'POST', headers: { 'x-api-key': 'correct-horse', 'content-type': 'application/json' }, body: JSON.stringify({ by: 'seat:fic-operator', reason: 'FICTIONAL: stop signing now' }) });
     expect(ok.status).toBe(200);
-    expect(pause.paused).toBe(true);
+    expect(pause.anyPaused()).toBe(true);
     server.close();
   });
 
@@ -195,6 +202,8 @@ describe('SR8 pause means sign NOTHING', () => {
   // A Reject vote is still a signature. With submit_reject_vote: true (what every shipped config sets),
   // the pause check used to sit AFTER the deny branch — so a "paused" wallet went on signing rejections.
   async function run(decision: 'approve' | 'deny', paused: boolean) {
+    const pauses = memoryPauseStore([derivedSeat('acc://o.acme/book/1')]);
+    if (paused) await pauses.set({ scope: 'seat', id: derivedSeat('acc://o.acme/book/1'), by: 'seat:fic-operator', reason: 'FICTIONAL: stop signing now' });
     const acc = new MockAccumulateClient();
     const tx = 'ab'.repeat(32);
     acc.addPending(tx, { body: { type: 'sendTokens', to: [{ url: 'acc://x.acme/tokens', amount: '10' }] }, principal: 'acc://x.acme/tokens' });
@@ -202,7 +211,7 @@ describe('SR8 pause means sign NOTHING', () => {
     const orch = new Orchestrator({
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(3))),
       policy: new MockPolicyClient({ decision }), store, resolver: new Resolver(acc), logger: silent,
-      options: { submitRejectVote: true, isPaused: () => paused },
+      options: { submitRejectVote: true }, pauses,
     });
     await orch.handle({ txHash: tx, signerUrl: 'acc://o.acme/book/1' });
     return { submissions: acc.submissions.length, status: (await store.get(tx))?.status };

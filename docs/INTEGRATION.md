@@ -217,11 +217,40 @@ POST <policy.url>    content-type: application/json
     "expiresAt":   "2026-07-26T13:00:00Z",         // the ON-CHAIN deadline (header.expire.atTime); absent if none
     "memo":        "PO-1043"                       // submitter free text, display only; absent if none
   },
+  "wrapper": {                        // attachment_model: wrapper only — WHICH subscriber's wrapper this vote is for
+    "page": "acc://alice.acme/id/1",                 // the enrolled wrapper page; one request per wrapper on the tx
+    "path": ["acc://alice.acme/id/1", "acc://acme.acme/treasury/1"]  // the path the vote travels, first hop first
+  },
+  "attachmentKind": "vote",           // attachment_model: wrapper only — "wrapper_create" | "seat_attach" | "vote" (see below)
+  "binding": {                        // DAX-4S: only for a scope with a `binding` block, when the transaction can be read as an intent (below)
+    "chainId": 84532, "kind": "erc20.transfer", "source": "0x…", "target": "0x…", "beneficiary": "0x…", "asset": "0x…", "amount": "1500000",
+    "executionCommitment": "0x…", "validatorOperationId": "0x…", "txHash": "0x…",
+    "legCount": 1,                    // the legs of the intent; always sent; above 1 the decision service refuses it by name (multi_leg_unsupported)
+    "grantRef": { "grantId": "…", "version": 1, "grantHash": "0x…" }   // only when blob 0 of the intent names a Grant (the producer's claim)
+  },
+  "execution": {                      // DAX-4S round 5: what actually executes, a SIBLING of `binding` (never inside it); ONE mapped leg only, else omitted
+    "chainId": 84532, "source": "0x…", "target": "0x…", "value": "0", "calldata": "0x…"   // value: decimal string in wei; calldata: 0x + lower-case hex
+  },
   "display":       [["Principal", "acc://acme.acme/orders"], ["Body type", "writeData"], ["Payer", "acc://acme.acme"]],  // Phase 7: what a human is shown
   "summaryHash":   "77533e7e…",       // tcl-summary/v1 of `display` (lowercase hex); tx hash and vote are NOT inside
   "expiresAt":     "2026-07-26T12:00:00Z"         // THIS REQUEST's validity (policy TTL) — not the on-chain deadline
 }
 ```
+
+### Wrapper mode: `wrapper` and `attachmentKind`
+
+With `attachment_model: wrapper` the signer is a delegate on each subscriber's wrapper book, and every
+request names the wrapper it is for: `wrapper.page` and the path the vote travels. One transaction can
+carry one request per wrapper on it, each its own question. `attachmentKind` says what the vote does:
+`wrapper_create` (adding the signer to a new wrapper page; signed directly, `wrapper.path` is empty),
+`seat_attach` (an org page adding the wrapper as a delegate) or `vote`.
+
+The signer proves the wrapper still REQUIRES its vote before asking you. It does not prove which person
+the wrapper's other entry belongs to: bind `wrapper.page` to your enrolled subject yourself, on every
+request, and deny a page you did not enrol.
+
+Register each wrapper with `POST /v1/admin/wrappers {"wrapper_book", "subject_id", "subscriber_book"}`
+before building it. The creation vote later requires exactly that subscriber book.
 
 ### Pinned contracts, self-calls, governance and acceptances (Phase 6)
 
@@ -239,6 +268,25 @@ asset produces the business summary `Pay $42,500.00 FDBUSD to Delta Equipment �
 `acc://…/acceptances` account with exactly one data element that is byte-for-byte the canonical JSON
 `{"amount":N,"category":S,"firm":S,"instructionHash":64hex}`. `bodyType` and `configVersion` are on every
 request; `configVersion` is also on every receipt and at `GET /v1/config/version` (admin).
+
+### Decision binding: `binding` and the reply `record` (DAX-4S)
+
+A scope configured with `binding` accepts a decision only when the reply carries `record`, a `certen.decision/v1` object (DECISION.md
+section 3) that names the exact transaction, an approver identity the seat lists, this seat, the pinned policy hash (when set), the Grant
+head and an unused nonce. The request tells the decision service what the signer will bind: `binding` is the ten members of the core's
+request hash, with `validatorOperationId` the validator's operation id recomputed from the four blobs of the pending transaction (never the
+intent_id, never the blob-3 intent_hash), plus `legCount` (always) and `grantRef` (only when blob 0 of the intent carries one; omitted,
+never `null`). It is ABSENT for a legacy scope and for a transaction the signer cannot read as an intent (an unsupported call, a malformed
+`grantRef`): such a decision is refused by name (`presented_malformed`). A SEVERAL-LEG intent carries its `binding` with `legCount` above 1
+so the decision service refuses it by name (`multi_leg_unsupported`) and so does the signer; neither side silently skips it. `execution` is the single call the leg runs, so a decision service can DECODE it (sign what you see) instead of reading prose. It is present
+exactly when `binding` is present and the intent has ONE leg that maps to the ten request members, and omitted (never `null`) otherwise (a
+several-leg intent, an unsupported call). The signer AUTHENTICATES it before it sends anything: keccak(chainid, target, value, keccak(calldata)),
+the core's single-call commitment, must equal the intent's stated `executionCommitment`; if it does not, no `binding` and no `execution` are
+sent and a decision for the transaction is refused `presented_malformed` (detail `execution_commitment_mismatch`). A decision service recomputes
+the same commitment over `execution` and refuses a mismatch (`request_execution_mismatch`). There is no
+`leafExpiry`: the on-chain leaf expiry is not a field of the pending transaction (the deployed account computes its leaf from its own
+parameters), so a decision service that wants it must supply it from another source. The reply keeps `decision`,
+`reason` and `evidence` as before and gains `record`; a scope without `binding` ignores the member.
 
 ### Display and summary hash (Phase 7)
 

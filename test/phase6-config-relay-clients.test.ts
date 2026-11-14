@@ -15,6 +15,7 @@ import { createServer } from '../src/server.js';
 import type { KeyPageOp, KeyPageResult } from '../src/ops/keypage.js';
 import { KeyPageGuardError } from '../src/ops/keypage-guard.js';
 import type { PolicyRequest } from '../src/types.js';
+import { memoryPauseStore } from '../src/binding/pause-store.js';
 
 const silent = pino({ level: 'silent' });
 const dir = mkdtempSync(join(tmpdir(), 'p6-config-'));
@@ -193,7 +194,7 @@ beforeAll(async () => {
   };
   server = createServer({
     relayClients: createRelayClientsHandler(deps), adminApiKey: 'admin-test-key-0000000',
-    orchestrator: {} as any, store: {} as any, keyring: {} as any, accumulate: {} as any, pause: { paused: false }, logger: silent,
+    orchestrator: {} as any, store: {} as any, keyring: {} as any, accumulate: {} as any, pause: memoryPauseStore(), logger: silent,
   });
   port = await listen(server);
 });

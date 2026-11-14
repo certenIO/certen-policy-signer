@@ -1,26 +1,53 @@
-/** Persistence: SigningRequest + Receipt, keyed by txHash. Interface + in-memory and file-backed impls. */
+/**
+ * Persistence: SigningRequest + Receipt, keyed by RECORD KEY. Interface + in-memory and file-backed impls.
+ *
+ * The record key is the transaction hash, except for a vote on one delegation path in wrapper mode, where
+ * it is `txHash:<16 hex>` (src/delegation/path.ts `workKey`), and for a human-only seat's request, where it
+ * is `<txHash>@<page>` (`humanRecordId`, review #1). Every existing mode uses the bare hash, so for them
+ * nothing here changed. A record written before work keys existed has no `workKey` and is keyed by its
+ * `txHash`, which is exactly the key it was stored under. A row carries at most one of `workKey` and
+ * `recordId` (config refuses wrapper mode together with human-only seats); `keyOf` is the one rule.
+ */
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { PolicyRequest, Receipt, RequestStatus, SigningRequest } from '../types.js';
 
 export const TERMINAL: RequestStatus[] = ['signed', 'rejected', 'expired'];
 
+/** The key a record lives under: its `workKey` (a wrapper path), else its `recordId` (a human-only seat), else its `txHash` when it predates both. */
+export function keyOf(r: { workKey?: string; recordId?: string; txHash: string }): string {
+  return r.workKey ?? r.recordId ?? r.txHash;
+}
+
 export interface Store {
   /**
-   * A request by its RECORD KEY: the tx hash for a keyed seat (the key every existing record has), or
-   * `humanRecordId(txHash, page)` for a human-only seat (review #1). A transaction several pages must act on
+   * A request by its RECORD KEY: the tx hash for a keyed seat (the key every existing record has), `txHash:<16 hex>` for one
+   * wrapper path, or `humanRecordId(txHash, page)` for a human-only seat (review #1). A transaction several pages must act on
    * therefore has one record per acting page, and no page's record can pre-empt another's.
    */
   get(key: string): Promise<SigningRequest | undefined>;
-  /** Every record for one transaction, whichever page it belongs to. */
+  /**
+   * Every page-keyed record for one transaction, whichever page it belongs to: the keyed seat's (key = the tx hash) and each
+   * human-only seat's. A wrapper path's row has its own work key and is read with `get`, never listed under the bare hash.
+   */
   listForTx(txHash: string): Promise<SigningRequest[]>;
   create(req: SigningRequest): Promise<void>;
-  update(txHash: string, patch: Partial<SigningRequest>): Promise<SigningRequest>;
-  /** Keyed by `r.recordId ?? r.txHash`, as the request it belongs to. */
+  update(key: string, patch: Partial<SigningRequest>): Promise<SigningRequest>;
+  /**
+   * APPENDS a receipt: nothing replaces or removes one (DAX-4S, DE-48). The store stamps `seq`, store-wide and contiguous from 1,
+   * and `recordedAt`; a drop or a reorder shows as a gap, and the Console chains the receipts through its decision log.
+   * Filed under `keyOf(receipt)`, as the request it belongs to.
+   */
   saveReceipt(r: Receipt): Promise<void>;
-  getReceipt(txHash: string): Promise<Receipt | undefined>;
-  /** The latest PolicyRequest built for a transaction (Phase 6.4 `/relay/pending/:hash`). */
-  /** `key` defaults to the tx hash; a human-only seat stores its request under its record key. */
+  /** The LATEST receipt of a unit of work (what every reader has always had). */
+  getReceipt(key: string): Promise<Receipt | undefined>;
+  /** Every receipt of a unit of work, oldest first. */
+  getReceipts(key: string): Promise<Receipt[]>;
+  /**
+   * The latest PolicyRequest built for a unit of work (Phase 6.4 `/relay/pending/:hash`). `key` defaults
+   * to the request's tx hash; a wrapper path's request lives under its work key, so the tx-hash route
+   * never returns one wrapper's question as another's, and a human-only seat stores its request under its record key.
+   */
   savePolicyRequest(r: PolicyRequest, key?: string): Promise<void>;
   /** By key; a bare tx hash falls back to any page's record for that transaction (officer intake, relay). */
   getPolicyRequest(key: string): Promise<PolicyRequest | undefined>;
@@ -46,9 +73,9 @@ export interface Store {
   saveIntakeRecord(kind: IntakeRecordKind, id: string, record: Record<string, unknown>): Promise<void>;
   deleteIntakeRecord(kind: IntakeRecordKind, id: string): Promise<void>;
   listIntakeRecords(kind: IntakeRecordKind): Promise<Array<Record<string, unknown>>>;
-  /** Best-effort single-flight lock. Returns false if already locked. */
-  tryLock(txHash: string): boolean;
-  unlock(txHash: string): void;
+  /** Best-effort single-flight lock, per record key. Returns false if already locked. */
+  tryLock(key: string): boolean;
+  unlock(key: string): void;
 }
 
 export type IntakeRecordKind = 'prepare' | 'proposal';
@@ -64,30 +91,49 @@ export function humanRecordId(txHash: string, page: string): string {
 
 export class MemoryStore implements Store {
   protected reqs = new Map<string, SigningRequest>();
+  /** Every receipt, in the order appended: `seq` is the index plus one. Never edited, never shortened. */
+  protected receiptLog: Receipt[] = [];
   protected receipts = new Map<string, Receipt>();
   protected policyRequests = new Map<string, PolicyRequest>();
   protected intake = { prepare: new Map<string, Record<string, unknown>>(), proposal: new Map<string, Record<string, unknown>>() };
   private locks = new Set<string>();
 
   async get(key: string) { return this.reqs.get(key); }
-  async listForTx(txHash: string) { return [...this.reqs.values()].filter((r) => r.txHash === txHash); }
+  async listForTx(txHash: string) { return [...this.reqs.values()].filter((r) => r.txHash === txHash && r.workKey === undefined); }
   async create(req: SigningRequest) {
-    const key = req.recordId ?? req.txHash;
+    const key = keyOf(req);
     if (this.reqs.has(key)) throw new Error(`duplicate signing_request ${key}`);
     this.reqs.set(key, { ...req });
     await this.persist();
   }
-  async update(txHash: string, patch: Partial<SigningRequest>) {
-    const cur = this.reqs.get(txHash);
-    if (!cur) throw new Error(`no signing_request ${txHash}`);
-    const next = { ...cur, ...patch, updatedAt: Date.now() };
-    this.reqs.set(txHash, next);
+  async update(key: string, patch: Partial<SigningRequest>) {
+    const cur = this.reqs.get(key);
+    if (!cur) throw new Error(`no signing_request ${key}`);
+    // The key is the row's identity: a patch must not move it under another key.
+    const next = { ...cur, ...patch, txHash: cur.txHash, workKey: cur.workKey, recordId: cur.recordId, updatedAt: Date.now() };
+    if (next.workKey === undefined) delete next.workKey;
+    if (next.recordId === undefined) delete next.recordId;
+    this.reqs.set(key, next);
     await this.persist();
     return next;
   }
-  async saveReceipt(r: Receipt) { this.receipts.set(r.recordId ?? r.txHash, { ...r }); await this.persist(); }
+  async saveReceipt(r: Receipt) {
+    const rec: Receipt = { ...r, seq: this.receiptLog.length + 1, recordedAt: Date.now() };
+    this.receiptLog.push(rec);
+    this.receipts.set(keyOf(rec), rec);
+    try {
+      await this.persist();
+    } catch (e) {
+      // An append that could not be made durable is not an append: roll the in-memory log back so a retry takes the same seq.
+      this.receiptLog.pop();
+      const prior = [...this.receiptLog].reverse().find((x) => keyOf(x) === keyOf(rec));
+      if (prior) this.receipts.set(keyOf(rec), prior); else this.receipts.delete(keyOf(rec));
+      throw e;
+    }
+  }
   async getReceipt(key: string) { return this.receipts.get(key); }
-  async savePolicyRequest(r: PolicyRequest, key?: string) { this.policyRequests.set(key ?? r.txHash, structuredClone(r)); await this.persist(); }
+  async getReceipts(key: string) { return this.receiptLog.filter((x) => keyOf(x) === key); }
+  async savePolicyRequest(r: PolicyRequest, key = r.txHash) { this.policyRequests.set(key, structuredClone(r)); await this.persist(); }
   async getPolicyRequest(key: string) {
     const exact = this.policyRequests.get(key);
     if (exact || key.includes('@')) return exact;
@@ -110,14 +156,14 @@ export class MemoryStore implements Store {
       .filter((r) => !wanted || wanted.has(r.status))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, Math.max(0, limit))
-      .map((request) => ({ request, receipt: this.receipts.get(request.recordId ?? request.txHash) }));
+      .map((request) => ({ request, receipt: this.receipts.get(keyOf(request)) }));
   }
-  tryLock(txHash: string) {
-    if (this.locks.has(txHash)) return false;
-    this.locks.add(txHash);
+  tryLock(key: string) {
+    if (this.locks.has(key)) return false;
+    this.locks.add(key);
     return true;
   }
-  unlock(txHash: string) { this.locks.delete(txHash); }
+  unlock(key: string) { this.locks.delete(key); }
 
   /** No-op for the in-memory store; FileStore overrides it. */
   protected async persist(): Promise<void> {}
@@ -148,13 +194,19 @@ export class FileStore extends MemoryStore {
   private load() {
     try {
       const raw = JSON.parse(readFileSync(this.path, 'utf8')) as {
-        requests?: SigningRequest[]; receipts?: Receipt[]; policyRequests?: PolicyRequest[]; policyRequestKeys?: string[];
+        requests?: SigningRequest[]; receipts?: Receipt[]; policyRequests?: PolicyRequest[];
+        policyRequestsByKey?: Array<[string, PolicyRequest]>;
+        /** A file written by a build that kept page-keyed requests as a list parallel to `policyRequests` (G-69, before the merge with DAX-4S). */
+        policyRequestKeys?: string[];
         intake?: { prepares?: Array<Record<string, unknown>>; proposals?: Array<Record<string, unknown>> };
       };
-      for (const r of raw.requests ?? []) this.reqs.set(r.recordId ?? r.txHash, r);
-      for (const r of raw.receipts ?? []) this.receipts.set(r.recordId ?? r.txHash, r);
-      // A file written before per-page keys has no policyRequestKeys: every request was keyed by its tx hash.
+      // A file written before work keys has no `workKey` on any record; `keyOf` files those under their
+      // txHash, which is where they always were, so an upgrade neither re-votes nor loses a receipt.
+      for (const r of raw.requests ?? []) this.reqs.set(keyOf(r), r);
+      this.loadReceipts(raw.receipts ?? []);
+      // A file written before per-page keys has no `policyRequestKeys`: every request was keyed by its tx hash.
       (raw.policyRequests ?? []).forEach((r, i) => this.policyRequests.set(raw.policyRequestKeys?.[i] ?? r.txHash, r));
+      for (const [k, r] of raw.policyRequestsByKey ?? []) this.policyRequests.set(k, r);
       for (const r of raw.intake?.prepares ?? []) this.intake.prepare.set(String(r.prepareId), r);
       for (const r of raw.intake?.proposals ?? []) this.intake.proposal.set(String(r.id), r);
     } catch (e) {
@@ -163,12 +215,30 @@ export class FileStore extends MemoryStore {
     }
   }
 
+  /**
+   * Receipts are an append-only log. A file written before this change holds one receipt per key and no `seq`: its receipts are
+   * numbered in file order. A file that has `seq` must have it on every receipt, contiguous from 1: a gap, a duplicate or a mix
+   * means a receipt was dropped or edited out, and the process refuses to start rather than carry on with a shortened trail.
+   */
+  private loadReceipts(rows: Receipt[]): void {
+    const withSeq = rows.filter((r) => typeof r.seq === 'number').length;
+    if (withSeq !== 0 && withSeq !== rows.length) throw new Error('receipts with and without a sequence number: a receipt trail that may have been edited');
+    const ordered = withSeq === 0 ? rows.map((r, i) => ({ ...r, seq: i + 1 })) : [...rows].sort((a, b) => a.seq! - b.seq!);
+    ordered.forEach((r, i) => {
+      if (r.seq !== i + 1) throw new Error(`receipt sequence is not contiguous (expected ${i + 1}, found ${r.seq}): a receipt was dropped or duplicated`);
+      this.receiptLog.push(r);
+      this.receipts.set(keyOf(r), r);
+    });
+  }
+
   protected async persist(): Promise<void> {
     const snapshot = JSON.stringify({
       requests: [...this.reqs.values()],
-      receipts: [...this.receipts.values()],
-      policyRequests: [...this.policyRequests.values()],
-      policyRequestKeys: [...this.policyRequests.keys()],
+      receipts: this.receiptLog,
+      // Hash-keyed requests in the original field, so a file stays readable by the previous release;
+      // path-keyed and page-keyed ones beside it, with their key, because the request itself does not carry it.
+      policyRequests: [...this.policyRequests.entries()].filter(([k, r]) => k === r.txHash).map(([, r]) => r),
+      policyRequestsByKey: [...this.policyRequests.entries()].filter(([k, r]) => k !== r.txHash),
       intake: { prepares: [...this.intake.prepare.values()], proposals: [...this.intake.proposal.values()] },
     });
     this.queue = this.queue.then(() => this.writeAtomic(snapshot)).catch(() => this.writeAtomic(snapshot));

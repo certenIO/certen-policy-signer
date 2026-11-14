@@ -8,7 +8,39 @@ export const VOTE_CODE: Record<Vote, number> = { approve: 0, reject: 1, abstain:
 export interface PendingRef {
   txHash: string;      // hex, 64 chars
   signerUrl: string;   // acc://<org>.acme/book/1
+  /**
+   * The transaction's principal, when the discoverer knows it. Wrapper runbook, change 2.
+   *
+   * A pending txID is `acc://<hash>@<principal>`, and the transaction is read at that address. Without
+   * it the resolver asks for `<hash>@<signerUrl>`, which in the wrapper model is Trust Stamp's page — an
+   * account the transaction never touches, possibly on another partition.
+   */
+  principal?: string;
+  /**
+   * Wrapper mode only: the delegation path to sign through, HOP ORDER (first hop first). Set by the
+   * orchestrator from `resolveWrapperPaths`, never by a trigger — a push or poll names a transaction,
+   * and the path is always re-derived from the signatures on chain. `[]` is a direct vote on our page.
+   */
+  delegators?: string[];
+  /**
+   * Wrapper mode, a ROUTING HINT only: the wrapper book the transaction was found pending on. It says
+   * where to read the votes, nothing more — every path is still derived from the authority signatures
+   * recorded there, and a wrong hint simply finds none. Absent, every enrolled wrapper book is read.
+   */
+  wrapperBook?: string;
+  /** Wrapper mode: what this work is. Set by the orchestrator only (see `AttachmentKind`). */
+  kind?: AttachmentKind;
 }
+
+/**
+ * What a wrapper-mode vote is for (wrapper runbook, change 6):
+ *   wrapper_create  adding Trust Stamp as a delegate on a new wrapper page. We vote DIRECTLY on our page,
+ *                   as a new owner of that page (`chain/update_key_page.go:65-73`): the delegate entry that
+ *                   would let us vote through the wrapper does not exist until this executes.
+ *   seat_attach     an org page adding the wrapper as a delegate. Through `[wrapper page]`.
+ *   vote            an ordinary transaction an enrolled person approved through their wrapper.
+ */
+export type AttachmentKind = 'wrapper_create' | 'seat_attach' | 'vote';
 
 /**
  * WHO A TRANSACTION IS ABOUT — the end user whose policy decision gates it.
@@ -237,6 +269,10 @@ export interface ResolvedTx {
   headerExpiryUnreadable?: string;
   rawTransaction: unknown;        // opaque tx object to re-submit in the envelope
   lastUsedOn: number;             // micros, for timestamp derivation
+  /** The store key this work runs under (internal). Absent means `txHash`. */
+  workKey?: string;
+  /** Wrapper mode: the delegation path this vote travels, hop order (internal; see `PendingRef`). */
+  delegators?: string[];
 }
 
 /** Request sent to the org's policy engine. */
@@ -278,6 +314,15 @@ export interface PolicyRequest {
   calldataDecoded?: string | LegCall[];
   /** Accumulate body type of the transaction (`writeData`, `updateKeyPage`, `updateAccountAuth`, …). */
   bodyType?: string;
+  /**
+   * Wrapper mode only (wrapper runbook, change 2): WHICH enrolled wrapper this vote is for, and the path
+   * it travels in hop order (`path[0] === page`). One transaction can need Trust Stamp on several
+   * wrappers at once — Alice's and Bob's — and each is its own request with its own answer, because each
+   * stands for a different person's live check. Absent outside wrapper mode.
+   */
+  wrapper?: { page: string; path: string[] };
+  /** Wrapper mode only: what this vote is for. See `AttachmentKind`. */
+  attachmentKind?: AttachmentKind;
   /** `sha256:` + hex of the canonical JSON of this signer's effective config, secrets removed. */
   configVersion?: string;
   /** Assets moved or referenced by decoded legs. See `LegAsset`. */
@@ -320,10 +365,71 @@ export interface PolicyRequest {
   /** `tcl-summary/v1` hash of `display`, lowercase hex. A signing client refuses when its link carries a different one. */
   summaryHash?: string;
   /**
+   * The exact request this signer will bind a decision to (DAX-4S): the ten members of the core's request hash plus `legCount`, and
+   * `grantRef` when the intent names a Grant. Present when the scope REQUIRES binding and the transaction can be read as an intent
+   * (a several-leg intent is present too, with `legCount` above 1, so the decision service refuses it by name); a decision service
+   * with no chain access builds the same hash from it. The producer's declared ids are never in it: `validatorOperationId` is
+   * recomputed from the four blobs of the pending transaction (DE-64).
+   */
+  binding?: PolicyBinding;
+  /**
+   * What actually executes (DAX-4S round 5, DAX7C-F1): the single call the leg runs, so a decision service can DECODE it instead of reading
+   * the signer's prose (sign what you see). A SIBLING of `binding`, never a member of it (the Console's parser refuses unknown members of
+   * `binding`). Present exactly when `binding` is present AND the intent has one leg that maps to the ten request members; omitted, never
+   * `null`, otherwise. The signer AUTHENTICATES it before sending: the core's single-call commitment recomputed over it equals
+   * `binding.executionCommitment`, else the intent is refused `presented_malformed` (execution_commitment_mismatch) and nothing is sent.
+   */
+  execution?: PolicyExecution;
+  /**
    * How long THIS DECISION REQUEST is valid (policy TTL, default 15 min) — NOT the tx's on-chain
    * deadline. The on-chain deadline is `header.expiresAt`.
    */
   expiresAt: string;              // ISO
+}
+
+/**
+ * The execution of ONE call, exactly as the core's decoder takes it (calldata.ts `DecodeExecution`): the members the single-call commitment
+ * keccak(chainid, target, value, keccak(calldata)) is computed over, plus the calling account.
+ */
+export interface PolicyExecution {
+  /** the same value as `binding.chainId` */
+  chainId: number;
+  /** the calling account, 0x + 40 lower-case hex (`binding.source`) */
+  source: string;
+  /** the called address, 0x + 40 lower-case hex (`binding.target` of the request hash) */
+  target: string;
+  /** the native value sent with the call, in wei, a decimal STRING */
+  value: string;
+  /** exactly the bytes the leg executes: `0x` and lower-case hex (`0x` alone for a native transfer) */
+  calldata: string;
+}
+
+/** The request of DECISION.md section 2, as the signer binds it (see `PolicyRequest.binding`). */
+export interface PolicyBinding {
+  chainId: number;
+  kind: 'erc20.transfer' | 'erc20.approve' | 'native.transfer';
+  source: string;
+  target: string;
+  beneficiary: string;
+  /** `native` or a 0x + 40 hex token address */
+  asset: string;
+  /** decimal text */
+  amount: string;
+  executionCommitment: string;
+  /** the validator's operation id, recomputed from the transaction's four blobs (never the intent_id UUID, never the blob-3 intent_hash) */
+  validatorOperationId: string;
+  txHash: string;
+  /**
+   * How many legs the intent has, derived from the transaction (DE-76) and ALWAYS sent. The request hash binds ONE action, so a decision
+   * service refuses anything but 1 by name (`multi_leg_unsupported`) instead of the signer leaving the binding out.
+   */
+  legCount: number;
+  /**
+   * The producer's CLAIM of the Grant (blob 0 `grantRef` of the intent), sent only when the intent carries one. The Grant head is read
+   * from Accumulate and compared with it; this is never trusted. There is no `leafExpiry`: no field of the pending transaction carries
+   * the on-chain leaf expiry (DAX-4S round 4, DESIGN.md).
+   */
+  grantRef?: { grantId: string; version: number; grantHash: string };
 }
 
 /**
@@ -346,6 +452,13 @@ export interface Decision {
   reason?: string;
   evidence?: Record<string, unknown>;
   assertion?: string;            // optional signed JWS
+  /**
+   * The certen.decision/v1 record (DECISION.md section 3), carried in the reply body beside `decision`, `reason` and `evidence`,
+   * which keep their meaning so an older signer is unaffected. A scope that configures `binding` REQUIRES it: the signer checks it
+   * against the transaction it is about to sign before any signature (src/binding/verify.ts). The shape is the core's
+   * (`DecisionRecord`); it is carried untyped here because it is verified, not trusted.
+   */
+  record?: unknown;
 }
 
 /** Every status a request can hold. Exported as a value so the HTTP layer can validate a caller's filter
@@ -369,12 +482,26 @@ export const REQUEST_STATUSES = [
 export type RequestStatus = (typeof REQUEST_STATUSES)[number];
 
 export interface SigningRequest {
+  /**
+   * The store key: `txHash`, or `txHash:<16 hex>` for a vote on one delegation path (see `workKey` in
+   * src/delegation/path.ts). Absent on records written before paths existed, which are keyed by txHash.
+   */
+  workKey?: string;
   txHash: string;
   /**
    * The record key, when it is not the tx hash: a human-only seat's `humanRecordId(txHash, page)` (review #1).
-   * Absent for a keyed seat, whose record is keyed by the tx hash as it always was.
+   * Absent for a keyed seat, whose record is keyed by the tx hash as it always was. A row has a `workKey` (a wrapper path) or a
+   * `recordId` (a human-only seat), never both: the two modes cannot be configured together (config refuses it), and the store
+   * files a row under `workKey ?? recordId ?? txHash` (`keyOf`).
    */
   recordId?: string;
+  /** Wrapper mode: the path this vote travels, hop order, and the principal the tx was read at. */
+  delegators?: string[];
+  principal?: string;
+  /** Wrapper mode: what the vote was for, and — for enrolment — whether the registry has caught up with the chain. */
+  kind?: AttachmentKind;
+  settled?: 'executed' | 'failed' | 'refused';
+  settleAttempts?: number;
   operationId?: string;
   account?: string;
   signerUrl: string;
@@ -450,9 +577,15 @@ export interface FinalisedHold extends PendingHold {
 }
 
 export interface Receipt {
+  /** Stamped by the store on append: store-wide, contiguous from 1. A receipt is never replaced or removed (DAX-4S, DE-48). */
+  seq?: number;
+  /** Stamped by the store on append (ms since the epoch). */
+  recordedAt?: number;
   txHash: string;
   /** The record key of the request this receipt belongs to, when it is not the tx hash (see SigningRequest). */
   recordId?: string;
+  /** Matches the request's `workKey`. Two votes on one tx (two wrapper paths) are two receipts. */
+  workKey?: string;
   operationId?: string;
   decision?: 'approve' | 'deny';
   /**
@@ -474,6 +607,21 @@ export interface Receipt {
   humanSignatures?: HumanSignature[];
   /** G-69: the people signed the opposite of the vote owed (see SigningRequest.humanOverride). */
   humanOverride?: { owed: 'approve' | 'reject'; cast: 'approve' | 'reject' };
+  /**
+   * What a bound decision (certen.decision/v1) was, when the scope requires binding (DAX-4S): the hash of the record, the request
+   * it was about, the nonce it spent, the Grant and the policy hash it carried (recorded whether or not the seat pins a policy; a
+   * seat that pins none did not compare it), the seat and the approver identity. Absent on a legacy, unbound decision.
+   */
+  binding?: {
+    decisionHash: string;
+    requestHash: string;
+    nonce: string;
+    grantHash: string | null;
+    policyHash: string;
+    policyPinned: boolean;
+    seat: string;
+    approver: string;
+  };
   /**
    * What actually satisfied the vote. Runbook F Phase F4.
    *

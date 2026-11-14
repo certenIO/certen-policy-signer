@@ -22,7 +22,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import http from 'node:http';
 import { AddressInfo } from 'node:net';
 import pino from 'pino';
-import { createServer, PauseController } from '../src/server.js';
+import { createServer } from '../src/server.js';
+import { memoryPauseStore } from '../src/binding/pause-store.js';
 import { readPage, PageState } from '../src/ops/rotate.js';
 import { Orchestrator } from '../src/orchestrator.js';
 import { MockAccumulateClient } from '../src/accumulate/client.js';
@@ -58,10 +59,10 @@ function build(pageState?: (page: string) => Promise<PageState>) {
   ];
   const keyring = new MapKeyring(scopes);
   const store = new MemoryStore();
-  const pause: PauseController = { paused: false };
+  const pause = memoryPauseStore();
   const orchestrator = new Orchestrator({
     accumulate: acc, keyring, policy: new MockPolicyClient({ decision: 'approve' }),
-    store, resolver: new Resolver(acc), logger: silent, options: { isPaused: () => pause.paused },
+    store, resolver: new Resolver(acc), logger: silent, pauses: pause,
   });
   return createServer({ orchestrator, store, keyring, accumulate: acc, pause, logger: silent, adminApiKey: ADMIN_KEY, pageState });
 }

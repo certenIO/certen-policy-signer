@@ -18,6 +18,7 @@ import { MockAccumulateClient } from '../src/accumulate/client.js';
 import type { PolicyClient } from '../src/policy/policy.js';
 import { FileStore, MemoryStore, type Store } from '../src/store/store.js';
 import { Resolver } from '../src/resolver.js';
+import { memoryPauseStore } from '../src/binding/pause-store.js';
 import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
 import { Orchestrator } from '../src/orchestrator.js';
@@ -192,7 +193,7 @@ describe('exposed on the admin API, and durable across a restart', () => {
     await p.handle();
 
     const serve = async (s: Store) => {
-      const server = createServer({ orchestrator: p.orchestrator, store: s, keyring: {} as any, accumulate: {} as any, pause: { paused: false }, logger: silent, adminApiKey: ADMIN });
+      const server = createServer({ orchestrator: p.orchestrator, store: s, keyring: {} as any, accumulate: {} as any, pause: memoryPauseStore(), logger: silent, adminApiKey: ADMIN });
       return { server, port: await listen(server) };
     };
 

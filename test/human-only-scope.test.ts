@@ -123,7 +123,7 @@ describe('poller: a human-only page is discovered like any other', () => {
       listPendingViaSignatureChain: vi.fn(async (book: string) => (book === SUMMIT_BOOK ? [VIA_SIGCHAIN] : [])),
     } as unknown as AccumulateClient;
     const handled: Array<{ txHash: string; signerUrl: string }> = [];
-    const orch = { handle: async (r: { txHash: string; signerUrl: string }) => { handled.push(r); return {} as never; } } as unknown as Orchestrator;
+    const orch = { handleAll: async (r: { txHash: string; signerUrl: string }) => { handled.push(r); return [] as never; } } as unknown as Orchestrator;
     const p = new Poller(acc, orch, SUMMIT_P1, 60_000, silent, Date.now, undefined, SUMMIT_BOOK);
     p.start();
     await vi.waitFor(() => expect(handled).toHaveLength(2));
@@ -243,7 +243,7 @@ describe('the people\u2019s signatures, counted from the chain, end the request;
   const pageOf = (accept: number, reject = 0): PageState => ({
     version: 2, threshold: accept, rejectThreshold: reject, keyHashes: PEOPLE, entries: PEOPLE.map((keyHash) => ({ keyHash, delegate: null })),
   });
-  const sig = (keyHash: string, vote: 'approve' | 'reject' = 'approve', signer = SUMMIT_P1) => ({ type: 'ecdsaSha256', publicKeyHash: keyHash, delegators: [] as string[], signer, vote });
+  const sig = (keyHash: string, vote: 'approve' | 'reject' = 'approve', signer = SUMMIT_P1) => ({ type: 'ecdsaSha256', publicKeyHash: keyHash, delegators: [] as string[], hops: [] as string[], signer, vote });
   /** A seat whose chain reports `onChain` as the signature set (mutable), and `page` as the page. */
   function chainSeat(o: { decision: 'approve' | 'deny'; page: PageState; store?: Store }) {
     const onChain: ReturnType<typeof sig>[] = [];

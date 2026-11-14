@@ -24,6 +24,7 @@ import { MockAccumulateClient } from '../src/accumulate/client.js';
 import { MockPolicyClient, type PolicyClient } from '../src/policy/policy.js';
 import { MemoryStore } from '../src/store/store.js';
 import { Resolver } from '../src/resolver.js';
+import { memoryPauseStore } from '../src/binding/pause-store.js';
 
 const silent = pino({ level: 'silent' });
 const A = 'aa'.repeat(32);
@@ -256,7 +257,7 @@ describe('POST /v1/admin/key-page', () => {
     const signer = new LocalSigner(new Uint8Array(32).fill(7));
     const keyring = singleKeyring(signer, OUR_PAGE);
     const server = createServer({
-      orchestrator: {} as any, store: new MemoryStore(), keyring, accumulate: acc, pause: { paused: false }, logger: silent,
+      orchestrator: {} as any, store: new MemoryStore(), keyring, accumulate: acc, pause: memoryPauseStore(), logger: silent,
       adminApiKey: 'fictional-admin-key-00000', governanceAdminKey: GOV,
       keyPage: (op, p) => applyKeyPageOp({ accumulate: acc, signer, logger: silent, page: p ?? OUR_PAGE }, op, 50),
     });

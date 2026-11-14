@@ -1,7 +1,8 @@
 /** Entry point: wire modules from config, run the startup self-check, start servers + poller. */
+import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseArgs, helpText, VERSION, BIN } from './cli.js';
-import { loadConfig, parseBind, effectiveScopeRules, isIntakeOnly, Config } from './config.js';
+import { loadConfig, parseBind, effectiveScopeRules, effectiveSeats, isIntakeOnly, Config } from './config.js';
 import { logger as baseLogger } from './logger.js';
 import { MapKeyring, buildSignerFromSpec, bookOf, noKeyKeyring, SigningScope } from './signer/keyring.js';
 import { RawAccumulateClient } from './accumulate/raw-client.js';
@@ -14,9 +15,18 @@ import { applyKeyPageOp } from './ops/keypage.js';
 import { readPage } from './ops/rotate.js';
 import { GatewayClient, GatewayVoteBackend } from './vote/adapters/certen-gateway.js';
 import { buildNotifier, MultiNotifier, NotifyConfig } from './notify.js';
-import { Orchestrator, ScopeRules } from './orchestrator.js';
+import { Orchestrator, ScopeRules, WrapperModeOptions } from './orchestrator.js';
+import { FileWrapperRegistry, MemoryWrapperRegistry, WrapperRegistry, isRegisteredWrapperPage } from './registry/wrappers.js';
+import { chainWrapperReader, checkWrapper, checkWrapperChange } from './delegation/wrapper.js';
 import { Poller } from './poller.js';
-import { createServer, PauseController, HealthSource } from './server.js';
+import { createServer, HealthSource } from './server.js';
+import { DecisionJournal } from './binding/journal.js';
+import { NonceStore } from './binding/nonces.js';
+import { PauseStore } from './binding/pause-store.js';
+import { ReadCache } from './binding/read-cache.js';
+import { metrics } from './metrics.js';
+import { createChainWorld } from './binding/chain-world.js';
+import type { SeatRules } from './orchestrator.js';
 import { bytesToHex } from './accumulate/signing.js';
 import { createRelayHandler, createRelayServer, RelayHandler } from './relay.js';
 import { createRelayClientsHandler, RelayClientsHandler } from './relay-clients.js';
@@ -163,7 +173,57 @@ async function main() {
   logger.info({ decoders: decoders.names() }, 'intent decoder chain (first claim wins)');
 
   const resolver = new Resolver(accumulate, decoders);
-  const pause: PauseController = { paused: false };
+  // --- decision binding state (DAX-4S): the journal (nonces consumed, pauses), the persisted pause, the seats ---
+  // Beside the store file. Read and VERIFIED here, at boot, before any poller starts: a journal that was edited, truncated or
+  // re-chained (against its pin), a pause state that disagrees with it, or a state that cannot be read refuses the start, because
+  // a signer that cannot tell what was spent or paused must not sign.
+  const nowSeconds = () => Math.floor(Date.now() / 1000);
+  const stateDir = cfg.store.path ? dirname(cfg.store.path) : undefined;
+  const seatConfigs = effectiveSeats(cfg);
+  const journal = new DecisionJournal({
+    logId: `certen-signer:${cfg.wallet.org_id}`,
+    ...(stateDir ? { path: join(stateDir, 'decision-journal.jsonl'), ...(cfg.store.pin_path ? { pinPath: cfg.store.pin_path } : {}) } : {}),
+    onTornTail: (bytes) => logger.warn({ bytes }, 'decision journal: a torn last line (a crash inside an append that never returned) was cut off'),
+  });
+  if (stateDir) logger.info({ entries: journal.entries().length, head: journal.currentHead()?.seq ?? 0, pinned: true }, 'decision journal verified against its pin');
+  else logger.warn('no store.path configured — the decision nonces consumed and the pause are IN MEMORY and lost on restart');
+  const pause = new PauseStore({
+    journal, ...(stateDir ? { statePath: join(stateDir, 'pause-state.json') } : {}),
+    seats: seatConfigs.map((s) => s.seat), nowSeconds,
+    onHeal: (m) => logger.warn({ detail: m }, 'persisted pause healed from the journal'),
+  });
+  const nonces = new NonceStore(journal, nowSeconds);
+  const seatRules = new Map<string, SeatRules>();
+  for (const s of seatConfigs) {
+    const b = s.binding;
+    seatRules.set(s.page.toLowerCase(), {
+      seat: s.seat,
+      ...(b ? {
+        binding: {
+          seat: s.seat, authorizedApprovers: b.authorized_approvers, maxWindowSeconds: b.max_window_seconds,
+          policyHash: b.policy_hash ?? null, requireGrant: b.require_grant,
+          ...(b.grantor_adi && b.grantor_book ? { grantorAdi: b.grantor_adi, grantorBook: b.grantor_book } : {}),
+        },
+      } : {}),
+    });
+    if (b) {
+      logger.info({ page: s.page, seat: s.seat, approvers: b.authorized_approvers.length, maxWindowSeconds: b.max_window_seconds, requireGrant: b.require_grant, policyPinned: b.policy_hash !== undefined }, 'decisions for this seat must be BOUND (certen.decision/v1)');
+      if (b.policy_hash === undefined) logger.warn({ seat: s.seat }, 'binding.policy_hash is not set: the policy hash of each decision is recorded and NOT compared');
+    }
+  }
+  // The reader of Accumulate facts (READER-MODEL-V2): ONE read cache for the decision binding AND the Console's `chain` relay routes,
+  // so they share the cache, the 30-second TTL, the concurrency bound and the node back-off.
+  const chainRelay = (cfg.admin.relay_clients ?? []).some((c) => c.scopes.includes('chain'));
+  const readCache = seatConfigs.some((s) => s.binding) || chainRelay
+    ? new ReadCache((scope, q) => accumulate.query(scope, q), {
+        ttlMs: cfg.reader.cache_ttl_seconds * 1000, maxConcurrent: cfg.reader.max_concurrency,
+        backoffBaseMs: cfg.reader.backoff_base_ms, backoffMaxMs: cfg.reader.backoff_max_ms, metrics,
+      })
+    : undefined;
+  const bindingWorld = readCache && seatConfigs.some((s) => s.binding)
+    ? createChainWorld({ evaluation: () => readCache.evaluation(), nowSeconds })
+    : undefined;
+  if (readCache) logger.info({ ttlSeconds: cfg.reader.cache_ttl_seconds, maxConcurrency: cfg.reader.max_concurrency, chainRelay }, 'accumulate reader: cached by account and main-chain length, hard TTL, bounded concurrency, node back-off');
 
   // SR4 local guard: refuse to sign above a value ceiling (see src/guard.ts — gates EVERY leg).
   const guard = cfg.behavior.value_ceiling
@@ -174,6 +234,29 @@ async function main() {
   const delegators = cfg.wallet.attachment_model === 'delegate' && cfg.wallet.delegator_url
     ? [cfg.wallet.delegator_url]
     : undefined;
+  // Wrapper mode (wrapper runbook): the enrolment registry names the wrapper books we serve; discovery
+  // reads their pending lists and the orchestrator derives each vote's path from the votes recorded there.
+  let wrapperRegistry: WrapperRegistry | undefined;
+  let wrapperMode: WrapperModeOptions | undefined;
+  if (cfg.wallet.attachment_model === 'wrapper') {
+    const regPath = cfg.trigger.poller.wrapper_registry_path ?? (cfg.store.path ? join(dirname(cfg.store.path), 'wrappers.json') : undefined);
+    wrapperRegistry = regPath ? new FileWrapperRegistry(regPath) : new MemoryWrapperRegistry();
+    if (!regPath) logger.warn('wrapper mode with no store.path or wrapper_registry_path — the enrolment registry is IN MEMORY and lost on restart');
+    const reg = wrapperRegistry;
+    const wrapperReader = chainWrapperReader(accumulate as RawAccumulateClient);
+    wrapperMode = {
+      ourBook: scopes[0].book, ourPage: scopes[0].page,
+      isEnrolledWrapperPage: (page) => isRegisteredWrapperPage(reg, page),
+      wrapperBooks: async () => (await reg.list()).map((e) => e.wrapperBook),
+      // The invariant, read live before every vote: Trust Stamp's book on every page, at a threshold
+      // nobody can meet without it, and the wrapper governed by itself alone.
+      checkWrapper: (book) => checkWrapper(wrapperReader, book, scopes[0].book),
+      checkWrapperChange: (book, tx) => checkWrapperChange(wrapperReader, book, scopes[0].book, tx),
+      registry: reg,
+      readPage: (url) => wrapperReader.readPage(url),
+    };
+    logger.info({ page: scopes[0].page, registry: regPath ?? '(memory)', wrappers: (await reg.list()).length }, 'attachment model: WRAPPER delegate');
+  }
 
   // --- per-scope rules: a fleet rarely shares one rulebook ---
   //
@@ -241,16 +324,33 @@ async function main() {
     // G-65: an updateKeyPage is approved only after its operations are checked against the page as it reads now.
     readPage: (page) => readPage(accumulate, page),
     humanOnlyPages: humanScopes.map((s) => s.page),
+    pauses: pause, seats: seatRules, binding: { nonces, ...(bindingWorld ? { world: bindingWorld } : {}), nowSeconds },
+    ...(wrapperMode ? { wrapper: wrapperMode } : {}),
     options: {
       submitRejectVote: cfg.behavior.submit_reject_vote,
       maxBadVersionRetries: cfg.behavior.max_bad_version_retries,
       submitOutcomeTimeoutMs: cfg.wallet.submit_outcome_timeout_ms,
       policyTtlSeconds: cfg.policy.async_ttl_seconds,
       guard,
-      isPaused: () => pause.paused,
       delegators,
+      requireSignatureData: cfg.behavior.require_signature_data,
     },
   });
+
+  // Wrapper mode: enrolment settlement on its OWN timer, always on — not a step of a successful poll cycle,
+  // so a push-only deployment or a run of failing cycles still brings the registry up to date once the
+  // enrolment transactions execute (wrapper runbook, change 6).
+  if (wrapperMode) {
+    const settleEvery = Math.max(5, cfg.trigger.poller.interval_seconds) * 1000;
+    let settling = false;
+    setInterval(() => {
+      if (settling) return;
+      settling = true;
+      orchestrator.settleEnrolments()
+        .catch((e) => logger.warn({ err: (e as Error).message }, 'enrolment settlement failed; will retry'))
+        .finally(() => { settling = false; });
+    }, settleEvery).unref();
+  }
 
   // --- SR6 startup self-check: EACH scope's public key MUST be verifiably on its on-chain page ---
   // Fail-closed, per scope. A wallet that cannot prove it holds a key on a page it claims to sign for is
@@ -305,6 +405,7 @@ async function main() {
         // identity, and a human-only page must not be handed (and so record) another seat's transactions.
         gatewayClient && !scope.human ? () => gatewayClient!.listPending() : undefined,
         scope.book,
+        wrapperRegistry ? { registry: wrapperRegistry, concurrency: cfg.trigger.poller.wrapper_concurrency } : undefined,
       ))
     : [];
   // Unhealthy if ANY scope's discovery loop is stalled; lastSuccess is the oldest success across them.
@@ -358,6 +459,7 @@ async function main() {
       evm: cfg.relay.evm.map((c) => ({ chainId: c.chain_id, rpcUrl: c.rpc_url })),
       getPolicyRequest: (h) => store.getPolicyRequest(h),
       governanceKey: cfg.admin.governance_admin_key,
+      ...(readCache ? { chainReader: () => readCache.evaluation() } : {}),
       pages: () => keyring.scopes().map((s) => s.page),
       applyKeyPageOp: governKeyPage,
       // G-65: the whole operation list is checked against the page as it reads now, before anything is signed.
@@ -374,7 +476,8 @@ async function main() {
   // --- server (health/metrics/webhook/admin) ---
   const server = createServer({
     relay, relayClients, officerIntake: officerIntake?.handle, configVersion: cfg.configVersion,
-    orchestrator, store, keyring, accumulate, pause, logger, poller: pollerHealth,
+    orchestrator, store, keyring, accumulate, pause, nonces, logger, poller: pollerHealth,
+    ...(wrapperRegistry ? { wrapperRegistry, wrapperOurBook: scopes[0].book } : {}),
     webhookHmacSecret: cfg.trigger.webhook.enabled ? cfg.trigger.webhook.hmac_secret : undefined,
     webhookSignatureHeader: cfg.trigger.webhook.signature_header,
     adminApiKey: cfg.admin.api_key,

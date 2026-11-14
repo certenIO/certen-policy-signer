@@ -3,6 +3,21 @@ import { AccumulateClient } from './accumulate/client.js';
 import { Orchestrator } from './orchestrator.js';
 import { metrics } from './metrics.js';
 import { Logger } from './logger.js';
+import { WrapperRegistry } from './registry/wrappers.js';
+import { PendingRef } from './types.js';
+
+/**
+ * Wrapper discovery (wrapper runbook, change 1): read every enrolled wrapper book's pending list.
+ *
+ * In the wrapper model this is where the work is. Our own page and book are always empty for a delegate
+ * — no signature request reaches a delegate, and the vote routes to the wrapper's book — so finding
+ * nothing there is the normal state, not a fault, and is not logged as one.
+ */
+export interface WrapperSource {
+  registry: WrapperRegistry;
+  /** How many wrapper books are queried at once. */
+  concurrency: number;
+}
 
 const MAX_BACKOFF_MULTIPLIER = 8;
 
@@ -31,6 +46,7 @@ export class Poller {
     /** The key BOOK to scan for signature requests. Defaults to the signer page's parent book. Multi-scope
      * passes it explicitly so a page under a non-standard book name is still scanned correctly. */
     private readonly bookUrl?: string,
+    private readonly wrapperSource?: WrapperSource,
   ) {
     this.startedAt = this.now();   // must use the injected clock, not the wall clock
   }
@@ -65,6 +81,49 @@ export class Poller {
     return signerUrl.replace(/\/\d+$/, '');
   }
 
+  /**
+   * One pass over the registry: each wrapper book's pending list, at most `concurrency` at a time. Read
+   * fresh every cycle, so a wrapper enrolled since the last cycle is polled now, with no restart.
+   *
+   * One wrapper's failed query is counted and logged and does not fail the cycle: the other wrappers'
+   * work is just as real, and their subscribers should not wait on someone else's node error. A failure
+   * to read the REGISTRY itself does fail the cycle (the poller backs off), because then we cannot say
+   * which wrappers we serve at all.
+   */
+  private async pollWrappers(src: WrapperSource): Promise<PendingRef[]> {
+    const wrappers = await src.registry.list();
+    const out: PendingRef[] = [];
+    let failures = 0;
+    let next = 0;
+    const worker = async () => {
+      while (next < wrappers.length) {
+        const w = wrappers[next++]!;
+        try {
+          // A wrapper still being created is also watched at its PAGE: the creation transaction's
+          // principal is the page itself, which its temporary key satisfies, so the transaction waits on
+          // the new owners rather than on the book (wrapper runbook, change 6).
+          const where = w.status === 'enrolling' ? [w.wrapperBook, w.wrapperPage] : [w.wrapperBook];
+          for (const account of where) {
+            for (const p of await this.acc.listPendingForAccount(account)) {
+              if (!p.txHash || !p.principal) continue;
+              if (out.some((o) => o.txHash === p.txHash && o.wrapperBook === w.wrapperBook)) continue;
+              out.push({ txHash: p.txHash, signerUrl: this.signerUrl, principal: p.principal, wrapperBook: w.wrapperBook });
+            }
+          }
+        } catch (e) {
+          failures++;
+          this.logger.warn({ wrapper: w.wrapperBook, err: (e as Error).message }, 'could not read a wrapper book pending list; the others continue');
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(src.concurrency, wrappers.length)) }, worker));
+    metrics.inc('wallet_wrappers_polled_total', wrappers.length);
+    metrics.inc('wallet_wrapper_hits_total', out.length);
+    if (failures) metrics.inc('wallet_wrapper_poll_failures_total', failures);
+    metrics.gauge('wallet_wrappers_enrolled', wrappers.length);
+    return out;
+  }
+
   /** Re-arm after each cycle, backing off while Accumulate is unreachable rather than hammering it. */
   private schedule(delayMs: number) {
     if (this.stopped) return;
@@ -93,11 +152,17 @@ export class Poller {
           return [] as string[];
         }) : Promise.resolve([] as string[]),
       ]);
+      const viaWrappers = this.wrapperSource ? await this.pollWrappers(this.wrapperSource) : [];
       const hashes = [...new Set([...viaPending, ...viaSigChain, ...viaGateway])];
-      for (const txHash of hashes) {
+      const refs: PendingRef[] = [
+        ...viaWrappers,
+        // A hash a wrapper already surfaced is handled through that wrapper's ref, which knows where to read.
+        ...hashes.filter((h) => !viaWrappers.some((w) => w.txHash === h)).map((txHash) => ({ txHash, signerUrl: this.signerUrl })),
+      ];
+      for (const ref of refs) {
         metrics.inc('wallet_pending_seen_total');
-        await this.orch.handle({ txHash, signerUrl: this.signerUrl }).catch((e) =>
-          this.logger.error({ tx: txHash, err: e.message }, 'poller handle failed'));
+        await this.orch.handleAll(ref).catch((e) =>
+          this.logger.error({ tx: ref.txHash, err: e.message }, 'poller handle failed'));
       }
       this.lastSuccessAt = this.now();
       if (this.consecutiveFailures) {
@@ -105,7 +170,7 @@ export class Poller {
       }
       this.consecutiveFailures = 0;
       metrics.gauge('wallet_poller_last_success_seconds', Math.floor(this.lastSuccessAt / 1000));
-      this.logger.debug({ count: hashes.length }, 'poll cycle complete');
+      this.logger.debug({ count: refs.length, viaWrappers: viaWrappers.length }, 'poll cycle complete');
     } catch (e) {
       this.consecutiveFailures++;
       metrics.inc('wallet_errors_total{stage="poller"}');
