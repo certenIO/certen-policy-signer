@@ -265,6 +265,20 @@ Accumulate "not found": 404.
 curl -XPOST -H "x-api-key: $ADMIN_API_KEY" -H 'content-type: application/json' -d '{"by":"seat:<your-seat>","reason":"<why, at least 10 characters>"}' localhost:8080/v1/admin/pause
 curl -XPOST -H "x-api-key: $ADMIN_API_KEY" -H 'content-type: application/json' -d '{"by":"seat:<your-seat>","reason":"<why, at least 10 characters>"}' localhost:8080/v1/admin/resume
 curl -H "x-api-key: $ADMIN_API_KEY" localhost:8080/v1/admin/pause    # who paused, why, since when
+
+### The policy pin (DE-93, DE-94)
+
+A seat that requires binding decides nothing until its policy is PINNED. `binding.policy_hash` is the rule-set hash the seat loads at boot; the pin step pins exactly that hash.
+Until it has, every decision is refused `policy_pin_missing` (a deny that would be a reject vote included); after the hash in the config changes the seat is `pin_stale` and
+refuses `policy_hash_mismatch` (detail `pin_stale`) until the step is repeated.
+
+```
+curl -H "x-api-key: $ADMIN_API_KEY" localhost:8080/v1/admin/pin      # every seat: the hash it loaded, its pin, its phase (pin_pending, pinned, pin_stale)
+curl -XPOST -H "x-api-key: $ADMIN_API_KEY" -H 'content-type: application/json' -d '{"seat":"seat:<seat>","hash":"0x<the loaded hash>","by":"seat:<your-seat>","reason":"<why, at least 10 characters>"}' localhost:8080/v1/admin/pin
+```
+
+The step is durable (a `policy.pinned` entry of `decision-journal.jsonl`, which names the previous pin) before it answers, survives a restart, and repeating it for the pinned hash is a 200 with `idempotent: true` and no second entry. Refusals by name (HTTP 400): `seat_required`, `seat_invalid`, `reason_required`, `pin_hash_malformed`, `pin_hash_not_loaded` (the step pins what the seat loaded, never another hash), `pin_seat_unknown`.
+Every decision the binding check refuses is also a `binding.refused` entry of the journal (`requestHash`, `seat`, `reason` and, where they could be read, `nonce` and `txHash`; attributable only when it names both the request and the nonce); a refusal never consumes a nonce and never signs.
 ```
 
 A pause names a **seat** (`by`, `seat:<name>`) and a **reason** (at least ten characters); without them it is refused by name

@@ -7,9 +7,16 @@
  * between the two leaves the decision spent (DE-03).
  *
  * The refusals are evaluated in this fixed order, so that two implementations name the same reason:
- *   decision_malformed, decision_not_yet_valid, decision_expired, decision_window_too_long, request_mismatch,
+ *   policy_pin_missing (a bound seat with no pin decides nothing: judged for every step before anything of it is read, a deny
+ *   that would become a reject vote included, DE-93), presented_malformed, multi_leg_unsupported, raw_not_allowed,
+ *   decision_malformed, nonce_malformed, decision_not_yet_valid, decision_expired, decision_window_too_long, request_mismatch,
  *   grant_required, grant_hash_mismatch, grant_unverified, grant_superseded, subject_unproven, grant_subject_mismatch,
  *   policy_hash_mismatch, seat_mismatch, approver_not_authorized, decision_replayed.
+ * The pin is REQUIRED (decision OQ-DAX2-1, DE-93): expectedPolicyHash null is policy_pin_missing. The only unpinned judging is
+ * the vector harness in src/testing, which is not exported from this package and reaches this module through its public
+ * functions only (DE-93, DAX-4-A28).
+ * The raw kind (decision RAW, DE-91): a presented request of kind raw is refused as raw_not_allowed unless the seat's
+ * allowRaw is the boolean true (absent is false), judged right after the legs are counted and before the decision is read.
  * Input that is not decision data is refused before the order starts, by its own name: binding_input_malformed (the call
  * or the clock), binding_state_malformed (the state); then presented_malformed (the transaction as the signer decoded it),
  * decision_malformed (a member of the record other than its nonce) and nonce_malformed (the nonce is not 0x and 64 lowercase
@@ -43,8 +50,10 @@ export interface BindingState {
   grantHeadHash: string | null;
   /** the subject and type of that head Grant */
   grantHeadSubject: BindingSubject | null;
-  /** the policy hash the seat pins; null records the hash of a decision and does not compare it */
+  /** the policy hash the seat pins (DE-93): REQUIRED, null is policy_pin_missing for every step */
   expectedPolicyHash: string | null;
+  /** the seat setting allowRaw (DE-91): absent means false; a raw request is refused as raw_not_allowed unless it is the boolean true */
+  allowRaw?: boolean;
   /** identities (key or ADI) the seat authorises to decide */
   authorizedApprovers: string[];
   /** every nonce ever consumed or voided, never dropped */
@@ -76,7 +85,7 @@ export type BindResult =
       nonce: string;
       grantHash: string | null;
       policyHash: string;
-      /** false when the seat pins no policy: the hash is recorded, not compared */
+      /** always true here: a seat with no pin is policy_pin_missing (DE-93) */
       policyPinned: boolean;
       approver: string;
       seat: string;
@@ -101,8 +110,9 @@ export type BindingStateResult = { ok: true; state: BindingState } | { ok: false
 /** a validated copy of the state, or a named refusal */
 export function validateBindingState(v: unknown): BindingStateResult {
   const bad = (detail: string): BindingStateResult => ({ ok: false, reason: 'binding_state_malformed', detail });
-  const o = closedObject(v, ['requireGrant', 'grantHeadHash', 'grantHeadSubject', 'expectedPolicyHash', 'authorizedApprovers', 'consumed', 'maxWindowSeconds']);
+  const o = closedObject(v, ['requireGrant', 'grantHeadHash', 'grantHeadSubject', 'expectedPolicyHash', 'authorizedApprovers', 'consumed', 'maxWindowSeconds'], ['allowRaw']);
   if (o === null) return bad('shape');
+  if (o['allowRaw'] !== undefined && typeof o['allowRaw'] !== 'boolean') return bad('allowRaw');
   if (typeof o['requireGrant'] !== 'boolean') return bad('requireGrant');
   const head = o['grantHeadHash'];
   if (head !== null && !isHash(head)) return bad('grantHeadHash');
@@ -126,6 +136,7 @@ export function validateBindingState(v: unknown): BindingStateResult {
       authorizedApprovers: approvers as string[],
       consumed: consumed as string[],
       maxWindowSeconds: max,
+      ...(o['allowRaw'] === undefined ? {} : { allowRaw: o['allowRaw'] }),
     },
   };
 }
@@ -150,7 +161,7 @@ function readDecision(v: unknown): DecisionRecord | 'decision_malformed' | 'nonc
   return { schema, decision, requestHash, grantHash, policyHash, seat, approver, nonce, issuedAt, expiresAt, reason };
 }
 
-interface Presented { requestHash: string; grantRefHash: string | null; seat: string; subject: BindingSubject | null; legCount: number }
+interface Presented { requestHash: string; kind: string; grantRefHash: string | null; seat: string; subject: BindingSubject | null; legCount: number }
 
 /**
  * The transaction as the signer decoded it: its request hash is RECOMPUTED here, never taken from the producer.
@@ -178,7 +189,7 @@ function readPresented(v: unknown): Presented | null {
   if (!isSeatId(o['seat'])) return null;
   const subject = readSubject(o['subject']);
   if (subject === undefined) return null;
-  return { requestHash, grantRefHash: ref, seat: o['seat'], subject, legCount: legs };
+  return { requestHash, kind: request['kind'] as string, grantRefHash: ref, seat: o['seat'], subject, legCount: legs };
 }
 
 export interface BindInput {
@@ -200,10 +211,15 @@ export function bindDecision(input: BindInput): BindResult {
   if (!checked.ok) return refuse(checked.reason, checked.detail);
   const state = checked.state;
 
-  // 1. presented_malformed, decision_malformed, nonce_malformed
+  // the pin gate (DE-93): a seat with no pin decides nothing, and says so before anything of the step is read
+  if (state.expectedPolicyHash === null) return refuse('policy_pin_missing');
+
+  // 1. presented_malformed, multi_leg_unsupported, raw_not_allowed, decision_malformed, nonce_malformed
   const presented = readPresented(inp['presented']);
   if (presented === null) return refuse('presented_malformed');
   if (presented.legCount !== 1) return refuse('multi_leg_unsupported', 'legCount ' + presented.legCount);
+  // DE-91: the raw kind is a property of the presented request alone, judged after the legs and before the decision is read
+  if (presented.kind === 'raw' && state.allowRaw !== true) return refuse('raw_not_allowed');
   const decision = readDecision(inp['decision']);
   if (decision === 'decision_malformed' || decision === 'nonce_malformed') return refuse(decision);
 
@@ -229,9 +245,8 @@ export function bindDecision(input: BindInput): BindResult {
     if (presented.subject.adi !== state.grantHeadSubject.adi || presented.subject.type !== state.grantHeadSubject.type) return refuse('grant_subject_mismatch');
   }
 
-  // 7. the policy the seat pins; a seat that pins none records the hash and does not compare it
-  const pinned = state.expectedPolicyHash !== null;
-  if (pinned && decision.policyHash !== state.expectedPolicyHash) return refuse('policy_hash_mismatch');
+  // 7. the policy the seat pins (the pin gate above guarantees there is one)
+  if (decision.policyHash !== state.expectedPolicyHash) return refuse('policy_hash_mismatch');
   // 8. the seat that is about to sign
   if (decision.seat !== presented.seat) return refuse('seat_mismatch');
   // 9. the approver, by identity
@@ -247,7 +262,7 @@ export function bindDecision(input: BindInput): BindResult {
     nonce: decision.nonce,
     grantHash: decision.grantHash,
     policyHash: decision.policyHash,
-    policyPinned: pinned,
+    policyPinned: true,
     approver: decision.approver,
     seat: decision.seat,
     state: { ...state, consumed: [...state.consumed, decision.nonce] },

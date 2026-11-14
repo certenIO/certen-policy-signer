@@ -12,6 +12,7 @@ import { CoreError, HASH_RE, isPlainObject } from './bytes.js';
 import { genesisHash, logEntryHash } from './hashes.js';
 import { canonicalize } from './jcs.js';
 
+/** the fourteen kinds (DECISION.md section 9, DE-103): binding.refused (DAX7E-R2-F2, the signer's refusal receipt) is the thirteenth, policy.pinned (the pin step, DE-94) the fourteenth; any other kind is refused by name */
 export const LOG_KINDS = [
   'decision.issued',
   'decision.consumed',
@@ -25,6 +26,8 @@ export const LOG_KINDS = [
   'recheck.result',
   'outcome.recorded',
   'grant.observed',
+  'binding.refused',
+  'policy.pinned',
 ] as const;
 export type LogKind = (typeof LOG_KINDS)[number];
 
@@ -44,13 +47,18 @@ const ENTRY_KEYS = ['seq', 'kind', 'at', 'payload', 'prev', 'hash'];
 const isStr = (v: unknown): v is string => typeof v === 'string';
 const isHash = (v: unknown): boolean => typeof v === 'string' && HASH_RE.test(v);
 const isNullableStr = (v: unknown): boolean => v === null || typeof v === 'string';
+const hashOrEmpty = (v: unknown): boolean => v === '' || isHash(v);
 const present = (p: Record<string, unknown>, k: string): boolean => Object.prototype.hasOwnProperty.call(p, k);
 
 /**
  * The members the evidence check reads (DE-52): present and strings, except grantHash and policyHash of decision.issued
  * (a string or null: null is a value, absence is refused), grant.observed.version (a safe integer from 1) and the
- * exactly-one-of requestHash and exceptionHash of approval.cast. Further members are allowed. Enforced at append and
- * at verify; the other kinds are free-form.
+ * exactly-one-of requestHash and exceptionHash of approval.cast. binding.refused (the refusal receipt, DE-97, DE-103) carries
+ * requestHash, seat and reason as strings (requestHash is the empty string when the request could not be read) and, where
+ * present, nonce and txHash each a 32-byte hash or the empty string, never any other value; policy.pinned (DE-94) carries
+ * seat, by and reason as strings, policyHash a 32-byte hash and previous (PRESENT: null is a value, absence is refused) the
+ * pin it replaces, a 32-byte hash or null. Further members are allowed. Enforced at append and at verify; the other kinds
+ * are free-form.
  */
 function payloadReadable(kind: string, p: Record<string, unknown>): boolean {
   const str = (...ks: string[]): boolean => ks.every((k) => present(p, k) && isStr(p[k]));
@@ -63,6 +71,10 @@ function payloadReadable(kind: string, p: Record<string, unknown>): boolean {
       return str('requestHash', 'nonce');
     case 'outcome.recorded':
       return str('requestHash', 'status', 'destinationTx');
+    case 'binding.refused':
+      return str('requestHash', 'seat', 'reason') && (!present(p, 'nonce') || hashOrEmpty(p['nonce'])) && (!present(p, 'txHash') || hashOrEmpty(p['txHash']));
+    case 'policy.pinned':
+      return str('seat', 'by', 'reason') && present(p, 'policyHash') && isHash(p['policyHash']) && present(p, 'previous') && (p['previous'] === null || isHash(p['previous']));
     case 'grant.observed':
       return str('grantId', 'grantHash') && typeof p['version'] === 'number' && Number.isSafeInteger(p['version']) && p['version'] >= 1;
     default:

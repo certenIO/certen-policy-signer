@@ -36,8 +36,12 @@ const refuse = (reason: string, detail?: string): Refusal => (detail === undefin
 // ---- the text of calldata -----------------------------------------------------------------------------------------------
 
 /**
- * `0x` (lowercase x, required) and hex digits of either case, an even number of them, at most 65,536 bytes. The size is judged
- * from the length before any character is read. Nothing is trimmed or skipped: whitespace and every other character are named.
+ * `0x` (lowercase x, required) and LOWER-CASE hex digits only, an even number of them, at most 65,536 bytes (DE-91, DECISION.md
+ * section 2: calldata is `0x` plus lowercase hex of whole bytes, never upper case, never without the prefix). An upper-case digit
+ * (A-F, in any position, mixed case included) is `calldata_hex_invalid` here, in the decoder itself, exactly as it is at the seat's
+ * wire path, so the review screen and the signer never disagree about what a calldata text means (DAX-CORE-2 R1, DAXCORE1-F2).
+ * The size is judged from the length before any character is read. Nothing is trimmed or skipped: whitespace and every other
+ * character are named.
  */
 function parseHexBytes(v: unknown): { ok: true; bytes: Uint8Array } | Refusal {
   if (typeof v !== 'string') return refuse('calldata_not_text');
@@ -46,7 +50,7 @@ function parseHexBytes(v: unknown): { ok: true; bytes: Uint8Array } | Refusal {
   if (digits > 2 * MAX_CALLDATA_BYTES) return refuse('calldata_too_large');
   for (let i = 2; i < v.length; i++) {
     const c = v.charCodeAt(i);
-    if (!((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66) || (c >= 0x41 && c <= 0x46))) return refuse('calldata_hex_invalid', 'index ' + i);
+    if (!((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66))) return refuse('calldata_hex_invalid', 'index ' + i);
   }
   if (digits % 2 !== 0) return refuse('calldata_odd_length');
   const bytes = new Uint8Array(digits / 2);

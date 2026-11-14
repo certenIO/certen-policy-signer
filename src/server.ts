@@ -20,6 +20,7 @@ import { RelayHandler, RELAY_PREFIX } from './relay.js';
 import { RelayClientsHandler, RELAY_CLIENT_PREFIX } from './relay-clients.js';
 import { OfficerIntakeHandler, OFFICER_PATHS } from './officer/intake.js';
 import type { PauseControl, PauseOutcome } from './binding/pause-store.js';
+import type { PinControl } from './binding/pin-store.js';
 
 export type { PauseControl } from './binding/pause-store.js';
 
@@ -48,6 +49,8 @@ export interface ServerDeps {
   accumulate: AccumulateClient;
   /** The PERSISTED pause (seat and subject scopes, DECISION.md section 6): `/healthz` reads it, `/v1/admin/pause` and `/resume` change it. */
   pause: PauseControl;
+  /** The persisted policy pin of every bound seat (DE-93, DE-94): `GET` and `POST /v1/admin/pin`. Absent: the routes answer 404. */
+  pins?: PinControl;
   /** Voids decision nonces (`POST /v1/admin/decisions/void`). Absent => that route is 404. */
   nonces?: { voidNonces(nonces: string[], reason: string): Promise<{ voided: string[] }> };
   logger: Logger;
@@ -346,6 +349,24 @@ export function createServer(d: ServerDeps): http.Server {
         d.logger.warn({ audit: pausing ? 'signing_paused' : 'signing_resumed', scope: b.scope ?? 'all seats', id: b.id, by, reason }, pausing ? 'SIGNING PAUSED' : 'SIGNING RESUMED');
         d.notify?.(pausing ? 'signer.paused' : 'signer.resumed');
         return json(res, 200, { paused: out.state.pauses.length > 0, pauses: out.state.pauses, ...(out.status ? { status: out.status } : {}) });
+      }
+      // GET|POST /v1/admin/pin — the policy pin step (DE-93, DE-94). Body `{seat, hash, by, reason}`: `hash` must be the rule-set hash the seat LOADED at boot
+      // (`GET` shows it beside the pin and the phase), `by` a named seat identity (`seat:<name>`) and `reason` at least ten characters. The step is durable (a
+      // `policy.pinned` entry of the journal) before the answer, survives a restart, and repeating it for the pinned hash is idempotent (200, no second entry).
+      // A seat that is not pinned decides nothing; a seat whose loaded hash differs from its pin is `pin_stale` until the step is repeated.
+      if (path === '/v1/admin/pin' && (method === 'GET' || method === 'POST')) {
+        if (!d.pins) return json(res, 404, { error: 'not found' });
+        if (method === 'GET') return json(res, 200, { seats: d.pins.snapshot() });
+        let b: any;
+        try { b = JSON.parse((await readBody(req)) || '{}'); } catch { return json(res, 400, { error: 'body must be JSON' }); }
+        if (b === null || typeof b !== 'object' || Array.isArray(b)) return json(res, 400, { error: 'body must be a JSON object' });
+        const out = await d.pins.pin({ seat: b.seat, hash: b.hash, by: typeof b.by === 'string' ? b.by : '', reason: b.reason });
+        if (!out.ok) {
+          d.logger.warn({ audit: 'policy_pin_refused', reason: out.reason, detail: out.detail }, 'policy pin step refused');
+          return json(res, out.reason.startsWith('journal_') ? 500 : 400, { error: out.reason, ...(out.detail !== undefined ? { detail: out.detail } : {}) });
+        }
+        d.logger.warn({ audit: 'policy_pinned', seat: b.seat, hash: b.hash, by: b.by, reason: b.reason, idempotent: out.idempotent === true }, 'POLICY PINNED');
+        return json(res, 200, { phase: out.phase, ...(out.idempotent === true ? { idempotent: true } : { previous: out.previous ?? null }) });
       }
       // POST /v1/admin/decisions/void {nonces, reason} — marks decision nonces spent without a decision being accepted: the old
       // nonce of a decision a recheck voided (re-issued, denied, expired), so the old decision cannot be used even by a seat that

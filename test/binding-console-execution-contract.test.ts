@@ -6,7 +6,7 @@
  *
  * test/support/console-display-model.ts is the Console's `reviewModel` copied as a fixture (pinned to its commit, no import across repos).
  * Every test here runs the request the REAL orchestrator sends through it, with the token registry of the DAX-7A golden fixture that the
- * Console's own golden test uses (test/fixtures/calldata-golden-dax7a-fc1a901.json, byte identical to the Console's pinned copy).
+ * Console's own golden test uses (test/fixtures/calldata-golden-v2-cef78cc.json: the version 2 golden of the core, pl/dax-core-consolidated cef78cc, sha256 2158dbce...2ed3, byte identical to the core's).
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -17,7 +17,7 @@ import { approveFor, requestHashOf, rig, type Body } from './support/binding-rig
 import { reviewModel, type DisplayConfig } from './support/console-display-model.js';
 
 interface GoldenCase { id: string; title: string; policy: { allowRaw: unknown }; input: any; expect: Record<string, any> }
-const golden = JSON.parse(readFileSync(new URL('./fixtures/calldata-golden-dax7a-fc1a901.json', import.meta.url), 'utf8')) as { registry: unknown; cases: GoldenCase[] };
+const golden = JSON.parse(readFileSync(new URL('./fixtures/calldata-golden-v2-cef78cc.json', import.meta.url), 'utf8')) as { registry: unknown; cases: GoldenCase[] };
 const parsed = parseTokenRegistryText(JSON.stringify(golden.registry));
 if (!parsed.ok) throw new Error('the golden registry does not validate: ' + parsed.reason);
 const cfg = (allowRaw: boolean): DisplayConfig => ({ registry: parsed.registry, allowRaw });
@@ -92,10 +92,10 @@ describe('every golden case: when the signer sends an execution the Console read
       }
     }
     expect(rows.length).toBe(48); // the 50 golden cases less two the test cannot present (an input that is not an execution object, a policy that is not a boolean)
-    // the signer sends an execution for 22 of them; the Console reads 19 as decoded (the 18 golden decoded cases the signer maps plus u27, whose extra
-    // member the signer never forwards) and 3 as undecoded token_unknown (the signer has no token registry); it sends nothing for the other 26
-    expect(rows.filter((r) => r.sent).length).toBe(22);
-    expect(rows.filter((r) => r.state === 'decoded').length).toBe(19);
+    // the signer sends an execution for 21 of them (g15, the upper-case calldata, is refused now: DE-91); the Console reads 18 as decoded (the 17 golden decoded cases the signer maps plus u27, whose extra
+    // member the signer never forwards) and 3 as undecoded token_unknown (the signer has no token registry); it sends nothing for the other 27
+    expect(rows.filter((r) => r.sent).length).toBe(21);
+    expect(rows.filter((r) => r.state === 'decoded').length).toBe(18);
     expect(rows.filter((r) => r.sent && r.state === 'undecoded').map((r) => `${r.id}:${r.reason}`)).toEqual(['u01:token_unknown', 'u02:token_unknown', 'u03:token_unknown']);
     // the golden decoded cases the signer does NOT map are the two named wrappers (execute around transfer / approve): safe side, UNDECODED in the Console (DAX7A-F2, F23)
     expect(golden.cases.filter((c) => c.expect['status'] === 'decoded' && !rows.some((r) => r.id === c.id && r.sent)).map((c) => c.id)).toEqual(['g17', 'g18']);

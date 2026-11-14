@@ -11,6 +11,14 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ## Unreleased
 
+### Changed (breaking: policy pin, calldata, leaf expiry; DAX-4S round 6)
+
+- **A bound seat decides nothing until its policy is pinned.** `binding.policy_hash` is now REQUIRED (the hash the seat loads; a binding block without it refuses to start). The seat is `pin_pending` until `POST /v1/admin/pin {seat, hash, by, reason}` pins exactly the loaded hash (a named `seat:` identity, a reason of at least ten characters); until then every decision, a deny included, is refused `policy_pin_missing` before anything of it is read, and after the configured hash changes the seat is `pin_stale` (`policy_hash_mismatch`, detail `pin_stale`) until the step is repeated. The pin is a `policy.pinned` entry of the verified journal and survives a restart. The earlier "record the hash and do not compare it" reading is gone. Migration: set `binding.policy_hash` on every bound scope and run the pin step once per seat after the deploy.
+- **Calldata is read strictly (core decoder, `mapDecoded`).** Upper-case hex digits in `callData` are REFUSED (`presented_malformed`, detail `calldata_hex_invalid`), not normalised; a call that no typed kind describes (an unknown selector, `transferFrom`, a dirty address word, trailing bytes, native value on a token call, a wrapper) is NOT BOUND (`binding_absent`, nothing is signed) unless the seat sets `allow_raw: true`, which binds it as the `raw` kind (beneficiary = target, asset = native, amount = native value; the review needs the execution and an exception). The refusal details are the decoder's own names (`selector_unknown`, `address_pad_dirty`, `token_call_carries_value`, ...) instead of `calldata_unsupported`, `action_unsupported`, `value_with_call`.
+- **`binding.leafExpiry` is sent** (an upper bound of the contract expiry: the smaller of the leg `deadline_timestamp` and the header deadline plus the seat horizon), new optional seat setting `settlement_horizon_seconds` (default and minimum 3600, a smaller value refuses to start). `PolicyBinding.kind` gains `raw`. A Console that copies `src/types.ts` must re-sync.
+- **Refusals are receipts.** Every refused decision is a `binding.refused` journal entry with the request hash, seat, reason and, where readable, the decision nonce and the transaction hash. A refusal never consumes a nonce.
+- The shared core is re-copied from transaction-controls `cef78ccc` (28 files, 5 new: `leaf-expiry`, `decision-wire`, `raw-approval`, `policy-pin`, `refusal-receipt`). A subject whose acceptance was written after its registration is in force from the acceptance on (prospective activation).
+
 ### Changed (breaking: pause)
 
 - **The emergency pause is persisted and names a seat and a reason.** `POST /v1/admin/pause` and `/v1/admin/resume` now take

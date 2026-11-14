@@ -240,9 +240,11 @@ export function runPauseOps(input: unknown): { results: Array<Record<string, unk
  * of an unknown pause kind, a payload that is not a scope and id, a clear of what is not paused or that names another
  * pause), pause_state_log_mismatch (the state is not the fold). Entries of other kinds are ignored: the log holds every
  * kind. When an entry also carries who set the pause, why and when (by, reason, at), the state record must agree with
- * it: an edited record is a mismatch. The log itself is verified by verifyLog against a pinned head by the caller.
+ * it (DE-102): an edited record is a mismatch that names the member (`member`: by, reason or at); a member the entry does not
+ * carry is not compared, and a state with a version member is accepted only when it is the number 1 (pause_state_version).
+ * The log itself is verified by verifyLog against a pinned head by the caller.
  */
-export function checkPersistedPause(input: unknown): { ok: true; pauses: number } | { ok: false; reason: string; detail?: string } {
+export function checkPersistedPause(input: unknown): { ok: true; pauses: number } | { ok: false; reason: string; detail?: string; member?: 'by' | 'reason' | 'at' } {
   const inp = closedObject(input, ['state', 'log']);
   if (inp === null) return refuse('pause_input_malformed', 'shape');
   const st = closedObject(inp['state'], ['pauses'], ['version']);
@@ -270,11 +272,12 @@ export function checkPersistedPause(input: unknown): { ok: true; pauses: number 
     const p = dataObject(e['payload']);
     if (p === null || !isScope(p['scope']) || !idFits(p['scope'], p['id'])) return refuse('pause_log_malformed', 'entry ' + i + ' payload');
     if (e['at'] !== undefined && !isTime(e['at'])) return refuse('pause_log_malformed', 'entry ' + i + ' at');
+    if (p['at'] !== undefined && !isTime(p['at'])) return refuse('pause_log_malformed', 'entry ' + i + ' payload at');
     if (p['by'] !== undefined && !isSeatId(p['by'])) return refuse('pause_log_malformed', 'entry ' + i + ' by');
     if (p['reason'] !== undefined && (typeof p['reason'] !== 'string' || p['reason'].length > MAX_REASON_LENGTH || hasLoneSurrogate(p['reason']))) return refuse('pause_log_malformed', 'entry ' + i + ' reason');
     const key = p['scope'] + ' ' + p['id'];
     if (e['kind'] === 'pause.set') {
-      if (!folded.has(key)) folded.set(key, { ...(p['by'] !== undefined ? { by: p['by'] as string } : {}), ...(p['reason'] !== undefined ? { reason: p['reason'] as string } : {}), ...(e['at'] !== undefined ? { at: e['at'] as number } : {}) });
+      if (!folded.has(key)) folded.set(key, { ...(p['by'] !== undefined ? { by: p['by'] as string } : {}), ...(p['reason'] !== undefined ? { reason: p['reason'] as string } : {}), ...(p['at'] !== undefined ? { at: p['at'] as number } : e['at'] !== undefined ? { at: e['at'] as number } : {}) });
     } else {
       const was = folded.get(key);
       if (was === undefined) return refuse('pause_log_malformed', 'entry ' + i + ' clears what is not paused');
@@ -286,7 +289,9 @@ export function checkPersistedPause(input: unknown): { ok: true; pauses: number 
   for (const [key, f] of folded) {
     const r = have.get(key);
     if (r === undefined) return refuse('pause_state_log_mismatch', 'the log set ' + key + ', the state does not hold it');
-    if ((f.by !== undefined && f.by !== r.by) || (f.reason !== undefined && f.reason !== r.reason) || (f.at !== undefined && f.at !== r.at)) return refuse('pause_state_log_mismatch', key + ' differs from the log');
+    for (const member of ['by', 'reason', 'at'] as const) {
+      if (f[member] !== undefined && f[member] !== r[member]) return { ok: false, reason: 'pause_state_log_mismatch', detail: key + ' ' + member + ' differs from the log', member };
+    }
   }
   return { ok: true, pauses: have.size };
 }

@@ -32,10 +32,13 @@ describe('a bound decision signs exactly once', () => {
     expect(receipt?.binding?.decisionHash).toMatch(/^0x[0-9a-f]{64}$/);
   });
 
-  it('a seat that pins no policy records the hash and does not compare it (OQ-DAX2-1)', async () => {
-    const r = rig({ body: BASE, rules: { policyHash: null }, reply: approveFor(BASE, { policyHash: H('some other policy') }) });
-    expect((await r.handle()).status).toBe('signed');
-    expect((await r.store.getReceipt(TX))?.binding).toMatchObject({ policyHash: H('some other policy'), policyPinned: false });
+  it('a seat that has not been pinned decides nothing; once pinned it compares the decision hash with the pin (DE-93, replaces the earlier record-and-do-not-compare reading of OQ-DAX2-1)', async () => {
+    const unpinned = rig({ body: BASE, pinned: false, reply: approveFor(BASE) });
+    expect((await unpinned.handle()).lastError).toBe('binding: policy_pin_missing');
+    expect(unpinned.acc.submissions).toHaveLength(0);
+    const other = rig({ body: BASE, reply: approveFor(BASE, { policyHash: H('some other policy') }) });
+    expect((await other.handle()).lastError).toBe('binding: policy_hash_mismatch');
+    expect(other.acc.submissions).toHaveLength(0);
   });
 
   it('a scope without binding keeps the unbound legacy reply: an older Console still works there', async () => {
@@ -83,7 +86,7 @@ describe('replay is refused, inside the old 300-second window and after a restar
     // two services sharing one journal handle cannot happen; the same process can: two work items, one nonce
     const second = new Orchestrator({
       accumulate: b.acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))), policy: b.policy, store: b.store, resolver: new Resolver(b.acc), logger: silent,
-      now: () => NOW_S * 1000, pauses: a.pauses, seats: new Map([[SIGNER.toLowerCase(), { seat: SEAT, binding: RULES }]]), binding: { nonces: a.nonces, nowSeconds: () => NOW_S },
+      now: () => NOW_S * 1000, pauses: a.pauses, seats: new Map([[SIGNER.toLowerCase(), { seat: SEAT, binding: RULES }]]), binding: { nonces: a.nonces, pins: a.pins, refusals: a.refusals, nowSeconds: () => NOW_S },
     });
     const rows = await Promise.all([a.handle(), second.handle({ txHash: TX, signerUrl: SIGNER })]);
     expect(rows.filter((x) => x.status === 'signed')).toHaveLength(1);

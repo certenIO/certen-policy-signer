@@ -407,7 +407,7 @@ export interface PolicyExecution {
 /** The request of DECISION.md section 2, as the signer binds it (see `PolicyRequest.binding`). */
 export interface PolicyBinding {
   chainId: number;
-  kind: 'erc20.transfer' | 'erc20.approve' | 'native.transfer';
+  kind: 'erc20.transfer' | 'erc20.approve' | 'native.transfer' | 'raw';
   source: string;
   target: string;
   beneficiary: string;
@@ -426,10 +426,16 @@ export interface PolicyBinding {
   legCount: number;
   /**
    * The producer's CLAIM of the Grant (blob 0 `grantRef` of the intent), sent only when the intent carries one. The Grant head is read
-   * from Accumulate and compared with it; this is never trusted. There is no `leafExpiry`: no field of the pending transaction carries
-   * the on-chain leaf expiry (DAX-4S round 4, DESIGN.md).
+   * from Accumulate and compared with it; this is never trusted.
    */
   grantRef?: { grantId: string; version: number; grantHash: string };
+  /**
+   * An UPPER BOUND of the on-chain leaf expiry, Unix seconds (DE-87): the smaller of the leg's declared deadline (`deadline_timestamp`) and the floor of
+   * the transaction header deadline plus the seat's settlement horizon (at least the validator's one hour, DE-88). The signer votes before the
+   * validator commits, so it cannot read the leaf's real `notAfter`; the bound is never below it for a one-leg transaction, so a ledger that holds until
+   * the bound errs towards a longer hold. OMITTED (never `null`) when neither deadline exists or the intent has several legs.
+   */
+  leafExpiry?: number;
 }
 
 /**

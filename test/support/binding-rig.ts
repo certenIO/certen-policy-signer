@@ -8,6 +8,8 @@ import { MockAccumulateClient } from '../../src/accumulate/client.js';
 import { DecisionJournal } from '../../src/binding/journal.js';
 import { NonceStore } from '../../src/binding/nonces.js';
 import { PauseStore } from '../../src/binding/pause-store.js';
+import { PinStore } from '../../src/binding/pin-store.js';
+import { RefusalReceipts } from '../../src/binding/refusals.js';
 import { buildPresentedRequest } from '../../src/binding/request.js';
 import { DECISION_RECORD_MEMBER, type BindingRules } from '../../src/binding/verify.js';
 import { hashRequest } from '../../src/core/hashes.js';
@@ -55,6 +57,20 @@ export interface RigOpts {
   /** the page is a human-only seat (G-69): decided here, never signed here */
   humanOnly?: boolean;
   store?: MemoryStore;
+  /** pin the loaded hash (`rules.policyHash`) before the first request, as the operator's pin step does (default true); false leaves the seat `pin_pending` */
+  pinned?: boolean;
+  /** a hash that was pinned under an EARLIER rule set: the seat then loads `rules.policyHash`, which differs, and is `pin_stale` */
+  stalePin?: string;
+  /** the transaction header deadline (`header.expire.atTime`), RFC 3339 */
+  header?: string;
+}
+export const PIN_BY = 'seat:fic-operator';
+export const PIN_WHY = 'FICTIONAL: the rule set was reviewed by two officers';
+/** a pin store over the journal for the seats, with each seat's loaded hash pinned (the operator's step already taken) unless `pinned` is false */
+export function pinStoreFor(journal: DecisionJournal, seats: Array<{ seat: string; loadedHash: string }>, pinned = true): PinStore {
+  const pins = new PinStore({ journal, seats, nowSeconds: () => NOW_S });
+  if (pinned) for (const s of seats) { const r = pins.pinNow({ seat: s.seat, hash: s.loadedHash, by: PIN_BY, reason: PIN_WHY }); if (!r.ok) throw new Error('rig pin: ' + r.reason); }
+  return pins;
 }
 export function rig(o: RigOpts) {
   const dir = o.dir ?? tmp();
@@ -65,19 +81,23 @@ export function rig(o: RigOpts) {
   const pauses = new PauseStore({ journal, statePath: join(dir, 'pause-state.json'), seats: [seat], nowSeconds: () => NOW_S });
   const acc = new MockAccumulateClient();
   const tx = o.tx ?? TX;
-  acc.addPending(tx, { body: o.body, principal: `${PRINCIPAL}/tokens` });
+  acc.addPending(tx, { body: o.body, principal: `${PRINCIPAL}/tokens`, ...(o.header ? { rawTransaction: { header: { principal: `${PRINCIPAL}/tokens`, expire: { atTime: o.header } }, body: o.body } } : {}) });
   const store = o.store ?? new MemoryStore();
   const policy = new MockPolicyClient(o.reply);
+  const loaded = { ...RULES, ...(o.rules ?? {}) }.policyHash;
+  if (o.stalePin !== undefined) pinStoreFor(journal, [{ seat, loadedHash: o.stalePin }]); // an earlier boot under the earlier rule set pinned it
+  const pins = pinStoreFor(journal, [{ seat, loadedHash: loaded }], o.stalePin === undefined && o.pinned !== false);
+  const refusals = new RefusalReceipts(journal, () => NOW_S);
   const orch = new Orchestrator({
     accumulate: acc, keyring: o.keyring ?? singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))), policy, store, resolver: new Resolver(acc), logger: silent,
     now: () => NOW_S * 1000, pauses, ...(o.humanOnly ? { humanOnlyPages: [page] } : {}),
     ...(o.votes ? { votes: o.votes } : {}),
     seats: new Map([[page.toLowerCase(), { seat, ...(o.rules === null ? {} : { binding: { ...RULES, seat, ...(o.rules ?? {}) } }) }]]),
-    binding: { nonces, ...(o.world ? { world: o.world } : {}), nowSeconds: () => NOW_S },
+    binding: { nonces, pins, refusals, ...(o.world ? { world: o.world } : {}), nowSeconds: () => NOW_S },
     options: { submitRejectVote: o.submitRejectVote ?? false },
   });
   const handle = () => orch.handle({ txHash: tx, signerUrl: page });
-  return { dir, journal, nonces, pauses, acc, store, policy, orch, handle, tx };
+  return { dir, journal, nonces, pins, refusals, pauses, acc, store, policy, orch, handle, tx };
 }
 
 export const approveFor = (body: Body, over: Parameters<typeof record>[0] extends infer R ? Partial<R> : never = {}, verb: 'approve' | 'deny' = 'approve', tx = TX) =>

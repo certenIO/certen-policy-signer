@@ -1,7 +1,7 @@
 /**
- * DAX7A-F2, the CROSS-CHECK: two readers of the same bytes can disagree. The 50 golden calldata cases of the strict core decoder
- * (transaction-controls pl/dax-7a-core-decoder head fc1a901444038cc53654ac0c85b1f001cc0e4c8a, packages/core/fixtures/calldata-golden.json,
- * copied byte for byte to test/fixtures/calldata-golden-dax7a-fc1a901.json; FICTIONAL parties and tokens) are run through BOTH
+ * DAX7A-F2, the CROSS-CHECK: two readers of the same bytes can disagree. The 50 golden calldata cases of the strict core decoder, VERSION 2
+ * (transaction-controls pl/dax-core-consolidated cef78ccc8a4e8fb63b3339d78bd7be5ead384228, packages/core/fixtures/calldata-golden.v2.json, sha256 2158dbce...2ed3,
+ * copied byte for byte to test/fixtures/calldata-golden-v2-cef78cc.json; FICTIONAL parties and tokens) are run through BOTH
  * calldata readings the signer has:
  *   MAPPING  the request builder that DECIDES what a signature binds (src/binding/request.ts, from a one-leg intent), and
  *   READER   the calldata reading that DESCRIBES the transaction to a policy engine (decodeErc20Calldata, certen-intent.ts).
@@ -10,6 +10,9 @@
  *   UNSAFE-SIDE: the signer accepts what the strict decoder refuses as malformed; the test pins each one so a change is seen.
  *   SCOPE: the signer binds raw base units and addresses and has no token registry, so a case the strict decoder leaves `token_unknown`
  *          is bound as written (the display units are the Console's and DAX-7's business, not the binding's).
+ * Version 2 differs from version 1 (fc1a901, test/fixtures/calldata-golden-dax7a-fc1a901.json, kept as history) in ONE case: g15, the upper-case hex digits. Version 1 decoded
+ * them; version 2 refuses them as calldata_hex_invalid (DE-91, DAX-CORE-2 R1). The signer's MAPPING now refuses them too, so it agrees; the READER below still describes
+ * them (a recorded unsafe-side disagreement that cannot sign anything: the mapping that decides what a signature binds refuses the text).
  * The test fails when the set of disagreements changes in either direction.
  */
 import { describe, expect, it } from 'vitest';
@@ -19,7 +22,8 @@ import { decodeErc20Calldata } from '../src/decode/decoders/certen-intent.js';
 import { buildPresentedRequest } from '../src/binding/request.js';
 import { H, genuineCommitment } from './support/binding-fixtures.js';
 
-const raw = readFileSync(new URL('./fixtures/calldata-golden-dax7a-fc1a901.json', import.meta.url));
+const raw = readFileSync(new URL('./fixtures/calldata-golden-v2-cef78cc.json', import.meta.url));
+const rawV1 = readFileSync(new URL('./fixtures/calldata-golden-dax7a-fc1a901.json', import.meta.url));
 interface Golden { id: string; title: string; input: any; expect: Record<string, any> }
 const golden = JSON.parse(raw.toString('utf8')) as { cases: Golden[] };
 
@@ -83,6 +87,7 @@ const KNOWN: Record<string, { mapping: Verdict; reader: Verdict }> = {
   u01: { mapping: 'scope', reader: 'scope' },
   u02: { mapping: 'scope', reader: 'scope' },
   u03: { mapping: 'scope', reader: 'agree' },
+  g15: { mapping: 'agree', reader: 'unsafe_side' },
   u08: { mapping: 'agree', reader: 'unsafe_side' },
   u31: { mapping: 'agree', reader: 'unsafe_side' },
   u11: { mapping: 'agree', reader: 'unsafe_side' },
@@ -93,9 +98,26 @@ const KNOWN: Record<string, { mapping: Verdict; reader: Verdict }> = {
 };
 
 describe('cross-check against the 50 golden calldata cases of the strict core decoder (DAX7A-F2)', () => {
-  it('is the byte-identical fixture of pl/dax-7a-core-decoder fc1a901 (50 cases)', () => {
-    expect(createHash('sha256').update(raw).digest('hex')).toBe('cbf7721b15c9662e1cb8dcdcabdd8decb4aea284f7bd596e5eeb8e0b65abad17');
+  it('is the byte-identical version 2 fixture of pl/dax-core-consolidated cef78cc (50 cases); version 1 stays as history and differs in g15 only', () => {
+    expect(createHash('sha256').update(raw).digest('hex')).toBe('2158dbce7b77e9770a5e61651cf1b138acf2cf73de320ff513553ec797e82ed3');
     expect(golden.cases).toHaveLength(50);
+    expect(createHash('sha256').update(rawV1).digest('hex')).toBe('cbf7721b15c9662e1cb8dcdcabdd8decb4aea284f7bd596e5eeb8e0b65abad17');
+    const v1 = JSON.parse(rawV1.toString('utf8')) as { cases: Golden[] };
+    expect(golden.cases.filter((c, i) => JSON.stringify(c) !== JSON.stringify(v1.cases[i])).map((c) => c.id)).toEqual(['g15']);
+    expect(golden.cases.find((c) => c.id === 'g15')!.expect).toMatchObject({ status: 'undecoded', reason: 'calldata_hex_invalid' });
+    expect(v1.cases.find((c) => c.id === 'g15')!.expect).toMatchObject({ status: 'decoded' });
+  });
+
+  it('g15: the upper-case calldata the version 1 decoder read is REFUSED by the signer mapping (calldata_hex_invalid), at a seat with allowRaw too, never normalised', () => {
+    const g15 = golden.cases.find((c) => c.id === 'g15')!;
+    expect(mapping(g15.input)).toEqual({ ok: false, detail: 'calldata_hex_invalid' });
+    const rawSeat = (() => {
+      const i = g15.input;
+      const l = { legId: 'leg-1', from: i.source, to: i.target, amountWei: i.value, executionPayload: { target: i.target, value: i.value, callData: i.calldata, chainId: i.chainId, executionCommitment: genuineCommitment({ target: i.target, value: i.value, callData: i.calldata, chainId: i.chainId }) } };
+      const data = [{ kind: 'CERTEN_INTENT', intent_id: 'i' }, { protocol: 'CERTEN', legs: [l] }, { authorization: {} }, { nonce: 'n' }].map(hex);
+      return buildPresentedRequest({ txHash: 'ab'.repeat(32), rawTransaction: { body: { type: 'writeData', entry: { data } } }, summary: { action: 'x' } }, { allowRaw: true });
+    })();
+    expect(rawSeat).toEqual({ ok: false, detail: 'calldata_hex_invalid' });
   });
 
   it('the signer agrees with the strict decoder on every case except the recorded disagreements, and on those it does what is recorded', () => {
@@ -110,9 +132,9 @@ describe('cross-check against the 50 golden calldata cases of the strict core de
     expect(found).toEqual(KNOWN);
   });
 
-  it('the cases the signer maps agree field for field (kind, chain, source, target, beneficiary, asset, amount): 18 of the 20 decoded cases', () => {
+  it('the cases the signer maps agree field for field (kind, chain, source, target, beneficiary, asset, amount): 17 of the 19 decoded cases', () => {
     let agree = 0;
     for (const g of golden.cases.filter((c) => c.expect['status'] === 'decoded')) if (judge(g).mapping === 'agree') agree++;
-    expect(agree).toBe(18); // 20 decoded (g01 to g18, u30, u32): g17 and g18 (wrapper) are safe-side refusals
+    expect(agree).toBe(17); // 19 decoded (g01 to g14, g16 to g18, u30, u32; g15 is now a refusal): g17 and g18 (wrapper) are safe-side refusals
   });
 });

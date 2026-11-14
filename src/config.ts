@@ -169,7 +169,13 @@ const BehaviorOverrideSchema = z.object({
  *   authorized_approvers  the identities (`key:<sha256 of the key>` or `adi:<url>`, never a display name) the seat accepts
  *   max_window_seconds    the cap on a decision's expiresAt - issuedAt; no default, a window is a decision (DEC-2: 90 minutes is
  *                         PROVISIONAL), at most 86400 (a longer window needs an owner-queue note)
- *   policy_hash           the pinned hash of the seat's active rule set; absent = the hash is recorded and NOT compared
+ *   policy_hash           the hash of the seat's active rule set that the seat LOADS (REQUIRED, DE-93): the policy pin step (POST /v1/admin/pin) pins
+ *                         exactly this hash, and until it has the seat decides nothing (`policy_pin_missing`); a changed value leaves the seat
+ *                         `pin_stale` until the step is repeated (DE-94). The operator sets the Console's rule-set hash here
+ *   allow_raw             DE-91: a call no typed kind describes is bound as the raw kind only when this is true (default false: such a call is NOT
+ *                         BOUND and nothing is signed). The Console's own `allowRaw` setting is part of ITS policy hash (DE-104): set the two alike
+ *   settlement_horizon_seconds  DE-88: the horizon of the leaf expiry bound, in seconds. At least the validator's one hour (3600, the default); a
+ *                         smaller value refuses to start. A longer horizon only lengthens the hold a ledger keeps
  *   require_grant         a seat that requires a Grant refuses a transaction and a decision that name none
  *   grantor_adi           whose Grants the seat takes (required when a Grant is required; needed whenever a transaction names one)
  *   grantor_book          the key book that must own the grantor's accounts (certen-grants, certen-subjects): the account authority
@@ -180,6 +186,8 @@ const BindingSchema = z.object({
   authorized_approvers: z.array(z.string().min(1)).min(1),
   max_window_seconds: z.number().int().min(1).max(86_400),
   policy_hash: z.string().regex(/^0x[0-9a-f]{64}$/, 'binding.policy_hash must be 0x and 64 lowercase hex').optional(),
+  allow_raw: z.boolean().default(false),
+  settlement_horizon_seconds: z.number().int().min(3600, 'binding.settlement_horizon_seconds must be at least 3600 (the validator horizon of a member that waits on no predecessor, DE-88)').default(3600),
   require_grant: z.boolean().default(false),
   grantor_adi: z.string().optional(),
   grantor_book: z.string().optional(),
@@ -621,6 +629,9 @@ export function validateBindings(cfg: Pick<ParsedConfig, 'wallet' | 'binding' | 
     if (b.require_grant && b.grantor_adi === undefined) {
       throw new Error(`config: ${s.page}: binding.require_grant needs binding.grantor_adi and binding.grantor_book (whose Grants this seat takes)`);
     }
+    // DE-93: the pin is REQUIRED. The seat loads this hash and the pin step pins it; a seat with nothing to pin could never decide, and a seat that
+    // records the hash without comparing it (the earlier behaviour) is the weaker answer the pin replaces.
+    if (b.policy_hash === undefined) throw new Error(`config: ${s.page}: binding.policy_hash is required (DE-93): the seat loads it and the pin step (POST /v1/admin/pin) pins it; without it the seat can never decide`);
   }
 }
 

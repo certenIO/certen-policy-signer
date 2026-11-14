@@ -22,6 +22,8 @@ import { Poller } from './poller.js';
 import { createServer, HealthSource } from './server.js';
 import { DecisionJournal } from './binding/journal.js';
 import { NonceStore } from './binding/nonces.js';
+import { PinStore } from './binding/pin-store.js';
+import { RefusalReceipts } from './binding/refusals.js';
 import { PauseStore } from './binding/pause-store.js';
 import { ReadCache } from './binding/read-cache.js';
 import { metrics } from './metrics.js';
@@ -193,6 +195,10 @@ async function main() {
     onHeal: (m) => logger.warn({ detail: m }, 'persisted pause healed from the journal'),
   });
   const nonces = new NonceStore(journal, nowSeconds);
+  // DE-93, DE-94: each bound seat loads the rule-set hash its operator configured; the persisted pin (the `policy.pinned` entries of the verified journal) is
+  // compared with it. A seat is pinned only by the explicit step (POST /v1/admin/pin); until then it decides nothing.
+  const policyPins = new PinStore({ journal, seats: seatConfigs.flatMap((s) => (s.binding?.policy_hash === undefined ? [] : [{ seat: s.seat, loadedHash: s.binding.policy_hash }])), nowSeconds });
+  const refusals = new RefusalReceipts(journal, nowSeconds);
   const seatRules = new Map<string, SeatRules>();
   for (const s of seatConfigs) {
     const b = s.binding;
@@ -201,14 +207,15 @@ async function main() {
       ...(b ? {
         binding: {
           seat: s.seat, authorizedApprovers: b.authorized_approvers, maxWindowSeconds: b.max_window_seconds,
-          policyHash: b.policy_hash ?? null, requireGrant: b.require_grant,
+          policyHash: b.policy_hash!, requireGrant: b.require_grant, allowRaw: b.allow_raw, settlementHorizonSeconds: b.settlement_horizon_seconds,
           ...(b.grantor_adi && b.grantor_book ? { grantorAdi: b.grantor_adi, grantorBook: b.grantor_book } : {}),
         },
       } : {}),
     });
     if (b) {
-      logger.info({ page: s.page, seat: s.seat, approvers: b.authorized_approvers.length, maxWindowSeconds: b.max_window_seconds, requireGrant: b.require_grant, policyPinned: b.policy_hash !== undefined }, 'decisions for this seat must be BOUND (certen.decision/v1)');
-      if (b.policy_hash === undefined) logger.warn({ seat: s.seat }, 'binding.policy_hash is not set: the policy hash of each decision is recorded and NOT compared');
+      const phase = policyPins.snapshot().find((v) => v.seat === s.seat)?.phase;
+      logger.info({ page: s.page, seat: s.seat, approvers: b.authorized_approvers.length, maxWindowSeconds: b.max_window_seconds, requireGrant: b.require_grant, allowRaw: b.allow_raw, settlementHorizonSeconds: b.settlement_horizon_seconds, policyPhase: phase }, 'decisions for this seat must be BOUND (certen.decision/v1)');
+      if (phase !== 'pinned') logger.warn({ seat: s.seat, phase, loadedPolicyHash: b.policy_hash }, 'this seat decides NOTHING until its policy pin is set: every decision is refused (policy_pin_missing, or policy_hash_mismatch with pin_stale). Pin the loaded hash with POST /v1/admin/pin {seat, hash, by, reason}');
     }
   }
   // The reader of Accumulate facts (READER-MODEL-V2): ONE read cache for the decision binding AND the Console's `chain` relay routes,
@@ -324,7 +331,7 @@ async function main() {
     // G-65: an updateKeyPage is approved only after its operations are checked against the page as it reads now.
     readPage: (page) => readPage(accumulate, page),
     humanOnlyPages: humanScopes.map((s) => s.page),
-    pauses: pause, seats: seatRules, binding: { nonces, ...(bindingWorld ? { world: bindingWorld } : {}), nowSeconds },
+    pauses: pause, seats: seatRules, binding: { nonces, pins: policyPins, refusals, ...(bindingWorld ? { world: bindingWorld } : {}), nowSeconds },
     ...(wrapperMode ? { wrapper: wrapperMode } : {}),
     options: {
       submitRejectVote: cfg.behavior.submit_reject_vote,
@@ -476,7 +483,7 @@ async function main() {
   // --- server (health/metrics/webhook/admin) ---
   const server = createServer({
     relay, relayClients, officerIntake: officerIntake?.handle, configVersion: cfg.configVersion,
-    orchestrator, store, keyring, accumulate, pause, nonces, logger, poller: pollerHealth,
+    orchestrator, store, keyring, accumulate, pause, nonces, pins: policyPins, logger, poller: pollerHealth,
     ...(wrapperRegistry ? { wrapperRegistry, wrapperOurBook: scopes[0].book } : {}),
     webhookHmacSecret: cfg.trigger.webhook.enabled ? cfg.trigger.webhook.hmac_secret : undefined,
     webhookSignatureHeader: cfg.trigger.webhook.signature_header,

@@ -122,7 +122,7 @@ describe('config: binding and seats', () => {
       'signer: { provider: "local", local: { allow_ephemeral: true } }', 'policy: { url: "http://127.0.0.1:9099/decision" }', ...(withStore ? [`store: { path: "${STATE}" }`] : []), extra].join(String.fromCharCode(10)));
     return f;
   };
-  const GOOD = `binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400 }`;
+  const GOOD = `binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, policy_hash: "${H('policy-v1')}" }`;
 
   it('derives a valid seat id for every page and keeps a configured one', () => {
     expect(derivedSeat('acc://o.acme/book/1')).toBe('seat:o.acme-book-1');
@@ -148,11 +148,11 @@ describe('config: binding and seats', () => {
     expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, require_grant: true }`))).toThrow(/grantor_adi/);
     expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, require_grant: true, grantor_adi: "acc://g.acme" }`))).toThrow(/grantor_book/);
     expect(() => loadConfig(base('', ', seat: "Treasury"'))).toThrow(/seat:<name>/);
-    expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, require_grant: true, grantor_adi: "acc://g.acme", grantor_book: "acc://g.acme/book" }`))).not.toThrow();
+    expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, policy_hash: "${H('policy-v1')}", require_grant: true, grantor_adi: "acc://g.acme", grantor_book: "acc://g.acme/book" }`))).not.toThrow();
   });
 
   it('the grantor and the key book that owns its accounts come together; the book lies under the grantor ADI (READER-MODEL-V2)', () => {
-    const b = (extra: string) => base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, ${extra} }`);
+    const b = (extra: string) => base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, policy_hash: "${H('policy-v1')}", ${extra} }`);
     expect(() => loadConfig(b('grantor_adi: "acc://g.acme"'))).toThrow(/given together/);
     expect(() => loadConfig(b('grantor_book: "acc://g.acme/book"'))).toThrow(/given together/);
     expect(() => loadConfig(b('grantor_adi: "acc://g.acme", grantor_book: "acc://other.acme/book"'))).toThrow(/under the grantor ADI/);

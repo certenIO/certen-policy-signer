@@ -34,7 +34,8 @@ export interface DataEntry {
   time?: number;
   elements: Uint8Array[];
 }
-/** the account's own main chain from its creation: transaction types in order; `incomplete` when the creation was not reached */
+/** the account's own main chain from its creation: transaction types in order; `incomplete` when the creation was not reached OR the account has more records than the reader's configured bound
+ *  (GRANT.md 4c item 7, PARTIAL: a longer account is account_history_incomplete, never truncated; readMainChain, readLineageChain and resolveSubjectChain take that bound as `maxRecords`) */
 export interface AccountHistory { types: string[]; incomplete: boolean }
 
 export interface AccumulateReader {
