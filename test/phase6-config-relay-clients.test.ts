@@ -153,7 +153,7 @@ const rpc = http.createServer((req, res) => {
 
 const govCalls: Array<{ op: KeyPageOp; page: string }> = [];
 let pageReadFails = false;
-/** Replaces the applyKeyPageOp stub for one test (G-65: a per-operation refusal from inside it). */
+/** Replaces the applyKeyPageOp fake for one test (G-65: a per-operation refusal from inside it). */
 let applyOverride: ((op: KeyPageOp) => Promise<KeyPageResult>) | undefined;
 let port = 0;
 let server: http.Server;
