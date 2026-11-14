@@ -14,6 +14,8 @@ import pino from 'pino';
 import { MockAccumulateClient } from '../src/accumulate/client.js';
 import { DecisionJournal } from '../src/binding/journal.js';
 import { NonceStore } from '../src/binding/nonces.js';
+import { RefusalReceipts } from '../src/binding/refusals.js';
+import { pinStoreFor } from './support/binding-rig.js';
 import { buildPresentedRequest } from '../src/binding/request.js';
 import { hashRequest } from '../src/core/hashes.js';
 import { Orchestrator } from '../src/orchestrator.js';
@@ -69,7 +71,7 @@ function service(dir: string, bound: boolean) {
     accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))), store: new MemoryStore(), resolver: new Resolver(acc), logger: silent,
     policy: new HttpPolicyClient({ url, hmacSecret: SECRET, timeoutMs: 5000 }),
     seats: new Map([[SIGNER.toLowerCase(), { seat: SEAT, ...(bound ? { binding: { seat: SEAT, authorizedApprovers: [APPROVER], maxWindowSeconds: 7200, policyHash: POLICY, requireGrant: false } } : {}) }]]),
-    binding: { nonces: new NonceStore(journal, nowS), nowSeconds: nowS },
+    binding: { nonces: new NonceStore(journal, nowS), pins: pinStoreFor(journal, [{ seat: SEAT, loadedHash: POLICY }]), refusals: new RefusalReceipts(journal, nowS), nowSeconds: nowS },
   });
   return { acc, handle: () => orch.handle({ txHash: TX, signerUrl: SIGNER }) };
 }

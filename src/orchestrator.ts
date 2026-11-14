@@ -24,7 +24,9 @@ import { isAdiUrl } from './core/grant-profile.js';
 import { BindingOutcome, BindingRules, BindingRuntime, BoundDecision, verifyBinding } from './binding/verify.js';
 import { PauseGate } from './binding/pause-store.js';
 import { derivedSeat } from './binding/seats.js';
-import { buildPresentedRequest } from './binding/request.js';
+import { buildPresentedRequest, presentOptionsOf } from './binding/request.js';
+import { refusalReceiptOf } from './binding/refusals.js';
+import { JournalError } from './binding/journal.js';
 import { policyBindingOf } from './binding/policy-binding.js';
 
 /** The error a vote reports when the persisted pause stopped it at the moment of signing. */
@@ -203,9 +205,11 @@ export class Orchestrator {
       requireSignatureData: d.options?.requireSignatureData,
     };
     this.now = d.now ?? Date.now;
-    // A seat that configures `binding` cannot run without the nonce store: a missing one would sign unbound decisions.
+    // A seat that configures `binding` cannot run without the nonce store: a missing one would sign unbound decisions. Nor without the pin gate
+    // (a seat with no pin decides nothing, DE-93) or the refusal receipts (a refusal is a journal entry, DE-97).
     for (const [page, s] of d.seats ?? []) {
       if (s.binding && !d.binding) throw new Error(`orchestrator: ${page} configures binding but no nonce store is wired`);
+      if (s.binding && d.binding && (!d.binding.pins || !d.binding.refusals)) throw new Error(`orchestrator: ${page} configures binding but no ${!d.binding.pins ? 'policy pin gate' : 'refusal receipt log'} is wired`);
     }
     this.notifier = d.notifier ?? NULL_NOTIFIER;
     this.votes = d.votes ?? new DirectVoteBackend(d.accumulate, d.keyring, d.logger, {
@@ -275,18 +279,31 @@ export class Orchestrator {
    * `submit`. The item stays retryable (`awaiting_policy`): the Console may issue a fresh decision. The refusal is an
    * append-only receipt, not repeated while the same refusal stands (a poll every few seconds would otherwise write one per poll).
    */
-  private async refuseBinding(tx: ResolvedTx, key: string, out: Extract<BindingOutcome, { ok: false }>, verb: string): Promise<SigningRequest> {
+  private async refuseBinding(tx: ResolvedTx, key: string, out: Extract<BindingOutcome, { ok: false }>, verb: string, seat: string): Promise<SigningRequest> {
     const reason = `binding: ${out.reason}`;
     this.d.logger.warn({ tx: tx.txHash, key, reason: out.reason, detail: out.detail, decision: verb }, 'decision refused by the binding check; signing nothing');
-    const evidence = { blockedBy: 'decision_binding', reason: out.reason, ...(out.detail !== undefined ? { detail: out.detail } : {}) };
+    // DE-97: the refusal receipt, the `binding.refused` entry of the journal: the request the signer built, the seat, the reason and, where they could be
+    // read, the nonce of the refused decision and the transaction. A different decision (another nonce) refused for the same reason is a new receipt.
+    const receipt = refusalReceiptOf({ requestHash: out.requestHash, seat, reason: out.reason, nonce: out.nonce, txHash: out.txHash });
+    // The entry is durable before the answer, as the nonce store is. When the journal cannot be written (back-pressure, DE-47) the refusal STILL stands (nothing is
+    // signed, nothing is consumed) and is recorded in the store, with the failure named on it, never skipped quietly and never turned into an allow.
+    let journalled: string = 'written';
     const latest = await this.d.store.getReceipt(key);
     const le = latest?.policyEvidence;
-    const same = le?.['blockedBy'] === 'decision_binding' && le['reason'] === out.reason && (le['detail'] ?? null) === (out.detail ?? null);
+    const lr = le?.['refusalReceipt'] as { nonce?: string } | undefined;
+    const same = le?.['blockedBy'] === 'decision_binding' && le['reason'] === out.reason && (le['detail'] ?? null) === (out.detail ?? null) && (lr?.nonce ?? '') === (receipt.nonce ?? '');
     if (!same) {
+      try {
+        await this.d.binding!.refusals.record(receipt);
+      } catch (e) {
+        if (!(e instanceof JournalError)) throw e;
+        journalled = `not_written: ${e.reason}${e.detail ? ' ' + e.detail : ''}`;
+        this.d.logger.error({ tx: tx.txHash, reason: out.reason, journal: journalled }, 'the binding.refused receipt could not be written to the decision journal; the refusal stands (nothing was signed)');
+      }
       await this.saveReceipt({
         ...this.receiptKey(tx), operationId: tx.operationId, reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
-        policyEvidence: evidence,
+        policyEvidence: { blockedBy: 'decision_binding', reason: out.reason, ...(out.detail !== undefined ? { detail: out.detail } : {}), refusalReceipt: receipt, refusalJournal: journalled },
       });
     }
     return this.d.store.update(key, { status: 'awaiting_policy', lastError: reason });
@@ -693,7 +710,7 @@ export class Orchestrator {
     // refuses it by name (`multi_leg_unsupported`) and so does the signer's own check; neither side silently skips it. A transaction
     // the signer cannot read as an intent at all (no binding built) carries none, and its decision is refused later by name.
     const seat = this.seatOf(ref.signerUrl);
-    const presentedBinding = seat.binding ? buildPresentedRequest(tx) : undefined;
+    const presentedBinding = seat.binding ? buildPresentedRequest(tx, presentOptionsOf(seat.binding)) : undefined;
     const policyReq: PolicyRequest = withDisplay({
       requestId: randomUUID(),
       txHash: tx.txHash,
@@ -809,7 +826,7 @@ export class Orchestrator {
       });
       if (!out.ok) {
         if (out.reason === 'paused' || out.reason === 'pause_state_unreadable') return this.withholdPaused(key, ref.txHash, decision.decision, out.reason);
-        return this.refuseBinding(tx, key, out, decision.decision);
+        return this.refuseBinding(tx, key, out, decision.decision, seat.seat);
       }
       bound = out;
       logger.info({ tx: ref.txHash, seat: bound.seat, requestHash: bound.requestHash, approver: bound.approver, policyPinned: bound.policyPinned }, 'decision bound and consumed');

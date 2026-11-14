@@ -123,7 +123,7 @@ describe('config: a human-only page is a seat (N4, N6)', () => {
   afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
   const HP = 'acc://summit-inspection-tcl1.acme/book/1';
   const KP = 'acc://summit-inspection-tcl1.acme/book/2';
-  const GOOD = `binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400 }`;
+  const GOOD = `binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, policy_hash: "${POLICY}" }`;
   function load(wallet: string, extra = '', model = '') {
     const dir = tmp();
     dirs.push(dir);
@@ -152,7 +152,7 @@ ${extra}`);
 
   it('a human-only page can name its seat and carry its own binding; beside a keyed scope both are seats', () => {
     const keyed = `  scopes:\n    - { page: "${KP}", seat: "seat:keyed", key: { provider: "local", local: { allow_ephemeral: true } } }`;
-    const cfg = load(`${keyed}\n  human_scopes:\n    - { page: "${HP}", seat: "seat:board", binding: { authorized_approvers: ["${KEY('b')}"], max_window_seconds: 3600 } }`);
+    const cfg = load(`${keyed}\n  human_scopes:\n    - { page: "${HP}", seat: "seat:board", binding: { authorized_approvers: ["${KEY('b')}"], max_window_seconds: 3600, policy_hash: "${POLICY}" } }`);
     const seats = effectiveSeats(cfg);
     expect(seats.map((s) => [s.page, s.seat])).toEqual([[KP, 'seat:keyed'], [HP, 'seat:board']]);
     expect(seats[1]?.binding).toMatchObject({ authorized_approvers: [KEY('b')], max_window_seconds: 3600 });

@@ -9,8 +9,19 @@
  * What a request can be, and what it cannot (a refusal is a named `presented_malformed` detail, never a guess):
  *   - ONE leg. A multi-leg intent is several executions under one operation and cannot be bound by a one-leg request hash: the
  *     presented legCount is derived from the legs and the core refuses a legCount other than 1 as `multi_leg_unsupported` (DE-76).
- *   - kind `native.transfer` (empty calldata), `erc20.transfer` or `erc20.approve` (the calldata decoded exactly: one 32-byte
- *     word per parameter). `transferFrom`, any other selector and any call that forwards native value with calldata are refused.
+ *   - kind `native.transfer` (empty calldata), `erc20.transfer` or `erc20.approve` (the calldata decoded EXACTLY by the core decoder, DE-91:
+ *     the selector, whole-word arguments, an address padded with twelve zero bytes, nothing after the arguments, no native value on a token
+ *     call), or `raw` (below). The calldata TEXT is read as the core reads it: `0x` and LOWER-case hex of whole bytes. Upper-case digits, a
+ *     missing prefix, an odd number of digits and a size above the limit are refused (`presented_malformed`, the decoder reason as the detail):
+ *     the text is never normalised, because two readings of one text is how a review and a signature disagree (DAX7A-F2).
+ *   - a call that no typed kind describes (an unknown selector, `transferFrom`, a dirty address pad, trailing bytes, native value on a token
+ *     call, a wrapper) is mapped by the core's `mapDecoded`: `raw` at a seat whose `allowRaw` is the boolean true (beneficiary = target,
+ *     asset = native, amount = the native value, DE-90), and NOT BOUND at every other seat (`binding_absent`, nothing is signed, DE-91). The
+ *     signer has no token registry, so the decoder is given a one-entry registry naming the called address: it binds raw base units and
+ *     addresses, and the display units are the decision service's own (a token its registry does not know is shown undecoded there).
+ *   - the leaf expiry bound (`leafExpiry`, DE-87, DE-88): the smaller of the leg's declared deadline (`deadline_timestamp`) and the floor of the
+ *     transaction header deadline plus the seat's settlement horizon (never below the validator's one hour); absent when neither exists; claimed
+ *     for a ONE-leg transaction only. It is an upper bound of the contract's expiry, so a ledger errs towards a longer hold.
  *   - `executionCommitment` is the value the intent STATES (`executionPayload.executionCommitment`); the signer does not
  *     recompute its keccak (DECISION.md section 2: taken from the intent; DAX-7 recomputes the displayed view from the bytes).
  *   - `chainId` must be numeric (`executionPayload.chainId` or `chainId`; both present must agree). A chain NAME is not an id.
@@ -18,8 +29,10 @@
  */
 import { ADDRESS_RE, HASH_RE, isAmount } from '../core/bytes.js';
 import { singleCommitment } from '../core/calldata-keccak.js';
-import { decodeErc20Calldata } from '../decode/decoders/certen-intent.js';
-import type { PolicyExecution, ResolvedTx } from '../types.js';
+import { decode } from '../core/calldata.js';
+import { leafExpiryBound, VALIDATOR_HORIZON_SECONDS } from '../core/leaf-expiry.js';
+import { mapDecoded } from '../core/raw-approval.js';
+import type { PolicyExecution, ResolvedTx, TransactionHeaderInfo } from '../types.js';
 import { OperationIdError, validatorOperationId } from './operation-id.js';
 
 export interface PresentedRequest {
@@ -40,12 +53,32 @@ export interface PresentedRequest {
    * equals `request.executionCommitment`. null for an intent with several legs (its commitment is a batch form, not recomputed here).
    */
   execution: PolicyExecution | null;
+  /** the leaf expiry bound in Unix seconds (DE-87), or null when the transaction has no deadline or has several legs: forwarded as `binding.leafExpiry` */
+  leafExpiry: number | null;
 }
 
-export type BuildResult = { ok: true; value: PresentedRequest } | { ok: false; detail: string };
+export type BuildResult =
+  | { ok: true; value: PresentedRequest }
+  /** `reason` is set only for a call that no typed kind describes at a seat without allowRaw: NOT BOUND (`binding_absent`); otherwise the refusal is `presented_malformed` with `detail` */
+  | { ok: false; detail: string; reason?: 'binding_absent' };
+
+/** The seat settings the request depends on. The policy request and the binding check pass the SAME options (`presentOptionsOf`). */
+export interface BuildOptions {
+  /** the seat setting allowRaw (DE-91): absent means false */
+  allowRaw?: boolean;
+  /** the seat settlement horizon in seconds (DE-88): at least the validator's one hour, which is the default */
+  horizonSeconds?: number;
+}
+
+/** the builder options of a seat's rules, in one place */
+export function presentOptionsOf(r: { allowRaw?: boolean; settlementHorizonSeconds?: number }): Required<BuildOptions> {
+  return { allowRaw: r.allowRaw === true, horizonSeconds: r.settlementHorizonSeconds ?? VALIDATOR_HORIZON_SECONDS };
+}
 
 const GRANT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/;
 const bad = (detail: string): BuildResult => ({ ok: false, detail });
+/** the decoder's reasons about the calldata TEXT: the text is not calldata at all, so no kind, raw included, can describe it */
+const TEXT_REASONS = new Set(['calldata_prefix_invalid', 'calldata_too_large', 'calldata_hex_invalid', 'calldata_odd_length']);
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 function blobBytes(hex: unknown): Uint8Array | null {
@@ -71,7 +104,9 @@ function chainIdOf(leg: Record<string, unknown>, payload: Record<string, unknown
 /** a canonical address: 0x and 40 LOWER-case hex digits, exactly as the core hashes it. A checksum-case spelling is refused, as the strict decoder refuses it (DAX7A-F2). */
 const lowerAddress = (v: unknown): string | null => (typeof v === 'string' && ADDRESS_RE.test(v) ? v : null);
 
-export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransaction' | 'summary'>): BuildResult {
+export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransaction' | 'summary'> & { header?: Pick<TransactionHeaderInfo, 'expiresAt'> }, opts: BuildOptions = {}): BuildResult {
+  const allowRaw = opts.allowRaw === true;
+  const horizonSeconds = opts.horizonSeconds ?? VALIDATOR_HORIZON_SECONDS;
   const raw = tx.rawTransaction;
   const body = isObj(raw) && isObj(raw['body']) ? raw['body'] : undefined;
   if (body === undefined || body['type'] !== 'writeData') return bad('not_write_data');
@@ -116,9 +151,10 @@ export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransa
   // hashable, and a decision for it is never issued.
   const txHash = '0x' + tx.txHash.replace(/^0x/, '').toLowerCase();
   if (!HASH_RE.test(txHash)) return bad('tx_hash');
-  const mapped = mapLeg(legs[0], txHash, operationId);
+  const mapped = mapLeg(legs[0], txHash, operationId, allowRaw);
   let request: Record<string, string | number>;
   let execution: PolicyExecution | null = null;
+  let leafExpiry: number | null = null;
   if (mapped.ok) {
     request = mapped.request;
     if (legs.length === 1) {
@@ -128,10 +164,18 @@ export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransa
       const bytes = new Uint8Array(Buffer.from(e.calldata.slice(2), 'hex'));
       if (singleCommitment(e.chainId, e.target, e.value, bytes) !== request['executionCommitment']) return bad('execution_commitment_mismatch');
       execution = e;
+      // DE-87, DE-88: the leaf expiry bound of a ONE-leg transaction, from the leg's declared deadline and the header deadline. A leg deadline that is
+      // negative or not an integer, a header deadline that is not an exact UTC instant and a horizon below the validator's hour are refused, never
+      // repaired; a transaction with neither deadline has no bound (null: the member is omitted, never guessed).
+      const leg0 = legs[0];
+      const declared = isObj(leg0) && leg0['deadline_timestamp'] !== undefined && leg0['deadline_timestamp'] !== null ? leg0['deadline_timestamp'] : 0;
+      const lb = leafExpiryBound({ legDeadlines: [declared], headerExpiresAt: tx.header?.expiresAt ?? null, horizonSeconds });
+      if (lb.ok) leafExpiry = lb.leafExpiry;
+      else if (lb.reason !== 'leaf_expiry_unavailable') return bad(lb.detail === undefined ? lb.reason : `${lb.reason}:${lb.detail}`);
     }
   }
   else if (legs.length !== 1) request = unboundPlaceholder(txHash, operationId);
-  else return bad(mapped.detail);
+  else return mapped.reason === undefined ? bad(mapped.detail) : { ok: false, detail: mapped.detail, reason: mapped.reason };
 
   const s = tx.summary.subject;
   const assertedSubject = s !== undefined && typeof s.adi === 'string' && typeof s.assertedBy === 'string' ? { adi: s.adi, assertedBy: s.assertedBy } : null;
@@ -146,6 +190,7 @@ export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransa
       assertedSubject,
       operationId,
       execution,
+      leafExpiry,
     },
   };
 }
@@ -158,10 +203,10 @@ function unboundPlaceholder(txHash: string, operationId: string): Record<string,
   return { chainId: 1, kind: 'native.transfer', source: ZERO20, target: ZERO20, beneficiary: ZERO20, asset: 'native', amount: '0', executionCommitment: ZERO32, operationId, txHash };
 }
 
-type Mapped = { ok: true; request: Record<string, string | number>; execution: PolicyExecution } | { ok: false; detail: string };
+type Mapped = { ok: true; request: Record<string, string | number>; execution: PolicyExecution } | { ok: false; detail: string; reason?: 'binding_absent' };
 
 /** One leg of the intent as the ten members of the request (the mapping of the header comment). */
-function mapLeg(leg: unknown, txHash: string, operationId: string): Mapped {
+function mapLeg(leg: unknown, txHash: string, operationId: string, allowRaw: boolean): Mapped {
   const fail = (detail: string): Mapped => ({ ok: false, detail });
   if (!isObj(leg)) return fail('leg_not_object');
   const payload = isObj(leg['executionPayload']) ? leg['executionPayload'] : undefined;
@@ -185,41 +230,44 @@ function mapLeg(leg: unknown, txHash: string, operationId: string): Mapped {
   if (valueP !== undefined && valueL !== undefined && valueP !== valueL) return fail('value_disagrees');
   const value = valueP ?? valueL;
 
-  // the calldata text is read as strictly as the strict core decoder reads it (DAX7A-F2): `0x` in lower case is required (an absent
-  // member is no calldata), the digits are hex of either case, an even number of them
+  // the calldata text is the core's: `0x` and lower-case hex of whole bytes (DE-91). An absent member is no calldata. What the text is not (not a
+  // string, no prefix, upper case, an odd number of digits, too large) is refused HERE by the decoder's own reason and is never normalised.
   const cd = payload['callData'];
   if (cd !== undefined && cd !== null && typeof cd !== 'string') return fail('calldata_not_text');
-  if (typeof cd === 'string' && !cd.startsWith('0x')) return fail('calldata_prefix_invalid');
-  const callData = typeof cd === 'string' ? cd.slice(2) : '';
+  const calldata = typeof cd === 'string' ? cd : '0x';
+  const nativeCall = calldata === '0x';
+  if (nativeCall ? value === undefined || !isAmount(value) : value !== undefined && !isAmount(value)) return fail(nativeCall ? 'native_amount' : 'value_malformed');
 
+  // The strict decode: the core decoder reads the bytes. The signer has no token registry, so it names the called address as the token (and the
+  // chain's native currency): the STRUCTURE is decoded exactly and raw base units and addresses are bound. Everything else is undecoded.
+  const registry = { schema: 'certen.tokenreg/v1', tokens: [{ chainId, address: 'native', symbol: 'NATIVE', decimals: 0 }, { chainId, address: target, symbol: 'TOKEN', decimals: 0 }] };
+  const decoded = decode({ chainId, source, target, value: value ?? '0', calldata }, registry, { allowRaw });
+  if (decoded.status === 'undecoded') {
+    if (TEXT_REASONS.has(decoded.reason)) return fail(decoded.reason);
+    // the input of the decoder is built and checked above: a decoder that cannot read it is a defect, refused by name and never bound
+    if (decoded.reason === 'input_malformed' || decoded.reason === 'registry_invalid' || decoded.reason === 'policy_invalid') return fail(`decoder_${decoded.reason}`);
+  }
+  // DE-91: a typed kind only when the decoder DECODED; otherwise raw at a seat that allows it, NOT BOUND at every other
+  const m = mapDecoded(decoded, allowRaw);
+  if (!m.ok) return m.reason === 'binding_absent' ? { ok: false, reason: 'binding_absent', detail: decoded.status === 'undecoded' ? decoded.reason : 'undecoded' } : fail('map_input_malformed');
   let kind: string;
   let beneficiary: string;
   let asset: string;
   let amount: string;
-  if (callData === '') {
-    if (value === undefined || !isAmount(value)) return fail('native_amount');
-    kind = 'native.transfer';
+  if (m.kind === 'raw') {
+    // DE-90: the three members a raw call maps are the target, native and the native value
+    kind = 'raw';
     beneficiary = target;
     asset = 'native';
-    amount = value;
-  } else {
-    const dec = decodeErc20Calldata('0x' + callData);
-    if (dec === undefined) return fail('calldata_unsupported');
-    if (dec.fn === 'transferFrom') return fail('action_unsupported');
-    // the address word must be a clean 32-byte word (12 zero bytes, then the address): the reading below takes the low 20 bytes, and
-    // another reading must not take a different address from the same bytes (u08, u31 of the golden cases)
-    if (!/^0{24}/.test(callData.slice(8, 72))) return fail('address_pad_dirty');
-    if (value !== undefined && value !== '0') return fail('value_with_call');
-    const who = dec.fn === 'transfer' ? dec.args['to'] : dec.args['spender'];
-    const b = lowerAddress(who);
-    if (b === null || !isAmount(dec.amount)) return fail('calldata_arguments');
-    kind = dec.fn === 'transfer' ? 'erc20.transfer' : 'erc20.approve';
-    beneficiary = b;
-    asset = target;
-    amount = dec.amount;
-  }
+    amount = value ?? '0';
+  } else if (decoded.status === 'decoded') {
+    kind = decoded.kind;
+    beneficiary = decoded.beneficiary;
+    asset = decoded.asset;
+    amount = decoded.amount;
+  } else return fail('map_input_malformed');
   // the execution of this leg: the same chainId, source and target as the request, the native value as a decimal string ('0' for a call that sends
-  // none) and exactly the calldata bytes, `0x` and lower-case hex (`0x` alone for a native transfer)
-  const execution: PolicyExecution = { chainId, source, target, value: value ?? '0', calldata: '0x' + callData.toLowerCase() };
+  // none) and exactly the calldata text that was decoded (`0x` alone for a native transfer)
+  const execution: PolicyExecution = { chainId, source, target, value: value ?? '0', calldata };
   return { ok: true, request: { chainId, kind, source, target, beneficiary, asset, amount, executionCommitment: commitment, operationId, txHash }, execution };
 }

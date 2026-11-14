@@ -158,10 +158,13 @@ describe('the subject (the GRANTOR registry and the subject acceptance only)', (
     expect(await subject(scene())).toEqual({ ok: true, value: { adi: SUBJECT, type: 'agent' } });
   });
 
-  it('is unproven without an acceptance, after a revoke, and when the acceptance came after the registration', async () => {
+  it('is unproven without an acceptance and after a revoke; an acceptance that came AFTER the registration is in force from then on (prospective activation, GR-82, GR-83)', async () => {
     expect(await subject(scene({ acceptances: null }))).toMatchObject({ ok: false, detail: expect.stringContaining('subject_unproven') });
     expect(await subject(scene({ acceptances: [{ action: 'accept', time: T_REG - 10 }, { action: 'revoke', time: T_REG + 5 }] }))).toMatchObject({ ok: false });
-    expect(await subject(scene({ acceptances: [{ action: 'accept', time: T_REG + 5 }] }))).toMatchObject({ ok: false });
+    // the registration waits for the consent and is in force from the later of its entry time and the acceptance (never before): resolved now, no retroactive authority
+    expect(await subject(scene({ acceptances: [{ action: 'accept', time: T_REG + 5 }] }))).toEqual({ ok: true, value: { adi: SUBJECT, type: 'agent' } });
+    // ... and a consent that was revoked and accepted again is the latest action in force
+    expect(await subject(scene({ acceptances: [{ action: 'accept', time: T_REG - 10 }, { action: 'revoke', time: T_REG + 5 }, { action: 'accept', time: T_REG + 9 }] }))).toEqual({ ok: true, value: { adi: SUBJECT, type: 'agent' } });
   });
 
   it('follows the lineage: a suspension needs no acceptance, a reactivation needs a consent in force', async () => {

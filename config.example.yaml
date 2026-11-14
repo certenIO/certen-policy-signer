@@ -303,14 +303,19 @@ store:
   #                                                  # writer cannot edit makes a deleted or truncated journal a refusal to start
 
 # Decision binding (DAX-4S). Present = every decision for the seat must carry a certen.decision/v1 `record` that names the exact
-# transaction about to be signed, an authorised approver, this seat, the pinned policy hash and an unspent nonce. A reply without one
+# transaction about to be signed, an authorised approver, this seat, the PINNED policy hash and an unspent nonce. A reply without one
 # is refused. Requires store.path (the nonces consumed live in a journal beside it). A scope may state its own `binding` and `seat`;
 # a page without one keeps the unbound legacy reply. Every page has a seat id: `seat` here, else one derived from the page URL.
 # binding:
 #   authorized_approvers:                  # identities, never display names: key:<sha256 of the key, 64 hex> or adi:<acc:// URL>
 #     - "key:0000000000000000000000000000000000000000000000000000000000000000"
 #   max_window_seconds: 5400               # cap on a decision's expiresAt - issuedAt (at most 86400); no default
-#   # policy_hash: "0x…"                   # pin of the seat's active rule set; omitted = the hash is recorded and NOT compared
+#   policy_hash: "0x…"                    # REQUIRED (DE-93): the hash of the seat's active rule set that the seat LOADS. The seat decides NOTHING until the pin
+#                                          # step has pinned exactly this hash (POST /v1/admin/pin {seat, hash, by, reason}); change it and the seat is
+#                                          # pin_stale (every decision refused) until the step is repeated. Set it to the decision service's rule-set hash
+#   # allow_raw: false                     # DE-91: bind a call no typed kind describes (unknown selector, transferFrom, a dirty address word, a wrapper) as the
+#                                          # RAW kind. false (default): such a call is NOT BOUND and nothing is signed. Set the decision service's allowRaw alike
+#   # settlement_horizon_seconds: 3600     # DE-88: horizon of the leaf expiry bound the signer sends as binding.leafExpiry; at least 3600, smaller refuses to start
 #   # require_grant: true                  # a Grant must be named by both the decision and the transaction
 #   # grantor_adi: "acc://grantor.acme"    # whose Grants this seat takes (needed whenever a transaction names one)
 #   # grantor_book: "acc://grantor.acme/book"   # the key book that must own the grantor accounts (certen-grants, certen-subjects)

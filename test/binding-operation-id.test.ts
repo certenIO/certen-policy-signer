@@ -14,7 +14,7 @@ import { canonicalBlob, OperationIdError, validatorOperationId } from '../src/bi
 import { buildPresentedRequest } from '../src/binding/request.js';
 import { bindDecision } from '../src/core/decision-binding.js';
 import { hashRequest } from '../src/core/hashes.js';
-import { APPROVER, SEAT, H, record } from './support/binding-fixtures.js';
+import { APPROVER, POLICY, SEAT, H, record } from './support/binding-fixtures.js';
 
 interface Vec { site: string; case: string; raw: string[]; tsCanonical: string[]; bridgeIntentHash: string; bridgeRecomputedId: string; validatorOperationId: string }
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/validator-operation-id.json', import.meta.url), 'utf8')) as { vectors: Vec[] };
@@ -91,7 +91,7 @@ describe('a request built from another id is refused as a request mismatch (DE-6
     expect(built.value.request['operationId']).toBe(vec.validatorOperationId);
 
     const intentId = JSON.parse(vec.raw[0]!).intent_id as string;
-    const state = { requireGrant: false, grantHeadHash: null, grantHeadSubject: null, expectedPolicyHash: null, authorizedApprovers: [APPROVER], consumed: [], maxWindowSeconds: 86400 };
+    const state = { requireGrant: false, grantHeadHash: null, grantHeadSubject: null, expectedPolicyHash: POLICY, authorizedApprovers: [APPROVER], consumed: [], maxWindowSeconds: 86400 };
     // the decision is about a request whose `operationId` is the given value; the signer presents the request it built from the blobs
     const run = (operationId: string): unknown =>
       bindDecision({
