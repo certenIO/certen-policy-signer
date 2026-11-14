@@ -4,7 +4,7 @@ import { AccumulateClient } from './accumulate/client.js';
 import { sha256Hex } from './accumulate/signing.js';
 import { Keyring } from './signer/keyring.js';
 import { PolicyClient } from './policy/policy.js';
-import { Store } from './store/store.js';
+import { Store, humanRecordId } from './store/store.js';
 import { Resolver } from './resolver.js';
 import { Logger } from './logger.js';
 import { VoteBackend, VoteResult, DirectVoteBackend } from './vote/backend.js';
@@ -15,6 +15,9 @@ import { withDisplay } from './display.js';
 import { bookOf, resolveWrapperPaths, sameUrl, workKey } from './delegation/path.js';
 import { WrapperRegistry, wrapperOwning } from './registry/wrappers.js';
 import { PageState } from './ops/rotate.js';
+import { checkKeyPageChange, KeyPageRefusal } from './ops/keypage-guard.js';
+import { finaliseHold, recordHold } from './store/pending-hold.js';
+import { advanceAwaitingHuman } from './officer/landed.js';
 import { AuthorityVote } from './accumulate/client.js';
 import { WrapperCheck, targetsWrapper } from './delegation/wrapper.js';
 import { isAdiUrl } from './core/grant-profile.js';
@@ -49,6 +52,8 @@ export interface OrchestratorOptions {
   delegators?: string[];        // delegate attachment model: user page(s) delegating to our book
   /** Wrapper runbook, change 4: refuse an approval whose evidence has no valid `signatureData`. */
   requireSignatureData?: boolean;
+  /** How long to read the chain for our own signature after a submit got no answer (default 30 s). */
+  submitOutcomeTimeoutMs?: number;
 }
 
 /**
@@ -99,6 +104,21 @@ export interface OrchestratorDeps {
   configVersion?: string;
   /** `decoders.labels`, shown beside addresses in the Phase 7 display (`PolicyRequest.display`). */
   displayLabels?: Record<string, string>;
+  /**
+   * G-65: read a key page off the chain at decision time. Before this signer approves an `updateKeyPage`
+   * transaction it applies the body's operations to what this returns and refuses a change that would
+   * leave the page unsatisfiable. Absent (or failing) => an `updateKeyPage` is never approved: the page
+   * cannot be read, and the guard never assumes a page state.
+   */
+  readPage?: (page: string) => Promise<PageState>;
+  /**
+   * G-69: pages that are HUMAN-ONLY seats (`wallet.human_scopes`). Work found for them is resolved, stored
+   * and decided like any other (a seat that configures `binding` has its decisions bound and its pause read first), but this
+   * signer never signs for them -- approve or reject: a decision that needs a signature is recorded as
+   * `awaiting_human`, and a person signs through officer intake. Not combinable with `wrapper`: a wrapper vote travels a
+   * delegation path, a human-only page has none.
+   */
+  humanOnlyPages?: string[];
   /**
    * Wrapper mode (`attachment_model: wrapper`, wrapper runbook change 2). Present = this signer is a
    * delegate on enrolled wrapper pages, and every vote's path is derived per transaction from the human
@@ -169,8 +189,11 @@ export class Orchestrator {
   private readonly now: () => number;
   private readonly votes: VoteBackend;
   private readonly notifier: Notifier;
+  private readonly humanOnly: Set<string>;
 
   constructor(private readonly d: OrchestratorDeps) {
+    this.humanOnly = new Set((d.humanOnlyPages ?? []).map((p) => p.toLowerCase().replace(/\/+$/, '')));
+    if (this.humanOnly.size > 0 && d.wrapper) throw new Error('orchestrator: human-only seats and wrapper mode cannot be combined (a wrapper vote travels a delegation path; a human-only page has none)');
     this.opt = {
       submitRejectVote: d.options?.submitRejectVote ?? false,
       maxBadVersionRetries: d.options?.maxBadVersionRetries ?? 3,
@@ -189,6 +212,7 @@ export class Orchestrator {
       maxBadVersionRetries: this.opt.maxBadVersionRetries,
       delegators: this.opt.delegators,
       now: this.now,
+      ...(d.options?.submitOutcomeTimeoutMs ? { submitOutcomeTimeoutMs: d.options.submitOutcomeTimeoutMs } : {}),
     });
   }
 
@@ -260,7 +284,7 @@ export class Orchestrator {
     const same = le?.['blockedBy'] === 'decision_binding' && le['reason'] === out.reason && (le['detail'] ?? null) === (out.detail ?? null);
     if (!same) {
       await this.saveReceipt({
-        ...receiptKey(tx), operationId: tx.operationId, reason,
+        ...this.receiptKey(tx), operationId: tx.operationId, reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
         policyEvidence: evidence,
       });
@@ -271,6 +295,27 @@ export class Orchestrator {
   /** Every receipt carries the signer-config version (A6). */
   private saveReceipt(r: Receipt): Promise<void> {
     return this.d.store.saveReceipt({ ...r, ...(this.d.configVersion ? { configVersion: this.d.configVersion } : {}) });
+  }
+
+  /** G-69: is `page` a human-only seat (no key here, ever)? */
+  private isHumanOnly(page: string): boolean {
+    return this.humanOnly.has(page.toLowerCase().replace(/\/+$/, ''));
+  }
+
+  /**
+   * The RECORD KEY of a unit of work (review #1; wrapper runbook change 2): a human-only seat's own `<txHash>@<page>` record, so
+   * its handling of a transaction can never pre-empt (or freeze) a keyed seat that must vote on the same transaction; a wrapper
+   * path's `<txHash>:<path>`; else the tx hash, which is the key every existing record has. Works on a reference and on a
+   * resolved transaction alike (a resolved one already carries its `workKey`).
+   */
+  private rid(r: { txHash: string; signerUrl: string; workKey?: string; delegators?: string[] }): string {
+    if (this.isHumanOnly(r.signerUrl)) return humanRecordId(r.txHash, r.signerUrl);
+    return r.workKey ?? workKey(r.txHash, r.delegators);
+  }
+
+  /** The receipt's key fields: `workKey` for a wrapper path, `recordId` for a human-only seat, each only when it differs from the hash. */
+  private receiptKey(tx: { txHash: string; signerUrl: string; workKey?: string }): { txHash: string; workKey?: string; recordId?: string } {
+    return { ...receiptKey(tx), ...(this.isHumanOnly(tx.signerUrl) ? { recordId: humanRecordId(tx.txHash, tx.signerUrl) } : {}) };
   }
 
   /**
@@ -497,7 +542,7 @@ export class Orchestrator {
       throw new Error('wrapper mode: a transaction is handled per delegation path — call handleAll');
     }
     const { store, logger } = this.d;
-    const key = workKey(ref.txHash, ref.delegators);
+    const key = this.rid(ref);
     const existing = await store.get(key);
     if (existing && ['signed', 'rejected', 'expired'].includes(existing.status)) {
       logger.debug({ tx: ref.txHash, key, status: existing.status }, 'idempotent skip');
@@ -518,8 +563,9 @@ export class Orchestrator {
     const s = await this.d.store.get(key);
     if (s) return s;
     const req: SigningRequest = {
-      // Only a path-keyed row carries a workKey, so every other row keeps exactly the shape it had.
-      ...(key !== ref.txHash ? { workKey: key } : {}),
+      // Only a path-keyed row carries a workKey and only a human-only seat's a recordId, so every other row keeps exactly the
+      // shape it had.
+      ...(this.isHumanOnly(ref.signerUrl) ? { recordId: key } : key !== ref.txHash ? { workKey: key } : {}),
       txHash: ref.txHash, signerUrl: ref.signerUrl, status: 'discovered',
       ...(ref.delegators ? { delegators: ref.delegators } : {}),
       ...(ref.principal ? { principal: ref.principal } : {}),
@@ -553,9 +599,22 @@ export class Orchestrator {
     if (r.kind === 'gone') {
       const status = r.reason === 'executed' ? 'signed' : 'expired';
       logger.info({ tx: ref.txHash, reason: r.reason }, 'tx gone before signing');
-      return store.update(key, { status });
+      // G-64: a hold that ends because the transaction went away is still kept, with that as its outcome.
+      return store.update(key, { status, ...finaliseHold(await store.get(key), `gone:${r.reason}`, this.now()) });
     }
-    const tx = { ...r.tx, ...(key !== r.tx.txHash ? { workKey: key } : {}) };
+    // The work key travels on the resolved transaction for a wrapper path; a human-only seat's record key is its `recordId` (see `rid`).
+    const tx = { ...r.tx, ...(key !== r.tx.txHash && !this.isHumanOnly(ref.signerUrl) ? { workKey: key } : {}) };
+    // G-69: the engine has already decided and a person owes the signature. Asking again on every poll
+    // would rewrite the decision under them (and, for a seat that requires binding, would need a second decision and a second
+    // nonce); the request ends when their signature lands (officer intake) or when the transaction goes away (handled just above).
+    if (priorStatus === 'awaiting_human') {
+      // ...but the chain is read on every poll (review #3): the people's signatures are counted against the
+      // page's thresholds, so a signature that landed after officer intake stopped watching still ends it.
+      logger.debug({ tx: ref.txHash }, 'awaiting a human signature through officer intake; reading the chain');
+      const getTxSignatures = this.d.accumulate.getTxSignatures?.bind(this.d.accumulate);
+      return (await advanceAwaitingHuman({ store, readPage: this.d.readPage, ...(getTxSignatures ? { getTxSignatures } : {}), logger, now: this.now }, ref.txHash, ref.signerUrl))
+        ?? (await store.get(key))!;
+    }
     await store.update(key, {
       status: 'awaiting_policy', account: tx.account, signerVersion: tx.signerVersion,
       actionSummary: tx.summary.action, operationId: tx.operationId,
@@ -618,7 +677,7 @@ export class Orchestrator {
         const reason = `wrapper_invariant: ${check.reason}`;
         logger.warn({ tx: tx.txHash, key, wrapper: book, reason }, 'wrapper does not require our vote (or would not after this change); refusing to sign');
         await this.saveReceipt({
-          ...receiptKey(tx), operationId: tx.operationId, reason,
+          ...this.receiptKey(tx), operationId: tx.operationId, reason,
           ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
           policyEvidence: { blockedBy: 'wrapper_invariant', wrapper: book, detail: check.reason },
         });
@@ -715,7 +774,15 @@ export class Orchestrator {
         { tx: ref.txHash, reason: decision.reason },
         'policy engine has not decided yet; withholding signature and will retry',
       );
-      return store.update(key, { status: 'awaiting_policy', lastError: undefined });
+      // G-64: keep WHY, and under which versions, on the record -- updated on every re-evaluation.
+      const pending = recordHold(await store.get(key), decision, this.now());
+      return store.update(key, { status: 'awaiting_policy', lastError: undefined, pending });
+    }
+
+    // G-64: the engine has decided; the hold (if there was one) ends here and is kept as history.
+    {
+      const fin = finaliseHold(await store.get(key), decision.decision, this.now());
+      if (fin.pendingFinal) await store.update(key, fin);
     }
 
     // SR8 emergency pause — checked BEFORE the deny branch, because a Reject vote is still a SIGNATURE.
@@ -763,6 +830,8 @@ export class Orchestrator {
       if (rules.submitRejectVote) {
         const lateReject = this.deadlineRefusal(tx);
         if (lateReject) return this.refuseDeadline(tx, lateReject, decision, bindingInfo);
+        // G-69: a human-only seat holds no key; the reject the engine asked for is a person's to cast.
+        if (this.isHumanOnly(tx.signerUrl)) return this.awaitHuman(tx, 'reject', decision, bindingInfo);
         const res = await this.signAndSubmit(tx, 'reject', undefined, signatureEvidence(decision.evidence), sign);
         if (!res.ok && res.error === PAUSED_AT_CAST) return this.withholdPaused(key, ref.txHash, decision.decision, PAUSED_AT_CAST);
         if (!res.ok) {
@@ -774,7 +843,7 @@ export class Orchestrator {
       }
       const final = await store.update(key, { status: 'rejected' });
       await this.saveReceipt({
-        ...receiptKey(tx), operationId: tx.operationId, decision: 'deny',
+        ...this.receiptKey(tx), operationId: tx.operationId, decision: 'deny',
         vote: rules.submitRejectVote ? 'reject' : undefined,
         reason: decision.reason,
         // Whose re-authentication this was about. The receipts are the audit trail, and a year later
@@ -799,7 +868,7 @@ export class Orchestrator {
       // Keep the engine's reason and evidence on the record: the receipt must show that the engine
       // approved and WE refused, not merely that something was blocked.
       await this.saveReceipt({
-        ...receiptKey(tx), operationId: tx.operationId, decision: 'approve',
+        ...this.receiptKey(tx), operationId: tx.operationId, decision: 'approve',
         reason: decision.reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
         policyEvidence: { ...(decision.evidence ?? {}), blockedBy: 'local_guard', values: tx.summary.values },
@@ -807,6 +876,10 @@ export class Orchestrator {
       });
       return store.update(key, { status: 'rejected', lastError: 'local_guard_block' });
     }
+
+    // G-65: never approve an updateKeyPage that would brick the page it changes (see keyPageRefusal).
+    const brick = await this.keyPageRefusal(tx);
+    if (brick) return this.refuseKeyPage(tx, brick, decision, bindingInfo);
 
     // Wrapper runbook, change 4: the evidence this vote commits to. With `require_signature_data` an
     // approval that brings no valid digest is not signed — a vote that cannot be tied back to the live
@@ -816,7 +889,7 @@ export class Orchestrator {
     if (this.opt.requireSignatureData && !evidence.data) {
       logger.warn({ tx: ref.txHash }, 'approved, but the decision carries no valid signatureData and it is required; not signing');
       await this.saveReceipt({
-        ...receiptKey(tx), operationId: tx.operationId, decision: 'approve',
+        ...this.receiptKey(tx), operationId: tx.operationId, decision: 'approve',
         reason: decision.reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
         policyEvidence: { ...(decision.evidence ?? {}), blockedBy: 'signature_data_missing' },
@@ -830,6 +903,10 @@ export class Orchestrator {
     const lateApprove = this.deadlineRefusal(tx);
     if (lateApprove) return this.refuseDeadline(tx, lateApprove, decision, bindingInfo);
 
+    // G-69: a human-only seat holds no key. Every check above (pause, binding, SR4 ceiling, G-65 key-page guard, signature data,
+    // deadline) has run exactly as for a keyed seat; the approve signature is a person's to make.
+    if (this.isHumanOnly(tx.signerUrl)) return this.awaitHuman(tx, 'approve', decision, bindingInfo);
+
     await store.update(key, { status: 'approved', decision: 'approve', assertionRef: decision.assertion ? sha256Hex(decision.assertion) : undefined });
     // Whose key signs. T29: when the policy engine names the approver, THEIR key signs — so the
     // signature on chain is the person's rather than the organisation's cast in their name. Absent,
@@ -838,7 +915,7 @@ export class Orchestrator {
     if (!res.ok && res.error === PAUSED_AT_CAST) return this.withholdPaused(key, ref.txHash, decision.decision, PAUSED_AT_CAST);
     if (res.ok) {
       await this.saveReceipt({
-        ...receiptKey(tx), operationId: tx.operationId, decision: 'approve', vote: 'approve',
+        ...this.receiptKey(tx), operationId: tx.operationId, decision: 'approve', vote: 'approve',
         signatureHash: res.signatureHash, submittedAt: this.now(), accumulateResult: 'ok',
         reason: decision.reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
@@ -893,7 +970,7 @@ export class Orchestrator {
       refusal.reason,
     );
     await this.saveReceipt({
-      ...receiptKey(tx), operationId: tx.operationId,
+      ...this.receiptKey(tx), operationId: tx.operationId,
       ...(decision && (decision.decision === 'approve' || decision.decision === 'deny') ? { decision: decision.decision } : {}),
       reason: refusal.reason,
       ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
@@ -906,7 +983,92 @@ export class Orchestrator {
       ...bindingInfo,
     });
     const status = refusal.lastError === 'header_deadline_passed' ? 'expired' : 'rejected';
-    return this.d.store.update(tx.workKey ?? tx.txHash, { status, lastError: refusal.lastError });
+    return this.d.store.update(this.rid(tx), {
+      status, lastError: refusal.lastError,
+      // G-64: a refusal before any decision ends the hold too (after a decision it has already ended).
+      ...finaliseHold(await this.d.store.get(this.rid(tx)), refusal.lastError, this.now()),
+    });
+  }
+
+  /**
+   * G-69: record a decision that needs a signature this signer cannot make, because the seat's page holds
+   * no key. No signature of any kind is cast. The PolicyRequest (display, summaryHash, header, facts) is
+   * already stored, so a person on the page signs through officer intake against it; the receipt keeps the
+   * engine's decision, reason and evidence, and says whose signature is owed and which vote. A seat that requires binding has
+   * had this decision bound (and its nonce consumed) before this point, so the receipt carries the same `binding` as a signed one.
+   */
+  private async awaitHuman(
+    tx: ResolvedTx,
+    vote: 'approve' | 'reject',
+    decision: { decision: string; reason?: string; evidence?: Record<string, unknown> },
+    bindingInfo: Pick<Receipt, 'binding'> = {},
+  ): Promise<SigningRequest> {
+    this.d.logger.info({ tx: tx.txHash, page: tx.signerUrl, decision: decision.decision, vote }, 'human-only seat: decision recorded; a person on the page signs through officer intake');
+    await this.saveReceipt({
+      ...this.receiptKey(tx), operationId: tx.operationId,
+      ...(decision.decision === 'approve' || decision.decision === 'deny' ? { decision: decision.decision } : {}),
+      reason: decision.reason,
+      ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
+      policyEvidence: { ...(decision.evidence ?? {}), awaitingHumanSignature: { page: tx.signerUrl, vote } },
+      ...bindingInfo,
+    });
+    return this.d.store.update(this.rid(tx), {
+      status: 'awaiting_human',
+      ...(decision.decision === 'approve' || decision.decision === 'deny' ? { decision: decision.decision } : {}),
+      lastError: undefined,
+    });
+  }
+
+  /**
+   * G-65: why an approve vote on this transaction must be withheld because it would brick a key page, or
+   * undefined when it may proceed.
+   *
+   * Only an `updateKeyPage` body changes a page's entries or thresholds, and its principal IS the page it
+   * changes. The operations are the resolver's decoding of the on-chain body (`tx.governance`); the page
+   * is read NOW. A body whose operations could not be decoded, and a page that cannot be read, are both
+   * refusals -- never an assumed page state.
+   */
+  private async keyPageRefusal(tx: ResolvedTx): Promise<KeyPageRefusal | undefined> {
+    if (tx.bodyType !== 'updateKeyPage') return undefined;
+    const ops = tx.governance?.kind === 'updateKeyPage' ? tx.governance.operations : [{ type: 'unknown', unrecognized: true }];
+    const v = await checkKeyPageChange(this.d.readPage, tx.account, ops);
+    return v.ok ? undefined : v.refusal;
+  }
+
+  /**
+   * Withhold the approve vote the engine asked for. No signature of any kind is cast.
+   *
+   * WHY WITHHOLD, NOT REJECT. Both are fail-closed (neither can carry the change towards execution). The
+   * engine -- the party's own policy (P1) -- decided `approve`; this guard is the signer's safety
+   * interlock, not a second policy, so it refuses to sign rather than inventing a reject vote the policy
+   * never chose. That is the same posture as the SR4 local guard above. A party that wants the change
+   * actively killed still has its policy's `deny` (which casts a reject when configured) and its humans.
+   *
+   *   - The change would brick the page: terminal `rejected`, with a receipt that records the engine's
+   *     approve, `blockedBy: keypage_guard` and the structured refusal (reason, threshold, entries).
+   *   - The page could not be read: NOT terminal. Nothing is known about the change, so the request stays
+   *     `awaiting_policy` and is asked again next poll; still nothing is signed.
+   */
+  private async refuseKeyPage(
+    tx: ResolvedTx,
+    refusal: KeyPageRefusal,
+    decision: { decision: string; reason?: string; evidence?: Record<string, unknown> },
+    bindingInfo: Pick<Receipt, 'binding'> = {},
+  ): Promise<SigningRequest> {
+    const lastError = `keypage_guard: ${refusal.reason}`;
+    if (refusal.reason === 'page_unreadable') {
+      this.d.logger.warn({ tx: tx.txHash, page: tx.account, refusal }, 'key page unreadable; withholding the approve vote and will retry');
+      return this.d.store.update(this.rid(tx), { status: 'awaiting_policy', lastError });
+    }
+    this.d.logger.warn({ tx: tx.txHash, page: tx.account, refusal }, 'REFUSING to approve an updateKeyPage that would brick the page; no signature cast');
+    await this.saveReceipt({
+      ...this.receiptKey(tx), operationId: tx.operationId, decision: 'approve',
+      reason: decision.reason,
+      ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
+      policyEvidence: { ...(decision.evidence ?? {}), blockedBy: 'keypage_guard', keyPageRefusal: refusal },
+      ...bindingInfo,
+    });
+    return this.d.store.update(this.rid(tx), { status: 'rejected', lastError });
   }
 
   /**
@@ -915,9 +1077,12 @@ export class Orchestrator {
    * decision above this line is identical either way: the policy engine gates both.
    */
   private async signAndSubmit(tx: ResolvedTx, vote: 'approve' | 'reject', keyRef: string | undefined, evidence: SignatureEvidence, sign: SignCtx): Promise<VoteResult> {
+    // G-69 defence in depth: nothing above reaches here for a human-only seat, and if anything ever did,
+    // the answer is no signature -- never a key found for the page by some other route.
+    if (this.isHumanOnly(tx.signerUrl)) return { ok: false, error: 'human-only scope: this signer holds no key for this page' };
     // The pause is read again at the moment of signing: a pause set while the world was being read still applies.
     if (this.pausedFor(sign, vote)) return { ok: false, error: PAUSED_AT_CAST };
-    await this.d.store.update(tx.workKey ?? tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
+    await this.d.store.update(this.rid(tx), { status: 'signing', signerVersion: tx.signerVersion });
     return this.votes.cast(tx, vote, { ...(keyRef === undefined ? {} : { keyRef }), ...evidence, ...pathOf(tx) });
   }
 
@@ -947,6 +1112,7 @@ export class Orchestrator {
     evidence: SignatureEvidence,
     sign: SignCtx,
   ): Promise<VoteResult> {
+    if (this.isHumanOnly(tx.signerUrl)) return { ok: false, error: 'human-only scope: this signer holds no key for this page' };
     // Nobody named: one vote, the organisation's own key, exactly as before T29.
     if (refs.length === 0) return this.signAndSubmit(tx, vote, undefined, evidence, sign);
 
@@ -955,7 +1121,7 @@ export class Orchestrator {
     // failing the same way is the point: a misconfigured ref is an operational fact about one
     // transaction, not an exception for the poll loop to cope with.
 
-    await this.d.store.update(tx.workKey ?? tx.txHash, { status: 'signing', signerVersion: tx.signerVersion });
+    await this.d.store.update(this.rid(tx), { status: 'signing', signerVersion: tx.signerVersion });
     let first: VoteResult | undefined;
     let firstError: string | undefined;
 

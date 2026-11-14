@@ -52,6 +52,8 @@ export interface RigOpts {
   seat?: string;
   page?: string;
   keyring?: Keyring;
+  /** the page is a human-only seat (G-69): decided here, never signed here */
+  humanOnly?: boolean;
   store?: MemoryStore;
 }
 export function rig(o: RigOpts) {
@@ -68,7 +70,7 @@ export function rig(o: RigOpts) {
   const policy = new MockPolicyClient(o.reply);
   const orch = new Orchestrator({
     accumulate: acc, keyring: o.keyring ?? singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))), policy, store, resolver: new Resolver(acc), logger: silent,
-    now: () => NOW_S * 1000, pauses,
+    now: () => NOW_S * 1000, pauses, ...(o.humanOnly ? { humanOnlyPages: [page] } : {}),
     ...(o.votes ? { votes: o.votes } : {}),
     seats: new Map([[page.toLowerCase(), { seat, ...(o.rules === null ? {} : { binding: { ...RULES, seat, ...(o.rules ?? {}) } }) }]]),
     binding: { nonces, ...(o.world ? { world: o.world } : {}), nowSeconds: () => NOW_S },

@@ -17,6 +17,13 @@
  *    or a failed submission consumes it (its status becomes `failed`). So a retry must start over at
  *    /v1/sign for FRESH signing data — resubmitting the same signature to the same id just 404s.
  *
+ * 4. WE NEVER SIGN THE GATEWAY'S BYTES ON TRUST (G-47). The gateway's `data_for_signature` is a claim. We
+ *    rebuild the preimage ourselves -- buildPreimage, the same code the direct backend signs with -- from
+ *    the transaction WE resolved (its hash), OUR key and its type, OUR page, the vote WE decided, and the
+ *    signer version and timestamp the gateway will submit with (both sanity-checked), and sign only that.
+ *    An absent, empty or different transaction hash, signer page or preimage is a refusal: a gateway that
+ *    hands back bytes for another transaction, another page or another vote gets nothing out of us.
+ *
  * 3. WE MUST DECLARE OUR PUBLIC KEY. The preimage is computed for a specific key. If the org's signer is
  *    not the identity's default bound key, and we do not send `public_key`, the gateway hands us bytes
  *    for the *wrong* key and Accumulate rejects the resulting signature. We always send it.
@@ -32,7 +39,7 @@ import { createHash } from 'node:crypto';
 import { Keyring } from '../../signer/keyring.js';
 import { Logger } from '../../logger.js';
 import { Vote } from '../../types.js';
-import { bytesToHex, hexToBytes } from '../../accumulate/signing.js';
+import { buildPreimage, bytesToHex, hexToBytes } from '../../accumulate/signing.js';
 import { CastOptions, VoteBackend, VotableTx, VoteResult } from '../backend.js';
 
 export interface GatewayOptions {
@@ -110,7 +117,9 @@ export class GatewayClient {
     return {
       signRequestId: String(res.data.sign_request_id),
       dataForSignature,
-      transactionHash: String(d.transaction_hash ?? txHash),
+      // Absent stays EMPTY (and is refused by the backend): defaulting to the hash we asked for would let a
+      // gateway skip the one statement that binds its bytes to our transaction.
+      transactionHash: String(d.transaction_hash ?? ''),
       signerUrl: String(d.signer_url ?? ''),
       signerVersion: Number(d.signer_version ?? 0),
       timestamp: Number(d.timestamp ?? 0),
@@ -179,25 +188,52 @@ export class GatewayVoteBackend implements VoteBackend {
         return { ok: false, error: (e as Error).message };
       }
 
-      // The gateway asked for a signature over a hash that is not the transaction we decided on.
-      // Refuse: we sign for what the policy engine approved, not for whatever we are handed.
+      // G-47: the gateway's signing data is a claim, checked against what WE decided, and then not used:
+      // we sign the preimage we build ourselves. Every refusal below happens before anything is signed.
       const got = sd.transactionHash.replace(/^0x/, '').toLowerCase();
-      if (got && got !== tx.txHash.toLowerCase()) {
-        this.logger.error({ tx: tx.txHash, gatewayTx: got }, 'gateway signing data is for a DIFFERENT transaction — refusing to sign');
+      if (got !== tx.txHash.toLowerCase()) {
+        this.logger.error({ tx: tx.txHash, gatewayTx: got || '(none)' }, 'gateway signing data names a DIFFERENT (or no) transaction — refusing to sign');
         return { ok: false, error: 'gateway signing data transaction mismatch' };
+      }
+      const page = (u: string) => u.toLowerCase().replace(/\/+$/, '');
+      if (!sd.signerUrl || page(sd.signerUrl) !== page(tx.signerUrl)) {
+        this.logger.error({ tx: tx.txHash, page: tx.signerUrl, gatewayPage: sd.signerUrl || '(none)' }, 'gateway signing data is for a DIFFERENT (or no) signer page — refusing to sign');
+        return { ok: false, error: 'gateway signing data signer mismatch' };
+      }
+      if (!Number.isSafeInteger(sd.signerVersion) || sd.signerVersion < 1 || !Number.isSafeInteger(sd.timestamp) || sd.timestamp <= 0) {
+        this.logger.error({ tx: tx.txHash, signerVersion: sd.signerVersion, timestamp: sd.timestamp }, 'gateway signing data has an unusable signer version or timestamp — refusing to sign');
+        return { ok: false, error: 'gateway signing data metadata invalid' };
+      }
+      const pre = buildPreimage(hexToBytes(tx.txHash), {
+        publicKey, signatureType: signer.signatureType, signerUrl: tx.signerUrl,
+        signerVersion: sd.signerVersion, timestamp: sd.timestamp, vote,
+      });
+      const ours = bytesToHex(pre.dataForSignature);
+      if (ours !== sd.dataForSignature.toLowerCase()) {
+        this.logger.error({ tx: tx.txHash, ours, gateway: sd.dataForSignature }, 'gateway preimage differs from the one we built for this transaction, key, page and vote — refusing to sign');
+        return { ok: false, error: 'gateway signing data preimage mismatch' };
       }
 
       // Same rule as the direct backend: a key source that cannot sign produces no signature, and the vote
       // is withheld. The spent sign request is simply abandoned.
       let signature: Uint8Array;
       try {
-        signature = await signer.sign(hexToBytes(sd.dataForSignature), { txHash: tx.txHash, principal: tx.account, page: tx.signerUrl });
+        signature = await signer.sign(pre.dataForSignature, { txHash: tx.txHash, principal: tx.account, page: tx.signerUrl });
       } catch (e) {
         const msg = (e as Error).message;
         this.logger.error({ tx: tx.txHash, page: tx.signerUrl, err: msg, via: 'gateway' }, 'signing failed; vote withheld');
         return { ok: false, error: `signing failed: ${msg}` };
       }
-      const res = await this.gw.submitSignature(sd, signature, publicKey);
+      let res: { ok: boolean; status?: string; error?: string };
+      try {
+        res = await this.gw.submitSignature(sd, signature, publicKey);
+      } catch (e) {
+        // No answer from the gateway (timeout, dropped connection): the outcome is UNKNOWN, not a refusal.
+        // The sign request is spent either way; this vote is reported failed-to-confirm and retried next poll.
+        const msg = (e as Error).message;
+        this.logger.warn({ tx: tx.txHash, err: msg, via: 'gateway' }, 'gateway submit got no answer: vote outcome UNKNOWN; will retry');
+        return { ok: false, error: `gateway submit outcome unknown (${msg})` };
+      }
       if (res.ok) {
         this.logger.info(
           { tx: tx.txHash, vote, via: 'gateway', signRequest: sd.signRequestId, signerVersion: sd.signerVersion, status: res.status },
@@ -205,11 +241,11 @@ export class GatewayVoteBackend implements VoteBackend {
         );
         const scope = this.keyring.scopeFor(tx.signerUrl);
         return {
-          ok: true, signatureHash: sd.dataForSignature, timestamp: sd.timestamp,
+          ok: true, signatureHash: ours, timestamp: sd.timestamp,
           // What satisfied the vote (F4 / A5): the page the gateway computed the preimage for, and the
           // key that actually signed — the named approver's when a keyRef was given.
           signedBy: {
-            page: sd.signerUrl || tx.signerUrl,
+            page: tx.signerUrl,
             signatureType: signer.signatureType,
             publicKeyHash: createHash('sha256').update(publicKey).digest('hex'),
             delegators: [],

@@ -284,6 +284,8 @@ describe('the orchestrator checks the wrapper before asking the engine', () => {
     void reg.upsert({ wrapperBook: B, wrapperPage: B1, subjectId: 'alice', enrolledAt: 1, seats: [] });
     const o = new Orchestrator({
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), TS_PAGE), policy, store, resolver: new Resolver(acc), logger: silent, notifier,
+      // G-65: an updateKeyPage on the wrapper is approved only after its operations are checked against the page as it reads now.
+      readPage: (u) => r.readPage(u),
       wrapper: {
         ourBook: T, ourPage: TS_PAGE, isEnrolledWrapperPage: async (p) => p.toLowerCase() === B1, wrapperBooks: async () => [B],
         checkWrapper: (book) => checkWrapper(r, book, T),

@@ -4,10 +4,11 @@ import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import { bytesToHex } from './accumulate/signing.js';
 import { KeyPageOp, KeyPageResult } from './ops/keypage.js';
 import { PageState } from './ops/rotate.js';
+import { KeyPageGuardError } from './ops/keypage-guard.js';
 import { Orchestrator } from './orchestrator.js';
 import { bookOf } from './delegation/path.js';
 import { WrapperRegistry } from './registry/wrappers.js';
-import { Store } from './store/store.js';
+import { Store, keyOf } from './store/store.js';
 import { Keyring } from './signer/keyring.js';
 import { AccumulateClient } from './accumulate/client.js';
 import { metrics } from './metrics.js';
@@ -97,6 +98,17 @@ function json(res: http.ServerResponse, code: number, obj: unknown) {
   const s = JSON.stringify(obj);
   res.writeHead(code, { 'content-type': 'application/json' });
   res.end(s);
+}
+/**
+ * The rows a `/v1/requests/:key` route addresses. A work key (`<hash>:<path>`, one wrapper path) names ONE row; a bare tx hash names
+ * every page-keyed row of the transaction: the keyed seat's and each human-only seat's (review #1), never a wrapper path's.
+ */
+async function requestRows(store: Store, key: string) {
+  if (key.includes(':')) {
+    const row = await store.get(key);
+    return row ? [row] : [];
+  }
+  return store.listForTx(key);
 }
 /** Constant-time credential comparison (a plain !== leaks the secret's prefix through timing). */
 function safeEqual(given: string | string[] | undefined, expected: string): boolean {
@@ -239,23 +251,32 @@ export function createServer(d: ServerDeps): http.Server {
       // GET /v1/requests/:key — the tx hash, or `<hash>:<16 hex>` for one wrapper path's vote.
       let m = /^\/v1\/requests\/([a-f0-9]{64}(?::[a-f0-9]{16})?)$/.exec(path);
       if (method === 'GET' && m) {
-        const reqRow = await d.store.get(m[1]);
-        const receipt = await d.store.getReceipt(m[1]);
+        // Every page's record for this transaction (review #1: a keyed seat and a human-only seat each keep
+        // their own). `request` is the keyed seat's when there is one, else the first; `seats` lists them all.
+        const rows = await requestRows(d.store, m[1]);
+        const reqRow = rows.find((r) => !r.recordId) ?? rows[0];
         if (!reqRow) return json(res, 404, { error: 'not found' });
-        return json(res, 200, { request: reqRow, receipt });
+        const receipt = await d.store.getReceipt(keyOf(reqRow));
+        const seats = await Promise.all(rows.map(async (r) => ({ page: r.signerUrl, request: r, receipt: await d.store.getReceipt(keyOf(r)) })));
+        // G-64: WHY the seat is holding (`pending`, only while it is) and the last hold once it ended
+        // (`pendingFinal`). Also on `request`; repeated here so a reader need not know the row's shape.
+        return json(res, 200, { request: reqRow, receipt, pending: reqRow.pending ?? null, pendingFinal: reqRow.pendingFinal ?? null, seats });
       }
       // POST /v1/requests/:key/retry
       m = /^\/v1\/requests\/([a-f0-9]{64}(?::[a-f0-9]{16})?)\/retry$/.exec(path);
       if (method === 'POST' && m) {
-        const reqRow = await d.store.get(m[1]);
-        if (!reqRow) return json(res, 404, { error: 'not found' });
-        // The transaction, not the stored path: in wrapper mode the paths are re-derived from chain state,
-        // so a retry can never replay a path the chain no longer supports.
-        d.orchestrator.handleAll({
-          txHash: reqRow.txHash, signerUrl: reqRow.signerUrl, ...(reqRow.principal ? { principal: reqRow.principal } : {}),
-          // Where to read, not what to sign: the path is re-derived from the votes recorded there.
-          ...(reqRow.delegators?.length ? { wrapperBook: bookOf(reqRow.delegators[0]!) } : {}),
-        }).catch(() => {});
+        // One row for a work key (`hash:path`), else every page-keyed row of the transaction (a keyed seat's and each human-only seat's).
+        const rows = await requestRows(d.store, m[1]);
+        if (!rows.length) return json(res, 404, { error: 'not found' });
+        for (const reqRow of rows) {
+          // The transaction, not the stored path: in wrapper mode the paths are re-derived from chain state,
+          // so a retry can never replay a path the chain no longer supports.
+          d.orchestrator.handleAll({
+            txHash: reqRow.txHash, signerUrl: reqRow.signerUrl, ...(reqRow.principal ? { principal: reqRow.principal } : {}),
+            // Where to read, not what to sign: the path is re-derived from the votes recorded there.
+            ...(reqRow.delegators?.length ? { wrapperBook: bookOf(reqRow.delegators[0]!) } : {}),
+          }).catch(() => {});
+        }
         return json(res, 202, { retrying: m[1] });
       }
       // GET|POST /v1/admin/wrappers — the enrolment registry (wrapper mode). POST registers a wrapper as
@@ -474,7 +495,15 @@ export function createServer(d: ServerDeps): http.Server {
           { audit: 'governance_operation', op, page: targetPage, key_hash: createHash('sha256').update(pub).digest('hex') },
           'GOVERNANCE OPERATION REQUESTED',
         );
-        const result = await d.keyPage(op, targetPage);
+        let result: KeyPageResult;
+        try {
+          result = await d.keyPage(op, targetPage);
+        } catch (e) {
+          // G-65: the page could not be read at decision time. Nothing was signed; say why, distinctly.
+          if (!(e instanceof KeyPageGuardError)) throw e;
+          d.logger.warn({ audit: 'governance_operation_refused', page: targetPage, refusal: e.refusal }, 'GOVERNANCE OPERATION REFUSED');
+          return json(res, e.refusal.reason === 'page_unreadable' ? 503 : 400, { ok: false, op: (op as { op?: unknown })?.op ?? null, submitted: [], error: e.refusal.reason, refusal: e.refusal });
+        }
         d.logger.warn({ audit: 'governance_operation_result', ok: result.ok, page: targetPage, submitted: result.submitted, keys: result.after?.keyHashes }, 'GOVERNANCE OPERATION COMPLETE');
         return json(res, result.ok ? 200 : 400, result);
       }

@@ -26,6 +26,29 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ### Added
 
+- **G-69: human-only seats.** `wallet.human_scopes[]` runs a seat for a page with NO machine key: polled
+  (account and header authority), resolved, stored and decided like a keyed scope, but never signed by this
+  process. A decision that needs a signature is recorded with the new status `awaiting_human` (receipt and
+  evidence kept); a person signs it through officer intake, and the landed signature ends the request
+  (`signed` / `rejected`, with `signedBy`). The page must be in `officer_intake.human_pages` and may not also
+  be a keyed scope. New request status `awaiting_human` (non-terminal).
+
+- **AWS KMS Ed25519 in the `cloud-kms` key source.** An AWS key with `KeySpec: ECC_NIST_EDWARDS25519` now
+  signs as `ed25519` (pure EdDSA over the preimage: `ED25519_SHA_512`, `MessageType: RAW`), with the raw
+  32-byte public key (key hash = sha256 of it) and a local verification of every signature. The algorithm
+  is read from the key's own `KeySpec`; any spec other than `ECC_NIST_P256` / `ECC_NIST_EDWARDS25519` is
+  refused. The P-256 path is unchanged. `CloudKmsSigner.signatureType` is the key's own type once it has been read; for an AWS key it
+  throws until then (as the Windows certificate-store signer does), so a guessed type can never reach signature
+  metadata. Azure and GCP hold P-256 only and report `ecdsaSha256` from the start.
+
+- **G-64: why a seat is holding is kept.** When the policy engine answers `pending`, the request record
+  now stores `pending: { reason, versions: { ruleSetVersion, providerConfigVersion, signerConfigVersion },
+  since, lastEvaluatedAt, evaluations, history[] }` (history: up to 20 distinct reasons, oldest dropped),
+  updated on each re-evaluation and moved to `pendingFinal` (with `endedAt`, `outcome`) when the request
+  is decided or goes away. Only the reason text (sanitised, length-capped, credential-shaped substrings
+  redacted) and the three version stamps are stored -- never the decision's evidence. Persisted by the
+  FileStore. Exposed on `GET /v1/requests` rows and at the top level of `GET /v1/requests/:tx`.
+
 - **Rotation-safe reader, read cache and chain relay routes (DAX-4S round 2).** The Grant head and the subject are read by the core's ONLINE
   readers (no key page; the account authority rule and the account's main chain from its creation), the subject only through the
   grantor's registry and its own `certen-acceptances`. `binding.registry_principals` is REMOVED (nothing to list) and `binding.grantor_book`
@@ -60,6 +83,15 @@ Anything in that list appears here with a migration note before it ships in a re
   before the signature is made, so a replay inside the old 300-second window, after a restart or after a crash is refused. A refusal is
   named in the receipt and signs nothing. `POST /v1/admin/decisions/void` voids the nonces of a re-issued decision. The shared core
   (`src/core`) is a byte-for-byte copy of transaction-controls `packages/core`: `node scripts/sync-core.mjs`, `test/core-drift.test.ts`.
+
+- **Human-only seats are seats (G-69 with DAX-4S).** A `wallet.human_scopes[]` entry takes the same `seat` and `binding` members as a
+  `scopes[]` entry and is listed with the keyed seats: a top-level `binding` binds it, a pause with no scope pauses it, and its seat id
+  can be named. A decision for a human-only seat that requires binding is checked (and its nonce consumed) before it is recorded as
+  `awaiting_human`, and the receipt of that record carries the same `binding` members as a signed one; a replay, a mutated request or an
+  unbound reply is refused by name and records nothing. A paused seat records no `awaiting_human` either. A human-only page and
+  `attachment_model: wrapper` together are refused at boot: a wrapper vote travels a delegation path, a human-only page has none.
+  Record keys: a human-only seat's records are keyed `<txHash>@<page>` (`recordId`), a wrapper path's `<txHash>:<path>` (`workKey`); the
+  store files a row under `workKey ?? recordId ?? txHash`. `GET /v1/requests/<hash>:<path>` and `<hash>` both work.
 
 - **Phase 8 key sources (FICTIONAL Business Transaction Controls lab).** `signer.provider: pkcs11` signs
   with a key in a PKCS#11 token: Ed25519 via `CKM_EDDSA`, P-256 via `CKM_ECDSA` with the output converted
@@ -140,6 +172,52 @@ Anything in that list appears here with a migration note before it ships in a re
   signer watches more than one page, so a single-scope console is unchanged.
 
 ### Changed
+
+- **SP-10: a submit with no answer is decided from the chain.** Officer intake (transaction refs as well
+  as proposals), the machine vote and governance read the transaction's signature set for their own
+  signature after a submit error and act on it (landed / absent / unknown); a timeout is never recorded as a
+  refusal. New `wallet.submit_timeout_ms` (default 15000, unchanged) and `wallet.submit_outcome_timeout_ms`
+  (default 30000). `SubmitResult.uncertain` marks a submit that got no answer. Officer intake answers
+  `502 submit_outcome_unknown` (`onChain: "unknown"`) when it cannot tell.
+
+- **cloud-kms review #10.** An AWS key's metadata is re-read before every signature and a changed type or
+  public key (a re-pointed alias) is refused; the declared type never follows the alias. One extra
+  `GetPublicKey` per signature. The previous "type changed" check could never fire and is gone.
+
+- **G-65 review #5.** A reject/response threshold already above the entries (a v1 executor never lowers
+  them) no longer blocks every key-page change: only a change that creates or worsens one is refused, so a
+  rotation or a repair on such a page passes. The accept-threshold rule is unchanged.
+
+- **G-69 review fixes.** A human-only seat's request is keyed by transaction AND page, so it never
+  pre-empts a keyed seat acting on the same transaction (`GET /v1/requests/:tx` lists all as `seats`), and
+  human-only pollers no longer take the gateway pending list. `awaiting_human` ends only when the page's
+  accept (or reject) threshold is met by distinct seats on chain, read on every poll as well as when a
+  signature lands; partial signers are kept (`humanSignatures`). A vote opposite to the one owed is flagged
+  (`humanOverride`). `ChainSignature` gains `vote`.
+
+- **G-39 (signer half): officer-intake prepares and proposals survive a restart.** They are kept in the
+  store (MemoryStore / FileStore: new `saveIntakeRecord` / `deleteIntakeRecord` / `listIntakeRecords`) and
+  restored by `OfficerIntake.restore()` at startup, with expiry and single use intact (a prepare is deleted
+  from the store before its signature is checked; a failed write refuses). A submit that errors is checked
+  against the chain before a proposal is given back; a proposal transaction on chain stays `submitted` /
+  `landed`, and one whose fate cannot be read stays `submitting` until a later read settles it.
+
+- **G-47: the gateway vote backend signs only a preimage it built itself.** It rebuilds the Accumulate
+  signing preimage (buildPreimage, as the direct backend) from the resolved transaction hash, its own key,
+  key type, page and vote, plus the gateway's signer version and timestamp, and signs that. A gateway
+  `data_for_signature` that differs, an absent/empty/different `transaction_hash` (absent used to default
+  to ours and skip the check), a different or missing `signer_url`, or an unusable version/timestamp is
+  refused before anything is signed.
+
+- **G-65: a key-page change that would brick the page is refused everywhere the signer touches one.**
+  This changes the conditions under which a signature is withheld: the machine vote no longer approves a
+  pending `updateKeyPage` whose operations, applied to the page as it reads on chain, would leave no
+  entries or a threshold above the entries, or whose page cannot be read (the request stays
+  `awaiting_policy`). Officer intake refuses an approve on such a change at prepare and at submit, and
+  `POST /relay/governance`, `POST /relay/governance/proposal` and `POST /v1/admin/key-page` refuse it
+  before anything is signed. Migration: a deployment wiring `createRelayClientsHandler` or `Orchestrator`
+  itself must pass `readPage`; without it governance is refused as `page_unreadable` (fail closed).
+  `PageState` gains optional `rejectThreshold` / `responseThreshold`. See docs/OPERATIONS.md.
 
 - **Container images published to `ghcr.io/certenio/certen-policy-signer`**, multi-arch, with provenance and
   an SBOM, via a `release` workflow triggered by a version tag. Docker is the primary artifact: this process

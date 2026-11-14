@@ -169,6 +169,24 @@ The signer **builds the transaction itself**, forces the principal to its own ke
 built, and confirms the change on chain before responding. It refuses to remove a page's last key or set a
 threshold that could never be met.
 
+**Key-page guard (G-65).** Every path that builds, proposes, signs or votes on an `updateKeyPage` -- this
+route, `POST /relay/governance`, `POST /relay/governance/proposal`, officer intake (prepare and, again,
+right before submit) and the machine vote on a pending `updateKeyPage` -- applies the operations, in order,
+to the page **as it reads on chain at that moment** (src/ops/keypage-guard.ts) and refuses a change that
+would leave the page unsatisfiable: no entries; an accept threshold below one or above the entries; a
+reject or response threshold above the entries that the change CREATES or WORSENS (one a v1 executor left
+stale is not a brick -- the page still accepts -- so a change that keeps or improves it, such as an
+emergency rotation, passes); a remove of an entry not on the page; an add or update
+that duplicates an entry. Delegate seats count as entries. The answer carries a structured `refusal`
+(`{reason, message, page, opIndex?, threshold?, entries?, entry?}`; reasons `no_entries`,
+`threshold_below_one`, `threshold_exceeds_entries`, `reject_threshold_exceeds_entries`,
+`response_threshold_exceeds_entries`, `entry_not_on_page`, `duplicate_entry`,
+`unrecognized_operation`) and HTTP 400. A page that cannot be read is refused with `page_unreadable`
+(HTTP 503); the signer never assumes a page state. The machine vote **withholds** its approve (no
+signature of any kind): a bricking change is recorded `rejected` with a receipt naming
+`blockedBy: keypage_guard` and the refusal; an unreadable page leaves the request `awaiting_policy` to be
+asked again. A `reject` vote (an officer's, or the engine's `deny`) is never blocked by the guard.
+
 ### Reading the authority that actually governs
 
 `GET /v1/admin/page` answers, per scope, what the **network** will enforce: the page's threshold, its
@@ -408,7 +426,7 @@ admin key does not open these routes and a client key does not open the admin ro
 | `GET /relay/tx/:hash/receipt` | tx | gateway `/v1/proof/tx/:hash/receipt` |
 | `POST /relay/evm/:chainId/call` `{to, data}` | tx | `{ result }` of `eth_call` on a `relay.evm` chain |
 | `GET /relay/pending/:hash` | pending | the PolicyRequest this signer built for the tx, or 404 |
-| `POST /relay/governance` `{page, operations}` | governance + `x-governance-key` | `{ txid, status, txids }` |
+| `POST /relay/governance` `{page, operations}` | governance + `x-governance-key` | `{ txid, status, txids }`; `status: refused` + `refusal` (400, or 503 `page_unreadable`) when the key-page guard refuses |
 | `GET /relay/data/:account` | chain | `{ entries:[{ txId, time, elements:[hex] }] }` main-chain WriteData entries in chain order; `time` = block time, Unix seconds (omitted only when the node gave none: the Console then reads the account as unreadable) |
 | `GET /relay/authorities/:account` | chain | `{ authorities:[book url] }` now |
 | `GET /relay/history/:account` | chain | `{ types:[string], incomplete }` the account's own main chain from its creation |
@@ -424,7 +442,8 @@ The gateway is `relay.gateway`, else the top-level `gateway` block. Governance o
 `add-key`, `remove-key`, `set-threshold`, `add-delegate`, `remove-delegate` (1–10 per call, applied in order
 through the same path as `POST /v1/admin/key-page`), and only for a page in this signer's keyring (else 403).
 `status` is `confirmed`, `awaiting_consent` (a delegate must still sign, or the page needs more than one
-signature) or `failed` (HTTP 400). A submitted transaction still awaiting a signature is stored with its
+signature) or `failed` (HTTP 400). The whole operation list is checked by the key-page guard against the page
+as it reads now before the first operation is signed, and each operation again inside the key-page path. A submitted transaction still awaiting a signature is stored with its
 governance display, so a human on the other page can sign it through officer intake as a transaction ref.
 
 `GET /v1/config/version` (admin) returns the `configVersion` stamped on every PolicyRequest and Receipt.
@@ -457,7 +476,81 @@ signing page (or the outermost delegator) must be a human page. A prepare is sin
 for a transaction ref confirms it is still pending; any mismatch or tampered echoed field is
 `400 {"error":"signature_invalid"}` and nothing is submitted. It then polls the transaction's signatures for
 this key up to `landed_timeout_ms`. A proposal submitted on a page whose threshold is above 1 is recorded by its transaction hash with the
-proposal's display and summaryHash, so further officers on that page sign it as a transaction ref. Prepares and proposals are held in memory: a restart discards them.
+proposal's display and summaryHash, so further officers on that page sign it as a transaction ref. Prepares and proposals are persisted in the signer's store (G-39; durable with `store.path`) and restored at
+startup: an expired one is dropped, a used prepare is removed before its signature is verified and so is never
+usable again, and a proposal a restart caught mid-submit is settled against the chain (on chain: `submitted`;
+definitively absent: `proposed`; unreadable: left `submitting`, which nothing may prepare, until it can be read).
+A submit that errors is likewise checked against the chain before the proposal is given back: a proposal
+transaction that is on chain is never `proposed` again.
 
-A signer with `officer_intake` and no `wallet.scopes`, `wallet.signer_url` or `signer` runs **intake-only**:
+### A submit with no answer is not a refusal
+
+`wallet.submit_timeout_ms` (default 15000, the raw client's timeout for every call) bounds one Accumulate
+submit. When a submit gets no answer -- a timeout, a dropped connection, a proxy error -- the outcome is
+UNKNOWN, and every path decides it from the chain by looking for THIS key's signature (with its delegators)
+in the transaction's signature set:
+
+- **Officer intake** (transaction refs and proposals; any submit error) polls for up to
+  `officer_intake.landed_timeout_ms`: landed -> `200 landed` exactly as a success (the landing hook runs,
+  the prepare stays used); absent -> `502 {"error":"submit_rejected","onChain":"absent"}`; unreadable ->
+  `502 {"error":"submit_outcome_unknown","onChain":"unknown"}` (a proposal stays `submitting`).
+- **The machine vote** and **governance** poll for up to `wallet.submit_outcome_timeout_ms` (default 30000):
+  landed -> cast/submitted; otherwise a failure to retry (`error`, or governance's "outcome UNKNOWN, not
+  refused" with the transaction hash kept), never a refusal. A node that ANSWERS with an error is still a
+  refusal. A gateway submit that throws is an unknown outcome, retried next poll.
+
+### Human-only seats (G-69)
+
+A party with no machine page -- legal and board books (runbook A5), or a firm with only book/1 and its
+people -- runs its seat with `wallet.human_scopes`. Each entry is a key page with **no key**:
+
+- **Discovery** is the same as for a keyed scope: the page's Pending index (account authority) and the
+  book's signature chain (header authority, F25), one poller per page.
+- **Decision** is the same: the orchestrator resolves the transaction, stores the PolicyRequest (display,
+  summaryHash, header, acceptance, decoded legs; `GET /relay/pending/:hash`) and asks the engine. `pending`
+  is held with the G-64 hold record. SR4, G-65 and the on-chain deadline apply as for a keyed scope.
+- **No signature, ever.** An approve, or a deny with `submit_reject_vote`, is recorded as
+  **`awaiting_human`** with the receipt (decision, reason, evidence, and
+  `policyEvidence.awaitingHumanSignature: {page, vote}`). A deny without `submit_reject_vote` is
+  `rejected`, as for a keyed scope. The page has no entry in the keyring, so every signing lookup for it
+  refuses; a process whose every seat is human-only holds a keyring with no key at all.
+- **People sign** the stored request through officer intake (prepare with `ref` = the transaction hash,
+  `page` = the human page, `vote` as the receipt says). The request ends when the **page's threshold is met
+  on chain**: the signer reads the transaction's signature set and the page, and counts distinct seats of
+  that page (a key entry, or a delegate seat when the page is the outermost delegator) by vote. Approvals
+  reaching the accept threshold end it `signed`; rejections reaching the reject threshold (0 = the accept
+  threshold) end it `rejected`. Until then every counted signature is kept on the request
+  (`humanSignatures`). This is read when officer intake sees a signature land AND on every poll, so a
+  signature that lands late is never lost. While `awaiting_human`, polls do not ask the engine again; the
+  transaction executing or expiring also ends it.
+- **A human vote that contradicts the owed vote** ends the request as the chain says (`signed` /
+  `rejected`), but is never recorded as fulfilling the policy decision: the request and the receipt carry
+  `humanOverride: {owed, cast}`, `lastError` is `human_override: owed X, cast Y`, and it is logged at warn.
+- **Record identity.** A human-only page's request is keyed `<txHash>@<page>`, separate from a keyed seat's
+  record for the same transaction (keyed by the tx hash), so one never pre-empts the other.
+  `GET /v1/requests/:tx` returns every page's record under `seats`. A human-only poller gets no gateway
+  pending-list supplement (that list is the keyed identity's).
+
+A human-only page must be listed in `officer_intake.human_pages` (with intake enabled) and must not also be
+a keyed scope or `wallet.signer_url`; any key field on the entry refuses the boot. A `policy` block is
+required. A human-only page is a **seat** like a keyed scope: an entry may carry `seat` (`seat:<name>`) and `binding` (the top-level
+`binding` applies when it does not), the pause with no scope pauses it, and a decision for it that requires binding is checked (and its
+nonce consumed, DAX-4S) before it is recorded as `awaiting_human`; the receipt of that record carries the same `binding` members as a
+signed one, and a replay, a mutated request or an unbound reply is refused by name and records nothing. A paused seat records no
+`awaiting_human` either. The person's own signature through officer intake is not a decision and is not bound. Human-only seats and
+`attachment_model: wrapper` cannot be combined (refused at boot). FICTIONAL example: `summit-inspection-tcl1` book/1, people on sign-link:
+
+```yaml
+wallet:
+  org_id: "summit-inspection-tcl1 (FICTIONAL)"
+  accumulate_endpoints: ["http://accumulate:26660/v3"]
+  human_scopes:
+    - page: "acc://summit-inspection-tcl1.acme/book/1"
+policy: { url: "http://summit-console-decision:8080/decide", auth: "hmac", hmac_secret: "env:SUMMIT_POLICY_HMAC" }
+officer_intake:
+  enabled: true
+  human_pages: ["acc://summit-inspection-tcl1.acme/book/1"]
+```
+
+A signer with `officer_intake` and no `wallet.scopes`, `wallet.signer_url`, `signer` or `wallet.human_scopes` runs **intake-only**:
 no keys, no poller, no policy engine (the `policy` block may be omitted), only the relay and officer routes.

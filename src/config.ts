@@ -98,7 +98,8 @@ const SignerSpecSchema = z.object({
       timeout_ms: z.number().int().positive().max(60_000).optional(),
     }).strict().optional(),
   }).strict().optional(),
-  // cloud-kms (contract §1.2). P-256 only. AWS credentials come from the SDK's default chain; Azure and GCP
+  // cloud-kms (contract §1.2). P-256 on every vendor; Ed25519 on AWS (ECC_NIST_EDWARDS25519), the type read off
+  // the key's own KeySpec. AWS credentials come from the SDK's default chain; Azure and GCP
   // take an `env:` bearer token or, absent one, the platform's managed/metadata identity.
   cloud_kms: z.object({
     vendor: z.enum(['aws', 'azure', 'gcp']),
@@ -197,6 +198,12 @@ const Schema = z.object({
     // omitted, the endpoint's host is logged instead, so an operator can always tell where they are.
     network: z.string().optional(),
     accumulate_endpoints: z.array(z.string().url()).min(1),
+    // How long one Accumulate SUBMIT may take before the call gives up (default 15000 ms: the timeout the raw
+    // client has always used for every call). Giving up is NOT a refusal: the signer then reads the chain
+    // for its own signature, for up to `submit_outcome_timeout_ms` (default 30000 ms; officer intake uses
+    // `officer_intake.landed_timeout_ms`), and reports landed, absent, or unknown -- never "refused".
+    submit_timeout_ms: z.number().int().positive().max(600_000).default(15_000),
+    submit_outcome_timeout_ms: z.number().int().positive().max(600_000).default(30_000),
     // Single-scope form (back-compat): one page + the top-level `signer` key. Optional when `scopes` is set.
     signer_url: z.string().startsWith('acc://').optional(),
     // Multi-scope form: watch several key pages, each with the key that signs there. One Poller per scope,
@@ -247,6 +254,28 @@ const Schema = z.object({
       // Replaces the top-level `binding` for this page when present (see BindingSchema).
       binding: BindingSchema.optional(),
     })).optional(),
+    /**
+     * G-69: HUMAN-ONLY seats -- pages that hold NO machine key (runbook A5: legal and board books are
+     * human-only; an inspection firm with only book/1 and its people). Each is discovered (account and
+     * header authority, exactly as a keyed scope), resolved, stored as a PolicyRequest and decided by the
+     * engine, but this signer NEVER signs for it: a decision that needs a signature becomes
+     * `awaiting_human`, and a person signs through officer intake against the stored request.
+     *
+     * Deliberately a separate list with no `key` field at all, rather than a key-less entry in `scopes`:
+     * there is nothing here a key could be written into. The page must be in `officer_intake.human_pages`,
+     * and must not also be a keyed scope or `signer_url` (no key may be configured, borrowed or fabricated
+     * for it). `.strict()`: a stray `key:` refuses the boot instead of being ignored.
+     */
+    human_scopes: z.array(z.object({
+      page: z.string().startsWith('acc://'),
+      book: z.string().startsWith('acc://').optional(),
+      policy: PolicyOverrideSchema.optional(),
+      behavior: BehaviorOverrideSchema.optional(),
+      // A human-only seat is a seat like any other (DAX-4S with G-69): it has an id, a pause addresses it and a
+      // `binding` (or the top-level one) makes its decisions bound before they are recorded as `awaiting_human`.
+      seat: z.string().optional(),
+      binding: BindingSchema.optional(),
+    }).strict()).optional(),
     // Single-scope form: the seat id of `signer_url` (see scopes[].seat).
     seat: z.string().optional(),
     // `wrapper` (Trust Stamp, wrapper runbook): this signer is a delegate on enrolled subscribers' wrapper
@@ -554,6 +583,12 @@ export function effectiveSeats(cfg: Pick<ParsedConfig, 'wallet' | 'binding'>): E
   } else if (cfg.wallet.signer_url) {
     out.push({ page: cfg.wallet.signer_url, seat: cfg.wallet.seat ?? derivedSeat(cfg.wallet.signer_url), ...(cfg.binding ? { binding: cfg.binding } : {}) });
   }
+  // G-69 with DAX-4S: a human-only page is a seat too. A top-level `binding` binds it, a pause with no scope pauses it, its id can be
+  // named. Left out, a human-only seat would record decisions the deployment said must be bound, and no pause would reach it.
+  for (const s of cfg.wallet.human_scopes ?? []) {
+    const binding = s.binding ?? cfg.binding;
+    out.push({ page: s.page, seat: s.seat ?? derivedSeat(s.page), ...(binding ? { binding } : {}) });
+  }
   return out;
 }
 
@@ -641,7 +676,51 @@ function resolveKeySecrets(spec: SignerSpec | undefined): void {
  * no poller, no policy engine; only the relay and officer routes.
  */
 export function isIntakeOnly(cfg: Pick<ParsedConfig, 'officer_intake' | 'wallet' | 'signer'>): boolean {
-  return cfg.officer_intake.enabled && !(cfg.wallet.scopes?.length) && !cfg.wallet.signer_url && !cfg.signer;
+  return cfg.officer_intake.enabled && !(cfg.wallet.scopes?.length) && !cfg.wallet.signer_url && !cfg.signer
+    && !(cfg.wallet.human_scopes?.length);
+}
+
+/**
+ * G-69 human-only scope checks. Exported for tests. Each page must be a key page listed in
+ * `officer_intake.human_pages` with officer intake enabled -- its people sign there -- and must not also be
+ * a keyed scope or `wallet.signer_url`: a page is either one this process holds a key for, or one it never does.
+ */
+export function validateHumanScopes(cfg: Pick<ParsedConfig, 'officer_intake' | 'wallet' | 'relay'>): void {
+  const hs = cfg.wallet.human_scopes ?? [];
+  if (!hs.length) return;
+  const norm = (u: string) => u.toLowerCase().replace(/\/+$/, '');
+  if (cfg.relay.only) throw new Error('config: relay.only must not configure wallet.human_scopes');
+  if (!cfg.officer_intake.enabled) throw new Error('config: wallet.human_scopes requires officer_intake.enabled — the people on a human-only page sign through officer intake');
+  // A wrapper vote travels a delegation path derived per transaction; a human-only page has none. Neither line defined the
+  // combination, so it is refused rather than guessed (DAX-MERGE-2).
+  if (cfg.wallet.attachment_model === 'wrapper') throw new Error('config: wallet.human_scopes cannot be combined with attachment_model: wrapper — a wrapper vote travels a delegation path, a human-only page has none');
+  const humans = new Set(cfg.officer_intake.human_pages.map(norm));
+  const keyed = new Set([...(cfg.wallet.scopes ?? []).map((s) => norm(s.page)), ...(cfg.wallet.signer_url ? [norm(cfg.wallet.signer_url)] : [])]);
+  const seen = new Set<string>();
+  for (const s of hs) {
+    const p = norm(s.page);
+    if (!PAGE_URL.test(s.page)) throw new Error(`config: wallet.human_scopes entry ${JSON.stringify(s.page)} must be an acc:// key page URL (…/book/<n>)`);
+    if (seen.has(p)) throw new Error(`config: wallet.human_scopes lists ${s.page} twice`);
+    seen.add(p);
+    if (keyed.has(p)) throw new Error(`config: ${s.page} is both a human-only scope and a keyed scope — a human-only page holds no key; remove one`);
+    if (!humans.has(p)) throw new Error(`config: human-only scope ${s.page} must be listed in officer_intake.human_pages`);
+  }
+}
+
+/**
+ * A machine key must never be able to satisfy a human page (G-69; security review 2026-10-02). Every keyed vote
+ * this signer casts under `attachment_model: delegate` goes THROUGH `wallet.delegator_url`, so if that page is a
+ * human-only scope or an officer page, the machine key would satisfy the people's page on chain: refused at boot,
+ * whatever the attachment model (a delegator naming a human page is a mistake even while it is unused).
+ */
+export function validateDelegatorNotHuman(cfg: Pick<ParsedConfig, 'officer_intake' | 'wallet'>): void {
+  const d = cfg.wallet.delegator_url;
+  if (!d) return;
+  const norm = (u: string) => u.toLowerCase().replace(/\/+$/, '');
+  const human = new Set([...(cfg.wallet.human_scopes ?? []).map((h) => norm(h.page)), ...(cfg.officer_intake.enabled ? cfg.officer_intake.human_pages.map(norm) : [])]);
+  if (human.has(norm(d))) {
+    throw new Error(`config: wallet.delegator_url ${d} is a human page (a human-only scope or an officer page) — every keyed vote would be cast through it, so a machine key would satisfy the people's page; delegate through a page that holds no human seat`);
+  }
 }
 
 const PAGE_URL = /^acc:\/\/[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9._-]+)*\/\d+$/;
@@ -667,6 +746,8 @@ export function loadConfig(path: string): Config {
   const raw = yaml.load(readFileSync(path, 'utf8')) as Record<string, unknown>;
   const parsed = Schema.parse(raw);
   validateOfficerIntake(parsed);
+  validateHumanScopes(parsed);
+  validateDelegatorNotHuman(parsed);
   const intakeOnly = isIntakeOnly(parsed);
   if (!parsed.policy && !intakeOnly) throw new Error('config: policy is required (policy.url) — only an intake-only signer runs without a policy engine');
   const cfg = parsed as Config;
@@ -700,6 +781,8 @@ export function loadConfig(path: string): Config {
       // `env:` treatment and the same refusal to run under a stated-but-absent authentication.
       if (s.policy?.hmac_secret) s.policy.hmac_secret = resolveSecret(s.policy.hmac_secret);
     }
+  } else if (cfg.wallet.human_scopes?.length && !cfg.wallet.signer_url && !cfg.signer) {
+    // G-69 human-only signer: every seat it runs is a human page. No key to resolve, and none is configured.
   } else if (intakeOnly) {
     // Intake-only: nothing to resolve — there is no key, and isIntakeOnly already proved there is no signer block.
   } else if (cfg.relay.only) {
@@ -745,7 +828,9 @@ export function loadConfig(path: string): Config {
   // only `auth: "hmac"` inherits the default secret and is fine; a scope that sets a different `url` but
   // no secret inherits the default secret and is also fine — but one that sets `auth: "hmac"` while the
   // default has no secret is not, and checking the patch alone would miss both directions.
-  for (const s of cfg.wallet.scopes ?? []) {
+  // A human-only scope's own HMAC secret gets the same env: treatment a keyed scope's does above.
+  for (const s of cfg.wallet.human_scopes ?? []) if (s.policy?.hmac_secret) s.policy.hmac_secret = resolveSecret(s.policy.hmac_secret);
+  for (const s of [...(cfg.wallet.scopes ?? []), ...(cfg.wallet.human_scopes ?? [])]) {
     const eff = effectiveScopeRules(cfg, s);
     validatePolicyAuth(eff.policy, `scope ${s.page}:`);
     if (eff.behavior.value_ceiling !== undefined && !/^\d+$/.test(eff.behavior.value_ceiling)) {

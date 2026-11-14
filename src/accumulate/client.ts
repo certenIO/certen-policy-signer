@@ -33,6 +33,12 @@ export interface SignerInfo {
 
 export interface SubmitResult {
   ok: boolean;
+  /**
+   * The submit FAILED TO GET AN ANSWER (timeout, dropped connection, a proxy's 5xx) rather than being refused
+   * by the node. Whether the network accepted the envelope is unknown, so a caller must read the chain
+   * (submit-outcome.ts) before it calls this a refusal -- and must never record it as one.
+   */
+  uncertain?: boolean;
   code?: 'badSignerVersion' | 'insufficientCredits' | 'alreadySigned' | 'expired' | 'error';
   error?: string;
   result?: unknown;
@@ -76,6 +82,8 @@ export interface ChainSignature {
   hops: string[];
   /** The key page the signature was made on, when the record names one. */
   signer?: string;
+  /** The vote the signature casts, as the record says (absent there = accept = `approve`). */
+  vote?: 'approve' | 'reject' | 'abstain';
 }
 
 /**

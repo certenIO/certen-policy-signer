@@ -86,12 +86,17 @@ export function unwrapDelegation(sig: Record<string, unknown>): { inner: Record<
 
 export class RawAccumulateClient implements AccumulateClient {
   private http: AxiosInstance;
-  constructor(private readonly endpoint: string, private readonly logger: Logger, timeoutMs = 15_000) {
+  /**
+   * `timeoutMs` bounds every call (default 15 s, unchanged). `opts.submitTimeoutMs` bounds `submit` alone
+   * (`wallet.submit_timeout_ms`; default: the same 15 s). A submit that times out is reported as
+   * `uncertain`, never as a refusal.
+   */
+  constructor(private readonly endpoint: string, private readonly logger: Logger, timeoutMs = 15_000, private readonly opts: { submitTimeoutMs?: number } = {}) {
     this.http = axios.create({ baseURL: endpoint, timeout: timeoutMs, headers: { 'content-type': 'application/json' } });
   }
 
-  private async rpc<T = any>(method: string, params: unknown): Promise<T> {
-    const res = await this.http.post('', { jsonrpc: '2.0', id: 1, method, params });
+  private async rpc<T = any>(method: string, params: unknown, timeoutMs?: number): Promise<T> {
+    const res = await this.http.post('', { jsonrpc: '2.0', id: 1, method, params }, timeoutMs ? { timeout: timeoutMs } : undefined);
     if (res.data?.error) {
       const e = res.data.error;
       const err = new Error(typeof e === 'string' ? e : e.message ?? JSON.stringify(e));
@@ -194,7 +199,11 @@ export class RawAccumulateClient implements AccumulateClient {
       if (typeof publicKey !== 'string' || publicKey === '') continue;
 
       const signerUrl = inner['signer'];
+      // Accept (0) marshals as absent; reject and abstain by name (or code, from an older encoding).
+      const rawVote = inner['vote'];
+      const vote = rawVote === 'reject' || rawVote === 1 ? 'reject' : rawVote === 'abstain' || rawVote === 2 ? 'abstain' : 'approve';
       signatures.push({
+        vote,
         type: String(inner['type'] ?? 'unknown'),
         publicKeyHash: createHash('sha256').update(Buffer.from(publicKey, 'hex')).digest('hex'),
         delegators,
@@ -333,7 +342,7 @@ export class RawAccumulateClient implements AccumulateClient {
 
   async submit(envelope: unknown): Promise<SubmitResult> {
     try {
-      const res: any = await this.rpc('submit', { envelope });
+      const res: any = await this.rpc('submit', { envelope }, this.opts.submitTimeoutMs);
       const arr = Array.isArray(res) ? res : [res];
       for (const s of arr) {
         const ok = s?.success ?? s?.status?.delivered ?? true;
@@ -346,7 +355,10 @@ export class RawAccumulateClient implements AccumulateClient {
       return { ok: true, result: res };
     } catch (e) {
       const msg = (e as Error).message ?? String(e);
-      return { ok: false, code: classify(msg), error: msg };
+      // A JSON-RPC error is the node ANSWERING (a refusal). Anything else -- a timeout, a reset connection,
+      // an HTTP error from something in between -- is no answer at all: the outcome is unknown.
+      const answered = Boolean((e as { rpc?: unknown }).rpc);
+      return { ok: false, code: classify(msg), error: msg, ...(answered ? {} : { uncertain: true }) };
     }
   }
 }

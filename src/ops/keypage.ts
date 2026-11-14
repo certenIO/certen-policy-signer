@@ -20,7 +20,9 @@ import { RawAccumulateClient } from '../accumulate/raw-client.js';
 import { EdSigner } from '../signer/signer.js';
 import { Logger } from '../logger.js';
 import { hexToBytes } from '../accumulate/signing.js';
-import { confirmPage, readPage, rotateKey, signAndSubmit, PageState, RotateMode } from './rotate.js';
+import { confirmPage, readPage, rotateKey, signAndSubmit, PageState, RotateMode, SubmitOutcomeUnknownError } from './rotate.js';
+import { createHash } from 'node:crypto';
+import { KeyPageGuardError, KeyPageRefusal, operationsFromKeyPageOps, simPageFrom, validateKeyPageChange } from './keypage-guard.js';
 
 export type KeyPageOp =
   | { op: 'rotate-key'; newKeyHash: string; mode?: RotateMode }
@@ -40,6 +42,8 @@ export interface KeyPageDeps {
   logger: Logger;
   /** OUR key page. The principal is always this — it is not accepted from the caller. */
   page: string;
+  /** After a submit that got no answer, how long to read the chain for our own signature (default 30 s). */
+  submitOutcomeTimeoutMs?: number;
 }
 
 export interface KeyPageResult {
@@ -64,6 +68,8 @@ export interface KeyPageResult {
    */
   awaitingConsent?: boolean;
   error?: string;
+  /** G-65: set when the key-page guard refused the change (nothing was submitted). */
+  refusal?: KeyPageRefusal;
 }
 
 const HEX32 = /^[0-9a-f]{64}$/;
@@ -93,7 +99,22 @@ const sameUrl = (a: string, b: string): boolean => a.toLowerCase().replace(/\/+$
 /** Validate + execute one governance operation against our own key page. */
 export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs = 90_000): Promise<KeyPageResult> {
   const { accumulate, signer, logger, page } = d;
-  const before = await readPage(accumulate, page);
+  // Read at decision time. An unreadable page is a refusal with its own reason (G-65, fail closed): the
+  // guard below can only vouch for a change measured against what the page says NOW.
+  let before: PageState;
+  try {
+    before = await readPage(accumulate, page);
+  } catch (e) {
+    throw new KeyPageGuardError({ reason: 'page_unreadable', page, message: `${page} could not be read (${(e as Error).message}); refusing rather than assuming its state` });
+  }
+
+  // G-65: refuse any change that would leave the page unsatisfiable. Runs after each operation's own
+  // checks (which keep their specific messages) and before anything is signed.
+  const enforce = async (op: KeyPageOp) => {
+    const ours = op.op === 'rotate-key' ? createHash('sha256').update(await signer.publicKey()).digest('hex') : undefined;
+    const v = validateKeyPageChange(simPageFrom(before), operationsFromKeyPageOps([op], ours));
+    if (!v.ok) throw new KeyPageGuardError({ ...v.refusal, page });
+  };
 
   const hash = (h: string, what: string) => {
     const v = String(h ?? '').toLowerCase().replace(/^0x/, '');
@@ -105,7 +126,15 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
   // still pending (awaiting another signature) must not vanish from the result.
   const submitted: string[] = [];
   const submit = async (body: unknown, label: string) => {
-    const tx = await signAndSubmit({ accumulate, signer, logger }, page, body, label);
+    let tx: string;
+    try {
+      tx = await signAndSubmit({ accumulate, signer, logger, ...(d.submitOutcomeTimeoutMs ? { submitOutcomeTimeoutMs: d.submitOutcomeTimeoutMs } : {}) }, page, body, label);
+    } catch (e) {
+      // A submit with no answer may still be on chain: keep its hash with what was submitted, so the
+      // caller records it (and a co-signer can find it) instead of forgetting a live transaction.
+      if (e instanceof SubmitOutcomeUnknownError && e.outcome === 'unknown') submitted.push(e.txHash);
+      throw e;
+    }
     submitted.push(tx);
     return tx;
   };
@@ -119,6 +148,7 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
   try {
     switch (req.op) {
       case 'rotate-key': {
+        await enforce({ op: 'rotate-key', newKeyHash: hash(req.newKeyHash, 'newKeyHash') });
         // Delegates to the rotation path, which confirms on-chain and refuses unsafe states.
         const r = await rotateKey({ accumulate, signer, logger }, {
           page, newKeyHash: hash(req.newKeyHash, 'newKeyHash'), mode: req.mode ?? 'updateKey', confirmTimeoutMs: timeoutMs,
@@ -129,6 +159,7 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
       case 'add-key': {
         const kh = hash(req.keyHash, 'keyHash');
         if (before.keyHashes.includes(kh)) throw new Error(`key ${kh} is already on ${page}`);
+        await enforce({ op: 'add-key', keyHash: kh });
         const tx = await submit({
           type: 'updateKeyPage', operation: [{ type: 'add', entry: { keyHash: hexToBytes(kh) } }],
         }, 'updateKeyPage/add');
@@ -142,6 +173,7 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
         if (!before.keyHashes.includes(kh)) throw new Error(`key ${kh} is not on ${page}`);
         // Refuse to strip the page of its last key: that would make the org permanently unable to sign.
         if (before.keyHashes.length <= 1) throw new Error('refusing to remove the only key on the page — the org would lose its authority irrecoverably');
+        await enforce({ op: 'remove-key', keyHash: kh });
         const tx = await submit({
           type: 'updateKeyPage', operation: [{ type: 'remove', entry: { keyHash: hexToBytes(kh) } }],
         }, 'updateKeyPage/remove');
@@ -154,6 +186,7 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
         const t = Number(req.threshold);
         if (!Number.isInteger(t) || t < 1) throw new Error('threshold must be a positive integer');
         if (t > before.keyHashes.length) throw new Error(`threshold ${t} exceeds the ${before.keyHashes.length} key(s) on the page — it could never be met`);
+        await enforce({ op: 'set-threshold', threshold: t });
         const tx = await submit({
           type: 'updateKeyPage', operation: [{ type: 'setThreshold', threshold: t }],
         }, 'updateKeyPage/setThreshold');
@@ -167,6 +200,7 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
         if (before.entries.some((e) => e.delegate && sameUrl(e.delegate, book))) {
           throw new Error(`${book} already holds a seat on ${page}`);
         }
+        await enforce({ op: 'add-delegate', delegate: book });
         const tx = await submit({
           type: 'updateKeyPage', operation: [{ type: 'add', entry: { delegate: book } }],
         }, 'updateKeyPage/add-delegate');
@@ -188,6 +222,7 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
         }
         // The same protection remove-key has: a page with no entries authorises nothing, forever.
         if (before.entries.length <= 1) throw new Error('refusing to remove the only entry on the page — the role would become permanently unexercisable');
+        await enforce({ op: 'remove-delegate', delegate: book });
         const tx = await submit({
           type: 'updateKeyPage', operation: [{ type: 'remove', entry: { delegate: book } }],
         }, 'updateKeyPage/remove-delegate');
@@ -203,7 +238,11 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
     }
   } catch (e) {
     const error = (e as Error).message;
-    logger.error({ op: (req as { op?: string }).op, err: error, page }, 'governance operation FAILED');
-    return { ok: false, op: String((req as { op?: string }).op), submitted, before, after: await readPage(accumulate, page).catch(() => before), error };
+    const refusal = e instanceof KeyPageGuardError ? e.refusal : undefined;
+    logger.error({ op: (req as { op?: string }).op, err: error, page, ...(refusal ? { refusal: refusal.reason } : {}) }, 'governance operation FAILED');
+    return {
+      ok: false, op: String((req as { op?: string }).op), submitted, before, after: await readPage(accumulate, page).catch(() => before), error,
+      ...(refusal ? { refusal } : {}),
+    };
   }
 }

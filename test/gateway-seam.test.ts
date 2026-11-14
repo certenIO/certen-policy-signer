@@ -19,6 +19,7 @@ import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring, MapKeyring, bookOf } from '../src/signer/keyring.js';
 import { logger } from '../src/logger.js';
 import { VotableTx } from '../src/vote/backend.js';
+import { buildPreimage, bytesToHex, hexToBytes } from '../src/accumulate/signing.js';
 
 const silent = logger.child({ level: 'silent' });
 const API_KEY = 'ck_live_test_key';
@@ -37,9 +38,17 @@ let pendingList: string[] = [];
 let server: http.Server;
 let port = 0;
 
-/** The digest the gateway would hand back: distinct per (tx, vote, key) — as on the real network. */
-const preimageFor = (txHash: string, vote: string, pk: string) =>
-  createHash('sha256').update(`${txHash}.${vote}.${pk}`).digest('hex');
+/**
+ * The digest the REAL gateway hands back: the Accumulate signing preimage for (tx, key, page, version,
+ * timestamp, vote) -- distinct per tx, vote and key. G-47: the signer rebuilds exactly this and refuses
+ * anything else, so the fake computes it the same way the gateway does.
+ */
+const FAKE_VERSION = 1;
+const FAKE_TIMESTAMP = 1700000000000000;
+const preimageFor = (txHash: string, vote: string, pk: string, signerUrl = 'acc://org.acme/book/1') =>
+  bytesToHex(buildPreimage(hexToBytes(txHash), {
+    publicKey: hexToBytes(pk), signatureType: 'ed25519', signerUrl, signerVersion: FAKE_VERSION, timestamp: FAKE_TIMESTAMP, vote: vote as 'approve' | 'reject',
+  }).dataForSignature);
 
 beforeAll(async () => {
   server = http.createServer(async (req, res) => {
@@ -65,11 +74,11 @@ beforeAll(async () => {
         sign_request_id: id,
         status: 'signing_required',
         signing_data: {
-          data_for_signature: preimageFor(String(body.target_id), String(body.vote ?? 'approve'), pk),
+          data_for_signature: preimageFor(String(body.target_id), String(body.vote ?? 'approve'), pk, body.signer_url ?? 'acc://org.acme/book/1'),
           transaction_hash: String(body.target_id),
           signer_url: body.signer_url ?? 'acc://org.acme/book/1',
-          signer_version: 1,
-          timestamp: 1700000000000000,
+          signer_version: FAKE_VERSION,
+          timestamp: FAKE_TIMESTAMP,
         },
         submit_url: `/v1/sign/${id}/signature`,
       });
@@ -222,5 +231,105 @@ describe('gateway seam: discovery is a supplement, not a replacement', () => {
   it('returns nothing (rather than throwing) when the gateway is unreachable, so on-chain discovery still runs', async () => {
     const dead = new GatewayClient({ url: 'http://127.0.0.1:1', apiKey: API_KEY, identity: IDENTITY, timeoutMs: 300 }, silent);
     await expect(dead.listPending()).resolves.toEqual([]);
+  });
+});
+
+/**
+ * G-47: a malicious gateway cannot obtain a signature over anything but the preimage the signer builds for
+ * the transaction it resolved, its own key and page, and the vote it decided.
+ */
+describe('gateway seam: the signer never signs the gateway’s bytes on trust (G-47)', () => {
+  const PAGE = 'acc://org.acme/book/1';
+  async function evil(edit: (sd: Record<string, unknown>) => void) {
+    const pk = Buffer.from(await SIGNER.publicKey()).toString('hex');
+    const signed: string[] = [];
+    let submitted = 0;
+    const gw = {
+      requestSigningData: async (txHash: string, vote: string) => {
+        const sd: Record<string, unknown> = {
+          signRequestId: 'x', dataForSignature: preimageFor(txHash, vote, pk), transactionHash: txHash,
+          signerUrl: PAGE, signerVersion: FAKE_VERSION, timestamp: FAKE_TIMESTAMP, submitUrl: '/v1/sign/x/signature',
+        };
+        edit(sd);
+        return sd;
+      },
+      submitSignature: async (_sd: unknown, sig: Uint8Array) => { submitted++; signed.push(Buffer.from(sig).toString('hex')); return { ok: true }; },
+    };
+    const r = await new GatewayVoteBackend(gw as any, singleKeyring(SIGNER), silent).cast(tx, 'approve');
+    return { r, submitted, signed, pk };
+  }
+
+  it('a correct preimage is signed: exactly the bytes the signer built itself', async () => {
+    const { r, signed, pk } = await evil(() => {});
+    expect(r.ok).toBe(true);
+    expect(nacl.sign.detached.verify(hexToBytes(preimageFor(TX, 'approve', pk)), hexToBytes(signed[0]!), await SIGNER.publicKey())).toBe(true);
+    expect(r.signatureHash).toBe(preimageFor(TX, 'approve', pk));
+  });
+
+  it('a different preimage (another transaction’s, or the other vote’s) is refused; nothing is signed', async () => {
+    const pk = Buffer.from(await SIGNER.publicKey()).toString('hex');
+    for (const bytes of [preimageFor('cd'.repeat(32), 'approve', pk), preimageFor(TX, 'reject', pk), 'ff'.repeat(32)]) {
+      const { r, submitted } = await evil((sd) => { sd.dataForSignature = bytes; });
+      expect(r).toMatchObject({ ok: false, error: 'gateway signing data preimage mismatch' });
+      expect(submitted).toBe(0);
+    }
+  });
+
+  it('an empty or absent transaction hash is refused (it no longer skips the check)', async () => {
+    for (const v of ['', undefined]) {
+      const { r, submitted } = await evil((sd) => { sd.transactionHash = v === undefined ? '' : v; });
+      expect(r).toMatchObject({ ok: false, error: 'gateway signing data transaction mismatch' });
+      expect(submitted).toBe(0);
+    }
+  });
+
+  it('a different transaction hash is refused, even with a preimage built for it', async () => {
+    const pk = Buffer.from(await SIGNER.publicKey()).toString('hex');
+    const { r, submitted } = await evil((sd) => { sd.transactionHash = 'cd'.repeat(32); sd.dataForSignature = preimageFor('cd'.repeat(32), 'approve', pk); });
+    expect(r).toMatchObject({ ok: false, error: 'gateway signing data transaction mismatch' });
+    expect(submitted).toBe(0);
+  });
+
+  it('a different or missing signer page, or unusable version/timestamp, is refused', async () => {
+    const pk = Buffer.from(await SIGNER.publicKey()).toString('hex');
+    const cases: Array<[(sd: Record<string, unknown>) => void, RegExp]> = [
+      [(sd) => { sd.signerUrl = 'acc://other.acme/book/1'; sd.dataForSignature = preimageFor(TX, 'approve', pk, 'acc://other.acme/book/1'); }, /signer mismatch/],
+      [(sd) => { sd.signerUrl = ''; }, /signer mismatch/],
+      [(sd) => { sd.signerVersion = 0; }, /metadata invalid/],
+      [(sd) => { sd.timestamp = 0; }, /metadata invalid/],
+    ];
+    for (const [edit, err] of cases) {
+      const { r, submitted } = await evil(edit);
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(err);
+      expect(submitted).toBe(0);
+    }
+  });
+
+  it('the client reads an absent transaction_hash as empty, not as the hash it asked for', async () => {
+    const srv = http.createServer((_req, res) => {
+      res.writeHead(201, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ sign_request_id: 'x', signing_data: { data_for_signature: 'aa'.repeat(32), signer_url: PAGE, signer_version: 1, timestamp: 1 }, submit_url: '/v1/sign/x/signature' }));
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    try {
+      const c = new GatewayClient({ url: `http://127.0.0.1:${(srv.address() as any).port}`, apiKey: API_KEY, identity: IDENTITY }, silent);
+      expect((await c.requestSigningData(TX, 'approve', await SIGNER.publicKey())).transactionHash).toBe('');
+    } finally { srv.close(); }
+  });
+});
+
+describe('gateway seam: a submit with no answer is not a refusal (SP-10)', () => {
+  it('a thrown gateway submit is reported as an unknown outcome', async () => {
+    const pk = Buffer.from(await SIGNER.publicKey()).toString('hex');
+    const gw = {
+      requestSigningData: async (txHash: string, vote: string) => ({
+        signRequestId: 'x', dataForSignature: preimageFor(txHash, vote, pk), transactionHash: txHash,
+        signerUrl: 'acc://org.acme/book/1', signerVersion: FAKE_VERSION, timestamp: FAKE_TIMESTAMP, submitUrl: '/v1/sign/x/signature',
+      }),
+      submitSignature: async () => { throw new Error('timeout of 20000ms exceeded'); },
+    };
+    const r = await new GatewayVoteBackend(gw as any, singleKeyring(SIGNER), silent).cast(tx, 'approve');
+    expect(r).toMatchObject({ ok: false, error: expect.stringMatching(/outcome unknown/) });
   });
 });

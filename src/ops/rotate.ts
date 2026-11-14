@@ -34,6 +34,8 @@ import {
   buildPreimage, buildSigMetaHash, buildSignatureObject, buildSubmitEnvelope, bytesToHex, computeTimestamp, hexToBytes,
 } from '../accumulate/signing.js';
 import { Logger } from '../logger.js';
+import { KeyPageGuardError, simPageFrom, validateKeyPageChange } from './keypage-guard.js';
+import { awaitOwnSignature } from '../accumulate/submit-outcome.js';
 
 export type RotateMode = 'updateKey' | 'update' | 'add-then-remove';
 
@@ -42,6 +44,22 @@ export interface RotateDeps {
   signer: EdSigner;          // the CURRENT key (the one on the page today)
   logger: Logger;
   now?: () => number;
+  /** After a submit that got no answer, how long to read the chain for our own signature (default 30 s). */
+  submitOutcomeTimeoutMs?: number;
+  submitOutcomePollMs?: number;
+}
+
+/**
+ * A governance submit that got NO ANSWER and whose signature the chain does not (yet) show. Not a refusal:
+ * `txHash` is the transaction that may still be on chain, so a caller keeps it with what it submitted.
+ */
+export class SubmitOutcomeUnknownError extends Error {
+  constructor(readonly txHash: string, readonly outcome: 'absent' | 'unknown', label: string, cause: string) {
+    super(outcome === 'unknown'
+      ? `${label}: submit got no answer (${cause}) and the chain cannot be read; transaction ${txHash} may be on chain — outcome UNKNOWN, not refused`
+      : `${label}: submit got no answer (${cause}) and transaction ${txHash} does not show our signature on chain`);
+    this.name = 'SubmitOutcomeUnknownError';
+  }
 }
 
 export interface RotateOptions {
@@ -77,6 +95,12 @@ export interface PageState {
    * a page that needs nobody, which no page is.
    */
   threshold: number;
+  /**
+   * The raw reject and response thresholds (0 or absent = not set). Optional so a page state built before
+   * these were read still type-checks; the key-page guard (keypage-guard.ts, G-65) reads an absent one as 0.
+   */
+  rejectThreshold?: number;
+  responseThreshold?: number;
   /** The key hashes alone, lower-cased. What the rotation and governance paths compare against. */
   keyHashes: string[];
   /** Every seat, in page order, including the delegations that have no key hash of their own. */
@@ -114,6 +138,8 @@ export function pageStateOf(account: any): PageState {
     version: Number(account?.version ?? 0),
     // See PageState.threshold: absent or zero MEANS one, and only the protocol says so.
     threshold: Number(account?.acceptThreshold ?? 0) || 1,
+    rejectThreshold: Number(account?.rejectThreshold ?? 0) || 0,
+    responseThreshold: Number(account?.responseThreshold ?? 0) || 0,
     keyHashes: entries.map((e) => e.keyHash).filter((h): h is string => Boolean(h)),
     entries,
   };
@@ -155,7 +181,18 @@ export async function signAndSubmit(d: RotateDeps, page: string, body: unknown, 
   const txHashHex = bytesToHex(txHash);
   const sig = buildSignatureObject(pre, await signer.sign(pre.dataForSignature, { txHash: txHashHex, principal: page, page }), txHashHex);
   const res = await accumulate.submit(buildSubmitEnvelope(tx.asObject(), sig));
-  if (!res.ok) throw new Error(`${label} rejected by the network: ${res.error ?? res.code}`);
+  if (!res.ok && res.uncertain) {
+    // No answer is not a refusal: read the chain for this signature before deciding.
+    const outcome = await awaitOwnSignature({
+      getTxSignatures: accumulate.getTxSignatures?.bind(accumulate),
+      txHash: txHashHex, principal: page, keyHash: createHash('sha256').update(params.publicKey).digest('hex'), delegators: [], vote: params.vote,
+      timeoutMs: d.submitOutcomeTimeoutMs ?? 30_000, ...(d.submitOutcomePollMs ? { pollMs: d.submitOutcomePollMs } : {}),
+    });
+    if (outcome !== 'landed') throw new SubmitOutcomeUnknownError(txHashHex, outcome, label, res.error ?? 'no answer');
+    logger.warn({ tx: txHashHex, op: label, err: res.error }, 'submit got no answer, but the signature is on chain: submitted');
+  } else if (!res.ok) {
+    throw new Error(`${label} rejected by the network: ${res.error ?? res.code}`);
+  }
   logger.info({ tx: bytesToHex(txHash), op: label }, 'rotation transaction submitted');
   return bytesToHex(txHash);
 }
@@ -217,6 +254,11 @@ export async function rotateKey(d: RotateDeps, o: RotateOptions): Promise<Rotate
   if (before.keyHashes.includes(newKeyHash)) {
     throw new Error(`refusing to rotate: the new key (${newKeyHash}) is ALREADY on ${o.page}`);
   }
+  // G-65, against the page as it was just read: a rotation replaces one entry with another, so it cannot
+  // change the count -- but the guard is the one place that says so, and it also refuses a page that is
+  // already unsatisfiable rather than signing on it.
+  const guard = validateKeyPageChange(simPageFrom(before), [{ type: 'update', oldKeyHash, newKeyHash }]);
+  if (!guard.ok) throw new KeyPageGuardError({ ...guard.refusal, page: o.page });
 
   const submitted: string[] = [];
   const timeout = o.confirmTimeoutMs ?? 120_000;

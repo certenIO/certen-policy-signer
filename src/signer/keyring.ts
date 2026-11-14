@@ -210,6 +210,20 @@ export class MapKeyring implements Keyring {
   }
 }
 
+/**
+ * A keyring holding no key at all: a process whose every seat is human-only (G-69). Every signing lookup
+ * refuses; nothing here can produce, borrow or substitute a key.
+ */
+export function noKeyKeyring(reason: string): Keyring {
+  const refuse = (page: string): never => { throw new Error(`${reason}: this signer holds no key (asked for ${page})`); };
+  return {
+    forPage: (page: string) => refuse(page),
+    scopeFor: (page: string) => refuse(page),
+    scopes: () => [],
+    healthy: async () => true,
+  };
+}
+
 /** Wildcard keyring: one key, used for any page. The single-scope / test path. */
 export function singleKeyring(signer: KeySigner, page = 'acc://unknown.acme/book/1'): Keyring {
   const scope: SigningScope = { page, book: bookOf(page), signer };

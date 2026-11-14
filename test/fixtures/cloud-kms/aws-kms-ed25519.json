@@ -1,0 +1,45 @@
+{
+  "_about": "FICTIONAL recorded exchange for the AWS KMS adapter with an ECC_NIST_EDWARDS25519 key. Hand-built from the public AWS KMS JSON 1.1 API shapes (TrentService.GetPublicKey and TrentService.Sign; blobs base64, as the HTTP API returns them). The account, region, key id and ARN are placeholders; {{…}} values are filled at test time from an Ed25519 key generated inside the test (no private key is stored anywhere). LocalStack does not support Ed25519, so this replay is the contract test.",
+  "config": {
+    "region": "us-east-1",
+    "key_id": "alias/machine-orchid-ed25519-fictional",
+    "key_arn": "arn:aws:kms:us-east-1:000000000000:key/0b9f7f6e-3c1a-4c2b-9a8e-1d2c3b4a5f61"
+  },
+  "exchanges": [
+    {
+      "request": {
+        "target": "TrentService.GetPublicKey",
+        "body": { "KeyId": "{{key_id}}" }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "CustomerMasterKeySpec": "ECC_NIST_EDWARDS25519",
+          "KeyId": "{{key_arn}}",
+          "KeySpec": "ECC_NIST_EDWARDS25519",
+          "KeyUsage": "SIGN_VERIFY",
+          "PublicKey": "{{spki_b64}}",
+          "SigningAlgorithms": ["ED25519_SHA_512", "ED25519_PH_SHA_512"]
+        }
+      }
+    },
+    {
+      "request": {
+        "target": "TrentService.Sign",
+        "body": { "KeyId": "{{key_id}}", "Message": "{{message_b64}}", "MessageType": "RAW", "SigningAlgorithm": "ED25519_SHA_512" }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "KeyId": "{{key_arn}}",
+          "Signature": "{{signature_b64}}",
+          "SigningAlgorithm": "ED25519_SHA_512"
+        }
+      }
+    }
+  ],
+  "error_example": {
+    "status": 400,
+    "body": { "__type": "NotFoundException", "message": "Alias arn:aws:kms:us-east-1:000000000000:alias/machine-orchid-ed25519-fictional is not found." }
+  }
+}

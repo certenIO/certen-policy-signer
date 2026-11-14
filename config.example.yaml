@@ -81,6 +81,11 @@ wallet:
   # "every vote you cast will be silently rejected by the network". Only for pages whose key hashes the
   # node will not expose.
   allow_unverified_signer: false
+  #
+  # How long one Accumulate submit may take (default 15000 ms), and how long the signer then reads the chain
+  # for its own signature when a submit got no answer (default 30000 ms). No answer is never a refusal.
+  # submit_timeout_ms: 15000
+  # submit_outcome_timeout_ms: 30000
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 #  KEY CUSTODY — where the private key lives. Used in single-scope mode.
@@ -332,12 +337,33 @@ admin:
 # Officer intake (Phase 7; docs/OPERATIONS.md "Officer intake"). Personal signatures made on a person's own
 # device are verified here and submitted by this signer; no human key is ever configured. `human_pages` lists
 # every key page whose humans may sign through this signer (including delegate-book pages this cell serves).
-# A signer with officer_intake and NO wallet scopes / signer_url / signer runs intake-only: no keys, no
-# poller, no policy engine -- the shape for a party without a machine page.
+# A signer with officer_intake and NO wallet scopes / signer_url / signer / human_scopes runs intake-only: no
+# keys, no poller, no policy engine -- it can sign governance proposals, but it cannot run a seat.
 # officer_intake:
 #   enabled: true
 #   human_pages: ["acc://harbor-mfg-tcl1.acme/book/1"]   # FICTIONAL
 #   landed_timeout_ms: 90000
+#
+# HUMAN-ONLY SEAT (G-69; docs/OPERATIONS.md "Human-only seats"). A party whose page holds NO machine key --
+# legal and board books, or an inspection firm with only book/1 and its people -- still runs a seat:
+# `wallet.human_scopes` is polled (account AND header authority), resolved, stored as a PolicyRequest and
+# decided by the policy engine exactly like a keyed scope, but this signer NEVER signs for it. A decision
+# that needs a signature becomes `awaiting_human`; the Console routes it to the page's people, who sign it
+# on their own device (Approver Signing Agent, or sign-link) through officer intake. A human_scopes entry
+# has no key field, must be listed in officer_intake.human_pages, and may not also be a keyed scope.
+# FICTIONAL example -- the second inspection firm, routed to sign-link:
+# wallet:
+#   org_id: "summit-inspection-tcl1 (FICTIONAL)"
+#   accumulate_endpoints: ["http://accumulate:26660/v3"]
+#   human_scopes:
+#     - page: "acc://summit-inspection-tcl1.acme/book/1"       # people only; no machine page exists
+# policy:
+#   url: "http://summit-console-decision:8080/decide"         # the seat's own Console decision service
+#   auth: "hmac"
+#   hmac_secret: "env:SUMMIT_POLICY_HMAC"
+# officer_intake:
+#   enabled: true
+#   human_pages: ["acc://summit-inspection-tcl1.acme/book/1"]  # sign-link (WebCrypto P-256) keys on book/1
 
 # Read-only relay (docs/OPERATIONS.md "Read-only relay"). Off by default. Lets another component in the cell
 # read Accumulate, the gateway proof API and EVM read methods through this signer. Never signs or submits.

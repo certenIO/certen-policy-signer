@@ -1,5 +1,6 @@
 /**
- * CloudKmsSigner — an ECDSA P-256 key inside a cloud KMS the party controls. Phase 8.2 (K3), contract §1.2.
+ * CloudKmsSigner — an ECDSA P-256 key (any vendor) or an Ed25519 key (AWS) inside a cloud KMS the party
+ * controls. Phase 8.2 (K3), contract §1.2.
  *
  * One signer, three vendor adapters behind one small interface. The key is generated in the KMS and cannot
  * be exported; what this process holds is a credential that lets it ask for a signature over a digest. In
@@ -7,10 +8,21 @@
  * the operator can sign but the party can revoke it, and the bank never holds it.
  *
  *   aws     @aws-sdk/client-kms   GetPublicKey (SPKI DER)       Sign DIGEST / ECDSA_SHA_256    -> DER
+ *                                                                 Sign RAW / ED25519_SHA_512     -> raw 64 bytes
  *   azure   REST (fetch)          GET keys/{name}/{version} JWK POST .../sign  alg ES256       -> raw r‖s
  *   gcp     REST (fetch)          GET {version}/publicKey (PEM) POST {version}:asymmetricSign  -> DER
  *
- * Every adapter refuses a key that is not a P-256 signing key BEFORE anything is signed: `sign` always reads
+ * Ed25519 (AWS `ECC_NIST_EDWARDS25519`). A Mode 2 machine seat needs an `ed25519` signature: the validators'
+ * G1 governance proof refuses `ecdsaSha256` (G-42), so a P-256 seat key can never settle a payment on chain.
+ * The algorithm is chosen from the KEY'S OWN KeySpec as AWS reports it (GetPublicKey), never from config:
+ * `ECC_NIST_P256` signs as `ecdsaSha256`, `ECC_NIST_EDWARDS25519` as `ed25519`, and anything else is refused.
+ * For Ed25519 the 32-byte preimage is the MESSAGE of a pure EdDSA signature (`ED25519_SHA_512` with
+ * `MessageType: RAW`, FIPS 186-5 §7.6) -- exactly what the in-process LocalSigner signs -- never a digest for
+ * HashEdDSA (`ED25519_PH_SHA_512`), which signs a different value. The public key is the raw 32 bytes taken
+ * from the SPKI (the page entry is sha256 of those, as for every other Ed25519 source), and every signature
+ * is verified locally against it before it is returned.
+ *
+ * Every adapter refuses a key that is not a key type it supports BEFORE anything is signed: `sign` always reads
  * (and memoises) the public key first, and that read carries the vendor's spec/usage check. Every signature
  * is normalised to strict DER and verified locally against that public key over the exact preimage before it
  * is returned (ecdsa-der.ts). The preimage IS the S6 digest sha256(sigMdHash ‖ txHash), so each vendor is
@@ -20,6 +32,30 @@ import { createPublicKey } from 'node:crypto';
 import { AccumulateSignatureType, KeySigner } from './signer.js';
 import { checkP256Spki, derToRaw, rawToDer, verifyOwnSignature } from './ecdsa-der.js';
 
+/** The key types a KMS adapter can hold for this signer. */
+export type KmsKeyAlgorithm = 'ecdsa-p256' | 'ed25519';
+export interface KmsKeyInfo { algorithm: KmsKeyAlgorithm; spki: Uint8Array }
+
+/** SubjectPublicKeyInfo prefix for Ed25519 (RFC 8410): SEQUENCE { AlgorithmIdentifier id-Ed25519 }, BIT STRING(33). */
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+
+/** The raw 32-byte Ed25519 public key from its SPKI DER, after Node has parsed it as an Ed25519 key. */
+export function ed25519RawFromSpki(spki: Uint8Array): Uint8Array {
+  let key;
+  try {
+    key = createPublicKey({ key: Buffer.from(spki), format: 'der', type: 'spki' });
+  } catch {
+    throw new Error('ed25519: public key is not a readable SubjectPublicKeyInfo');
+  }
+  if (key.asymmetricKeyType !== 'ed25519') throw new Error(`ed25519: public key is ${key.asymmetricKeyType ?? 'unknown'}, not Ed25519`);
+  const buf = Buffer.from(spki);
+  if (buf.length !== 44 || !buf.subarray(0, 12).equals(ED25519_SPKI_PREFIX)) throw new Error(`ed25519: unexpected SPKI encoding (${buf.length} bytes)`);
+  const raw = new Uint8Array(buf.subarray(12));
+  const x = (key.export({ format: 'jwk' }) as { x?: string }).x;
+  if (!x || !Buffer.from(x, 'base64url').equals(Buffer.from(raw))) throw new Error('ed25519: SPKI key bytes disagree with the parsed key');
+  return raw;
+}
+
 export interface KmsAdapter {
   readonly vendor: 'aws' | 'azure' | 'gcp';
   /** SPKI DER of the key, after the adapter has checked the vendor's own statement of spec and usage. */
@@ -27,25 +63,97 @@ export interface KmsAdapter {
   /** Sign a 32-byte SHA-256 digest; returns DER or raw r‖s as the vendor produces it (`encoding`). */
   signDigest(digest32: Uint8Array): Promise<Uint8Array>;
   readonly encoding: 'der' | 'raw';
+  /**
+   * An adapter that can hold more than one key type says which this key is, from the vendor's own key spec,
+   * and returns its SPKI. Absent: the adapter holds P-256 only and `getPublicKeySpki` is used.
+   */
+  getKeyInfo?(): Promise<KmsKeyInfo>;
+  /** Ed25519: sign the 32-byte preimage as the MESSAGE (pure EdDSA); returns the raw 64-byte signature. */
+  signEd25519?(message32: Uint8Array): Promise<Uint8Array>;
 }
 
+type ReadKey = { type: 'ecdsaSha256' | 'ed25519'; publicKey: Uint8Array };
+
 export class CloudKmsSigner implements KeySigner {
-  readonly signatureType: AccumulateSignatureType = 'ecdsaSha256';
-  #spki: Promise<Uint8Array> | undefined;
+  #type: 'ecdsaSha256' | 'ed25519' | undefined;
+  #key: Promise<ReadKey> | undefined;
 
   constructor(private readonly adapter: KmsAdapter) {}
 
-  publicKey(): Promise<Uint8Array> {
-    if (!this.#spki) {
-      this.#spki = this.adapter.getPublicKeySpki().then(checkP256Spki);
-      this.#spki.catch(() => { this.#spki = undefined; });
+  /**
+   * The signature type, from the key itself.
+   *
+   * An adapter that holds P-256 only (Azure, GCP: no `getKeyInfo`) can only ever sign `ecdsaSha256`, so that is
+   * known before the key is read. An adapter whose keys may be either type (AWS) says which from the key's own
+   * KeySpec, so until the key has been read the type is NOT known and this throws, exactly as the Windows
+   * certificate-store signer does: a caller must never read a guessed type into signature metadata, where it
+   * becomes part of the preimage. Await `publicKey()` (the startup self-check does, for every scope) first.
+   */
+  get signatureType(): AccumulateSignatureType {
+    if (this.#type) return this.#type;
+    if (!this.adapter.getKeyInfo) return 'ecdsaSha256';
+    throw new Error(`cloud-kms ${this.adapter.vendor}: signatureType is not known until the key has been read; await publicKey() first`);
+  }
+
+  /** One read of the key from the vendor, checked and converted. Never cached here. */
+  async #fetch(): Promise<ReadKey> {
+    if (!this.adapter.getKeyInfo) return { type: 'ecdsaSha256', publicKey: checkP256Spki(await this.adapter.getPublicKeySpki()) };
+    const info = await this.adapter.getKeyInfo();
+    if (info.algorithm === 'ed25519') return { type: 'ed25519', publicKey: ed25519RawFromSpki(info.spki) };
+    if (info.algorithm === 'ecdsa-p256') return { type: 'ecdsaSha256', publicKey: checkP256Spki(info.spki) };
+    throw new Error(`cloud-kms ${this.adapter.vendor}: unsupported key algorithm ${String(info.algorithm)} — refusing`);
+  }
+
+  /** The key this signer declared (its page entry, its metadata type): read once, then held. */
+  #read(): Promise<ReadKey> {
+    if (!this.#key) {
+      this.#key = this.#fetch().then((k) => { this.#type = k.type; return k; });
+      this.#key.catch(() => { this.#key = undefined; });
     }
-    return this.#spki;
+    return this.#key;
+  }
+
+  /**
+   * Review #10: the key must still be the one this signer declared, at the moment it signs.
+   *
+   * An AWS `key_id` may be an alias, and an alias can be re-pointed at another key -- of another type --
+   * under a running signer. Everything already declared for the scope (the page entry, the metadata type)
+   * belongs to the old key, so the key's metadata is RE-READ BEFORE EVERY SIGNATURE and a changed type or
+   * public key is refused. Cost: one extra `GetPublicKey` call per signature (a vote is one or two
+   * signatures, against one `Sign` call each), which is small beside the guarantee.
+   *
+   * Azure and GCP adapters address a PINNED key version (`key_version` / `cryptoKeyVersions/<n>`), which
+   * cannot change; their sign responses are already checked to come from exactly that version (`kid` /
+   * `name`), so no re-read is made for them.
+   */
+  async #confirmUnchanged(declared: ReadKey): Promise<void> {
+    if (!this.adapter.getKeyInfo) return;
+    const now = await this.#fetch();
+    if (now.type !== declared.type) {
+      throw new Error(`cloud-kms ${this.adapter.vendor}: the key's type changed from ${declared.type} to ${now.type} since it was declared — refusing to sign`);
+    }
+    if (!Buffer.from(now.publicKey).equals(Buffer.from(declared.publicKey))) {
+      throw new Error(`cloud-kms ${this.adapter.vendor}: the key behind this key id is not the one declared for this scope — refusing to sign`);
+    }
+  }
+
+  /** P-256: the SPKI DER (91 bytes). Ed25519: the raw 32-byte key. sha256 of this is the page entry. */
+  async publicKey(): Promise<Uint8Array> {
+    return (await this.#read()).publicKey;
   }
 
   async sign(preimage32: Uint8Array): Promise<Uint8Array> {
     if (preimage32.length !== 32) throw new Error('expected 32-byte message');
-    const spki = await this.publicKey();
+    const key = await this.#read();
+    await this.#confirmUnchanged(key);
+    if (key.type === 'ed25519') {
+      if (!this.adapter.signEd25519) throw new Error(`cloud-kms ${this.adapter.vendor}: this adapter cannot sign with an Ed25519 key — refusing`);
+      const sig = await this.adapter.signEd25519(preimage32);
+      if (sig.length !== 64) throw new Error(`cloud-kms ${this.adapter.vendor}: unexpected Ed25519 signature length ${sig.length} — refusing`);
+      verifyOwnSignature('ed25519', key.publicKey, preimage32, sig);
+      return sig;
+    }
+    const spki = key.publicKey;
     const out = await this.adapter.signDigest(preimage32);
     // Strict both ways: a vendor DER is parsed and re-encoded, so a non-minimal encoding the network would
     // refuse is refused here instead.
@@ -87,19 +195,59 @@ export class AwsKmsAdapter implements KmsAdapter {
     return this.#client;
   }
 
-  async getPublicKeySpki(): Promise<Uint8Array> {
+  /** The algorithm the key's own KeySpec named on the last read. Signing refuses until it is known. */
+  #algorithm: KmsKeyAlgorithm | undefined;
+
+  /**
+   * GetPublicKey, and the key's type from its own `KeySpec`: `ECC_NIST_P256` (offering `ECDSA_SHA_256`) or
+   * `ECC_NIST_EDWARDS25519` (offering `ED25519_SHA_512`), with `KeyUsage: SIGN_VERIFY`. Anything else is refused.
+   */
+  async getKeyInfo(): Promise<KmsKeyInfo> {
     const { mod, client } = await this.#kms();
     const res = await client.send(new mod.GetPublicKeyCommand({ KeyId: this.opts.keyId }));
-    if (res.KeySpec !== 'ECC_NIST_P256') throw new Error(`cloud-kms aws: key ${this.opts.keyId} is ${res.KeySpec ?? 'unknown'}, not ECC_NIST_P256 — refusing`);
+    const spec = res.KeySpec;
+    const algorithm: KmsKeyAlgorithm | undefined = spec === 'ECC_NIST_P256' ? 'ecdsa-p256' : spec === 'ECC_NIST_EDWARDS25519' ? 'ed25519' : undefined;
+    if (!algorithm) throw new Error(`cloud-kms aws: key ${this.opts.keyId} is ${spec ?? 'unknown'}, not ECC_NIST_P256 or ECC_NIST_EDWARDS25519 — refusing`);
     if (res.KeyUsage !== 'SIGN_VERIFY') throw new Error(`cloud-kms aws: key ${this.opts.keyId} usage is ${res.KeyUsage ?? 'unknown'}, not SIGN_VERIFY — refusing`);
-    if (res.SigningAlgorithms && !res.SigningAlgorithms.includes('ECDSA_SHA_256')) {
-      throw new Error(`cloud-kms aws: key ${this.opts.keyId} does not offer ECDSA_SHA_256 — refusing`);
+    const wantAlg = algorithm === 'ed25519' ? 'ED25519_SHA_512' : 'ECDSA_SHA_256';
+    if (res.SigningAlgorithms && !res.SigningAlgorithms.includes(wantAlg)) {
+      throw new Error(`cloud-kms aws: key ${this.opts.keyId} does not offer ${wantAlg} — refusing`);
     }
     if (!res.PublicKey) throw new Error('cloud-kms aws: GetPublicKey returned no public key');
-    return new Uint8Array(res.PublicKey);
+    this.#algorithm = algorithm;
+    return { algorithm, spki: new Uint8Array(res.PublicKey) };
+  }
+
+  /** The P-256 SPKI. Refuses an Ed25519 key: this entry point promises P-256. */
+  async getPublicKeySpki(): Promise<Uint8Array> {
+    const info = await this.getKeyInfo();
+    if (info.algorithm !== 'ecdsa-p256') throw new Error(`cloud-kms aws: key ${this.opts.keyId} is not ECC_NIST_P256 — refusing`);
+    return info.spki;
+  }
+
+  /**
+   * Ed25519: pure EdDSA over the 32-byte preimage AS THE MESSAGE (`ED25519_SHA_512`, `MessageType: RAW` --
+   * the only message type AWS accepts with that algorithm). Never `ED25519_PH_SHA_512` / `DIGEST`: that is
+   * HashEdDSA, a different signature the network would not verify.
+   */
+  async signEd25519(message32: Uint8Array): Promise<Uint8Array> {
+    if (this.#algorithm !== 'ed25519') throw new Error('cloud-kms aws: the key is not a known ECC_NIST_EDWARDS25519 key — refusing to sign Ed25519');
+    const { mod, client } = await this.#kms();
+    const res = await client.send(new mod.SignCommand({
+      KeyId: this.opts.keyId,
+      Message: message32,
+      MessageType: 'RAW',
+      SigningAlgorithm: 'ED25519_SHA_512',
+    }));
+    if (res.SigningAlgorithm !== undefined && res.SigningAlgorithm !== 'ED25519_SHA_512') {
+      throw new Error(`cloud-kms aws: Sign answered with ${res.SigningAlgorithm}, not ED25519_SHA_512 — refusing`);
+    }
+    if (!res.Signature) throw new Error('cloud-kms aws: Sign returned no signature');
+    return new Uint8Array(res.Signature);
   }
 
   async signDigest(digest32: Uint8Array): Promise<Uint8Array> {
+    if (this.#algorithm === 'ed25519') throw new Error('cloud-kms aws: the key is ECC_NIST_EDWARDS25519; it does not sign ECDSA digests — refusing');
     const { mod, client } = await this.#kms();
     const res = await client.send(new mod.SignCommand({
       KeyId: this.opts.keyId,

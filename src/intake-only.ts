@@ -12,6 +12,7 @@ import { Logger } from './logger.js';
 import { RawAccumulateClient } from './accumulate/raw-client.js';
 import { readPage } from './ops/rotate.js';
 import { createOfficerIntake, OfficerIntake } from './officer/intake.js';
+import { advanceAwaitingHuman } from './officer/landed.js';
 import { createRelayClientsHandler, RelayClientsHandler } from './relay-clients.js';
 import { createServer } from './server.js';
 import { MemoryStore, FileStore, Store } from './store/store.js';
@@ -43,6 +44,12 @@ export function buildOfficerIntake(cfg: Config, accumulate: RawAccumulateClient,
     decode: (body, principal) => decoders.decode(body as TxBody, { principal }),
     labels: cfg.decoders.labels,
     landedTimeoutMs: cfg.officer_intake.landed_timeout_ms,
+    // G-69: a landed personal signature ends a human-only seat's `awaiting_human` request.
+    // G-69: a landed personal signature advances a human-only seat's request -- counted against the page's
+    // thresholds from the chain, never ended on one signature alone.
+    onLanded: async (r) => { await advanceAwaitingHuman({ store, getTxSignatures: (h, p) => accumulate.getTxSignatures(h, p), readPage: (pg) => readPage(accumulate, pg), logger }, r.txHash, r.authority); },
+    // G-39: open prepares and proposals live in the store, so a restart keeps them (and their expiry).
+    state: store,
     logger,
   });
 }
@@ -62,10 +69,11 @@ export interface IntakeOnlyProcess { server: http.Server; intake: OfficerIntake;
 
 /** Build (and, unless `listen: false`, start) the intake-only process. */
 export async function startIntakeOnly(cfg: Config, logger: Logger, opts: { accumulate?: RawAccumulateClient; listen?: boolean } = {}): Promise<IntakeOnlyProcess> {
-  const accumulate = opts.accumulate ?? new RawAccumulateClient(cfg.wallet.accumulate_endpoints[0], logger);
+  const accumulate = opts.accumulate ?? new RawAccumulateClient(cfg.wallet.accumulate_endpoints[0], logger, undefined, { submitTimeoutMs: cfg.wallet.submit_timeout_ms });
   const store: Store = cfg.store.path ? new FileStore(cfg.store.path) : new MemoryStore();
   const decoders = await buildDecoders(cfg, logger);
   const intake = buildOfficerIntake(cfg, accumulate, store, decoders, logger);
+  await intake.restore();
 
   let relayClients: RelayClientsHandler | undefined;
   if (cfg.admin.relay_clients?.length) {
@@ -79,6 +87,7 @@ export async function startIntakeOnly(cfg: Config, logger: Logger, opts: { accum
       getPolicyRequest: (h) => store.getPolicyRequest(h),
       governanceKey: cfg.admin.governance_admin_key,
       pages: () => [],                 // no page is held: POST /relay/governance refuses every page
+      readPage: (page) => readPage(accumulate, page),
       propose: (page, ops, proposer) => intake.propose(page, ops, proposer),
       timeoutMs: cfg.relay.timeout_ms,
       logger,

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { parseArgs, helpText, VERSION, BIN } from './cli.js';
 import { loadConfig, parseBind, effectiveScopeRules, effectiveSeats, isIntakeOnly, Config } from './config.js';
 import { logger as baseLogger } from './logger.js';
-import { MapKeyring, buildSignerFromSpec, bookOf, SigningScope } from './signer/keyring.js';
+import { MapKeyring, buildSignerFromSpec, bookOf, noKeyKeyring, SigningScope } from './signer/keyring.js';
 import { RawAccumulateClient } from './accumulate/raw-client.js';
 import { HttpPolicyClient, loadPolicyAdapter } from './policy/policy.js';
 import { MemoryStore, FileStore } from './store/store.js';
@@ -95,19 +95,28 @@ async function main() {
             }
           : {}),
       }))
-    : [{
-        page: cfg.wallet.signer_url!,
-        book: bookOf(cfg.wallet.signer_url!),
-        signer: buildSignerFromSpec(cfg.signer!, logger, cfg.wallet.signer_url!),
-      }];
-  const keyring = new MapKeyring(scopes);
+    : cfg.wallet.signer_url
+      ? [{
+          page: cfg.wallet.signer_url,
+          book: bookOf(cfg.wallet.signer_url),
+          signer: buildSignerFromSpec(cfg.signer!, logger, cfg.wallet.signer_url),
+        }]
+      : [];
+  // G-69: human-only seats. Watched and decided like keyed scopes, but never in the keyring: no key exists
+  // for them in this process, so every signing lookup for their pages refuses (MapKeyring is strict, and a
+  // process with no keyed scope at all gets a keyring that holds nothing).
+  const humanScopes = (cfg.wallet.human_scopes ?? []).map((s) => ({ page: s.page, book: s.book ?? bookOf(s.page) }));
+  if (humanScopes.length) {
+    logger.info({ humanScopes: humanScopes.map((s) => s.page) }, 'human-only seats: decided here, signed by their people through officer intake; this signer holds no key for them');
+  }
+  const keyring = scopes.length ? new MapKeyring(scopes) : noKeyKeyring('human-only signer');
   const endpoint = cfg.wallet.accumulate_endpoints[0];
   logger.info(
     { network: cfg.wallet.network ?? hostOf(endpoint), endpoint, scopes: scopes.map((s) => s.page) },
     scopes.length > 1 ? `starting policy signer (MULTI-SCOPE: ${scopes.length} pages)` : 'starting policy signer',
   );
 
-  const accumulate = new RawAccumulateClient(cfg.wallet.accumulate_endpoints[0], logger);
+  const accumulate = new RawAccumulateClient(cfg.wallet.accumulate_endpoints[0], logger, undefined, { submitTimeoutMs: cfg.wallet.submit_timeout_ms });
 
   /**
    * Build the policy client for one effective policy block.
@@ -258,7 +267,7 @@ async function main() {
   // Only scopes that actually differ get an entry; the map is consulted per transaction, and an absent
   // key means "use the defaults" without allocating a duplicate client per page.
   const scopeRules = new Map<string, ScopeRules>();
-  for (const s of cfg.wallet.scopes ?? []) {
+  for (const s of [...(cfg.wallet.scopes ?? []), ...(cfg.wallet.human_scopes ?? [])]) {
     const eff = effectiveScopeRules(cfg, s);
     if (!eff.overridden) continue;
     const rules: ScopeRules = {};
@@ -312,11 +321,15 @@ async function main() {
   const orchestrator = new Orchestrator({
     accumulate, keyring, policy, store, resolver, logger, votes,
     notifier, orgId: cfg.wallet.org_id, scopeRules, configVersion: cfg.configVersion, displayLabels: cfg.decoders.labels,
+    // G-65: an updateKeyPage is approved only after its operations are checked against the page as it reads now.
+    readPage: (page) => readPage(accumulate, page),
+    humanOnlyPages: humanScopes.map((s) => s.page),
     pauses: pause, seats: seatRules, binding: { nonces, ...(bindingWorld ? { world: bindingWorld } : {}), nowSeconds },
     ...(wrapperMode ? { wrapper: wrapperMode } : {}),
     options: {
       submitRejectVote: cfg.behavior.submit_reject_vote,
       maxBadVersionRetries: cfg.behavior.max_bad_version_retries,
+      submitOutcomeTimeoutMs: cfg.wallet.submit_outcome_timeout_ms,
       policyTtlSeconds: cfg.policy.async_ttl_seconds,
       guard,
       delegators,
@@ -382,11 +395,15 @@ async function main() {
 
   // --- pollers: ONE PER SCOPE, all feeding the shared orchestrator (built before the server so /healthz
   //     can report on them). Each watches its own page + book, on its own backoff. ---
+  // Human-only seats are polled exactly as keyed ones: account authority (the page's Pending index) and header
+  // authority (the book's signature chain, F25).
   const pollers = cfg.trigger.poller.enabled
-    ? scopes.map((scope) => new Poller(
+    ? [...scopes.map((s) => ({ ...s, human: false })), ...humanScopes.map((s) => ({ ...s, human: true }))].map((scope) => new Poller(
         accumulate, orchestrator, scope.page, cfg.trigger.poller.interval_seconds * 1000,
         logger.child({ scope: scope.page }), Date.now,
-        gatewayClient ? () => gatewayClient!.listPending() : undefined,   // supplement, never a replacement
+        // Supplement, never a replacement -- and only for a keyed scope: the gateway lists work for the keyed
+        // identity, and a human-only page must not be handed (and so record) another seat's transactions.
+        gatewayClient && !scope.human ? () => gatewayClient!.listPending() : undefined,
         scope.book,
         wrapperRegistry ? { registry: wrapperRegistry, concurrency: cfg.trigger.poller.wrapper_concurrency } : undefined,
       ))
@@ -423,11 +440,12 @@ async function main() {
 
   // --- officer intake (Phase 7): personal signatures verified and submitted here; no human key in process ---
   const officerIntake = cfg.officer_intake.enabled ? buildOfficerIntake(cfg, accumulate, store, decoders, logger) : undefined;
+  await officerIntake?.restore();   // G-39: open prepares and proposals survive a restart
   if (officerIntake) logger.info({ humanPages: cfg.officer_intake.human_pages }, 'officer intake enabled on /relay/officer*');
 
   // --- decision-service relay (6.4): one credential + scope list per Console decision service ---
   const governKeyPage = (op: Parameters<typeof applyKeyPageOp>[1], page: string) =>
-    applyKeyPageOp({ accumulate, signer: keyring.forPage(page), logger, page }, op);
+    applyKeyPageOp({ accumulate, signer: keyring.forPage(page), logger, page, submitOutcomeTimeoutMs: cfg.wallet.submit_outcome_timeout_ms }, op);
   let relayClients: RelayClientsHandler | undefined;
   if (cfg.admin.relay_clients?.length) {
     const gw = cfg.relay.gateway
@@ -444,6 +462,8 @@ async function main() {
       ...(readCache ? { chainReader: () => readCache.evaluation() } : {}),
       pages: () => keyring.scopes().map((s) => s.page),
       applyKeyPageOp: governKeyPage,
+      // G-65: the whole operation list is checked against the page as it reads now, before anything is signed.
+      readPage: (page) => readPage(accumulate, page),
       // Phase 7: a governance tx still awaiting a signature is stored so a human on that page can sign it via officer intake.
       recordAwaiting: async ({ txHash, page, op }) => store.savePolicyRequest(awaitingGovernanceRequest(txHash, page, op, { labels: cfg.decoders.labels })),
       ...(officerIntake ? { propose: officerIntake.propose } : {}),
@@ -467,8 +487,8 @@ async function main() {
     // The set of governable pages is bound HERE, from our own config: `keyring.forPage` throws for any page
     // we do not hold a key for, so a caller can never point governance at an arbitrary page. Default: scope 0.
     keyPage: (op, page) => {
-      const target = page ?? scopes[0].page;
-      return applyKeyPageOp({ accumulate, signer: keyring.forPage(target), logger, page: target }, op);
+      const target = page ?? scopes[0]?.page ?? '';   // a human-only signer has no scope 0: forPage refuses ''
+      return applyKeyPageOp({ accumulate, signer: keyring.forPage(target), logger, page: target, submitOutcomeTimeoutMs: cfg.wallet.submit_outcome_timeout_ms }, op);
     },
     // Reading a page is a READ, so it is bound with no credential of its own beyond the admin key -- unlike
     // keyPage above, which changes who can act and therefore carries a second one. `keyring.forPage` still

@@ -466,6 +466,10 @@ export interface Decision {
 export const REQUEST_STATUSES = [
   'discovered',
   'awaiting_policy',
+  // G-69: a human-only scope (no key on its page) has the engine's decision, and the signature it needs
+  // must come from a person through officer intake. Not terminal: it ends when that signature lands, or
+  // when the transaction executes or expires.
+  'awaiting_human',
   'approved',
   'denied',
   'signing',
@@ -484,6 +488,13 @@ export interface SigningRequest {
    */
   workKey?: string;
   txHash: string;
+  /**
+   * The record key, when it is not the tx hash: a human-only seat's `humanRecordId(txHash, page)` (review #1).
+   * Absent for a keyed seat, whose record is keyed by the tx hash as it always was. A row has a `workKey` (a wrapper path) or a
+   * `recordId` (a human-only seat), never both: the two modes cannot be configured together (config refuses it), and the store
+   * files a row under `workKey ?? recordId ?? txHash` (`keyOf`).
+   */
+  recordId?: string;
   /** Wrapper mode: the path this vote travels, hop order, and the principal the tx was read at. */
   delegators?: string[];
   principal?: string;
@@ -505,6 +516,64 @@ export interface SigningRequest {
   lastError?: string;
   createdAt: number;
   updatedAt: number;
+  /**
+   * G-64: WHY the seat is holding, while it is. Present only while the decision service's latest answer is
+   * `pending`; cleared (and kept as `pendingFinal`) once the request is decided. See src/store/pending-hold.ts.
+   */
+  pending?: PendingHold;
+  /** G-64: the last hold, as it stood when it ended, with when and how. History, never a current state. */
+  pendingFinal?: FinalisedHold;
+  /** G-69: the signatures from a human-only seat's page that the chain counts, one per seat (partial signers kept). */
+  humanSignatures?: HumanSignature[];
+  /** G-69: the people ended the request with the OPPOSITE of the vote the policy decision owed. */
+  humanOverride?: { owed: 'approve' | 'reject'; cast: 'approve' | 'reject' };
+}
+
+/** One seat's signature on a human-only seat's page, as read from the chain. */
+export interface HumanSignature {
+  /** `key:<hash>` for a key entry, `delegate:<book>` for a delegate seat. */
+  seat: string;
+  publicKeyHash: string;
+  type: string;
+  delegators: string[];
+  vote: 'approve' | 'reject' | 'abstain';
+}
+
+/** The version stamps a decision service returned with a hold (A6). Each only when it was returned. */
+export interface HoldVersions {
+  ruleSetVersion?: string;
+  providerConfigVersion?: string;
+  signerConfigVersion?: string;
+}
+
+/** One distinct hold reason (reason text + versions), with when it was first and last given and how often. */
+export interface HoldReason {
+  reason: string;
+  versions: HoldVersions;
+  firstSeenAt: string;   // ISO
+  lastSeenAt: string;    // ISO
+  count: number;
+}
+
+/** The current hold on a request: the latest reason and versions, and the distinct reasons before it. */
+export interface PendingHold {
+  /** The decision service's latest stated reason (policy text, sanitised and length-capped). */
+  reason: string;
+  versions: HoldVersions;
+  /** When this hold began (the first `pending` answer since the request was last not held). ISO. */
+  since: string;
+  /** When the decision service last answered `pending`. ISO. */
+  lastEvaluatedAt: string;
+  /** How many `pending` answers this hold has had. */
+  evaluations: number;
+  /** Distinct reasons, oldest first, bounded (HOLD_HISTORY_MAX). The last entry is the current reason. */
+  history: HoldReason[];
+}
+
+/** A hold that ended: `outcome` is the engine's decision (`approve` / `deny`) or why the request went away. */
+export interface FinalisedHold extends PendingHold {
+  endedAt: string;       // ISO
+  outcome: string;
 }
 
 export interface Receipt {
@@ -513,6 +582,8 @@ export interface Receipt {
   /** Stamped by the store on append (ms since the epoch). */
   recordedAt?: number;
   txHash: string;
+  /** The record key of the request this receipt belongs to, when it is not the tx hash (see SigningRequest). */
+  recordId?: string;
   /** Matches the request's `workKey`. Two votes on one tx (two wrapper paths) are two receipts. */
   workKey?: string;
   operationId?: string;
@@ -532,6 +603,10 @@ export interface Receipt {
   policyEvidence?: Record<string, unknown>;
   /** The signer-config version the decision was taken under (`sha256:…`). Decision A6. */
   configVersion?: string;
+  /** G-69: the counted signatures of a human-only seat's page, when it ended. */
+  humanSignatures?: HumanSignature[];
+  /** G-69: the people signed the opposite of the vote owed (see SigningRequest.humanOverride). */
+  humanOverride?: { owed: 'approve' | 'reject'; cast: 'approve' | 'reject' };
   /**
    * What a bound decision (certen.decision/v1) was, when the scope requires binding (DAX-4S): the hash of the record, the request
    * it was about, the nonce it spent, the Grant and the policy hash it carried (recorded whether or not the seat pins a policy; a

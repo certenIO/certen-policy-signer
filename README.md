@@ -162,7 +162,10 @@ notification is logged and dropped; it never delays or changes a signing decisio
 stopped signing because Twilio was down would be a worse signer. The durable record is the receipt store.
 
 For a live work queue rather than a push — "what is waiting on a human right now" — poll
-`GET /v1/requests?status=awaiting_policy`.
+`GET /v1/requests?status=awaiting_policy`. Each held request carries `pending`: the decision service's
+latest reason, the rule-set / provider-config / signer-config versions it stamped, `since`,
+`lastEvaluatedAt` and a bounded history of distinct reasons. Once decided, the hold is kept as
+`pendingFinal` (with `endedAt` and `outcome`). `GET /v1/requests/:tx` returns both at the top level too.
 
 ---
 

@@ -76,6 +76,8 @@ function setup(opts: { status?: 'enrolling' | 'active'; registered?: boolean; de
   const policy = new MockPolicyClient({ decision: opts.decision ?? 'approve' });
   const o = new Orchestrator({
     accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), TS_PAGE), policy, store, resolver: new Resolver(acc), logger: silent,
+    // G-65: an updateKeyPage (the wrapper creation) is approved only after its operations are checked against the page as it reads now.
+    readPage: (u) => w.reader.readPage(u),
     wrapper: {
       ourBook: T, ourPage: TS_PAGE,
       isEnrolledWrapperPage: (p) => isRegisteredWrapperPage(registry, p),
@@ -396,6 +398,7 @@ describe('review follow-ups', () => {
     const d = setup({ status: 'active' });
     d.pages[B1] = page(2, { delegate: T }, { delegate: ALICE_BOOK });
     d.pages[ORG] = page(2, { keyHash: ORG_KEY }, { delegate: B });
+    d.pages['acc://o.acme/other/1'] = page(1, { keyHash: ORG_KEY }); // the page the transaction changes (G-65 reads it before approving)
     d.acc.addPending(TX, { body: { type: 'updateKeyPage', operation: [{ type: 'add', entry: { delegate: B } }] }, principal: 'acc://o.acme/other/1' });
     d.acc.approvesThrough(TX, ALICE, [B1, ORG]);
     const [row] = await d.o.handleAll({ txHash: TX, signerUrl: TS_PAGE, principal: 'acc://o.acme/other/1' });
