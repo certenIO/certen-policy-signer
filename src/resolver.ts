@@ -15,7 +15,7 @@ export type ResolveResult =
   | { kind: 'resolved'; tx: ResolvedTx }
   /** We could not read the transaction. NOT a statement about whether it still exists — retry. */
   | { kind: 'unavailable'; error: string }
-  | { kind: 'gone'; reason: 'not_found' | 'executed' | 'expired' };
+  | { kind: 'gone'; reason: 'not_found' | 'executed' | 'expired' | 'failed' };
 
 export class Resolver {
   private readonly decoders: DecoderRegistry;
@@ -34,6 +34,9 @@ export class Resolver {
     if (!pend.found) return { kind: 'gone', reason: 'not_found' };
     if (pend.executed) return { kind: 'gone', reason: 'executed' };
     if (pend.expired) return { kind: 'gone', reason: 'expired' };
+    // DAX-F100: a transaction whose chain status is final-failed (an authority rejected it, or it ran and failed) will never take another
+    // vote. Left "resolved" it was handed to the engine again on every poll for the life of the signer (a held request: one round trip each).
+    if (pend.failed) return { kind: 'gone', reason: 'failed' };
 
     const info = await this.acc.getSignerInfo(ref.signerUrl);
     const body = (pend.body ?? { type: 'unknown' }) as TxBody;

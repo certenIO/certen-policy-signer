@@ -229,11 +229,11 @@ export class MockAccumulateClient implements AccumulateClient {
   }
   async getSignerInfo(): Promise<SignerInfo> { return { ...this.signer }; }
   async listPendingForSigner(_signerUrl?: string): Promise<string[]> {
-    return [...this.pending.entries()].filter(([, p]) => !p.executed && !p.expired).map(([h]) => h);
+    return [...this.pending.entries()].filter(([, p]) => !p.executed && !p.expired && !p.failed).map(([h]) => h);
   }
   /** Every live pending tx, with its principal: the mock does not model per-account lists. */
   async listPendingForAccount(_url?: string): Promise<Array<{ txHash: string; principal: string }>> {
-    return [...this.pending.entries()].filter(([, p]) => !p.executed && !p.expired).map(([txHash, p]) => ({ txHash, principal: p.principal }));
+    return [...this.pending.entries()].filter(([, p]) => !p.executed && !p.expired && !p.failed).map(([txHash, p]) => ({ txHash, principal: p.principal }));
   }
   /** Mock has no signature chain; discovery is exercised via listPendingForSigner. */
   async listPendingViaSignatureChain(): Promise<string[]> { return []; }

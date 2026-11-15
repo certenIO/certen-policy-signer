@@ -11,6 +11,10 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ## Unreleased
 
+### Fixed (DAX-F100)
+
+- A transaction whose chain status is final-failed (an authority rejected it, or it ran and failed) is now `gone` for voting: the resolver ends the request as `expired` with the hold kept as history (`pendingFinal.outcome` `gone:failed`), the signature-chain listing drops it, and the policy engine is never asked about it again. Before, a held (`pending`) request on such a transaction was re-asked on every poll for the life of the signer (the idle lab: 686 policy round trips per 5 minutes from 12 dead requests). No signature that could still count is withheld: a transaction in a final-failed state takes no further votes.
+
 ### Changed (breaking: policy pin, calldata, leaf expiry; DAX-4S round 6)
 
 - **A bound seat decides nothing until its policy is pinned.** `binding.policy_hash` is now REQUIRED (the hash the seat loads; a binding block without it refuses to start). The seat is `pin_pending` until `POST /v1/admin/pin {seat, hash, by, reason}` pins exactly the loaded hash (a named `seat:` identity, a reason of at least ten characters); until then every decision, a deny included, is refused `policy_pin_missing` before anything of it is read, and after the configured hash changes the seat is `pin_stale` (`policy_hash_mismatch`, detail `pin_stale`) until the step is repeated. The pin is a `policy.pinned` entry of the verified journal and survives a restart. The earlier "record the hash and do not compare it" reading is gone. Migration: set `binding.policy_hash` on every bound scope and run the pin step once per seat after the deploy.

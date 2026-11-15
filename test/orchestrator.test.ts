@@ -132,6 +132,40 @@ describe('orchestrator pipeline', () => {
     expect(policy.calls.length).toBe(0); // gone before we ask the engine
   });
 
+  it('DAX-F100: a held request whose tx ends rejected on chain is retired, and the engine is never asked again', async () => {
+    // The engine answered "pending" (a person has not decided), so the request is held and asked again on every poll. Then an authority
+    // rejected the transaction: its chain status is final and it will never take another vote. Before the fix the resolver still returned it as
+    // resolved, so every poll for the life of the signer re-asked the engine (the idle lab: 686 policy round trips per 5 minutes).
+    const d = setup();
+    const policy = new MockPolicyClient({ decision: 'pending', reason: 'awaiting a person' });
+    const o = orch(d, policy);
+    const held = await o.handle({ txHash: TX, signerUrl: SIGNER });
+    expect(held.status).toBe('awaiting_policy');
+    expect(policy.calls.length).toBe(1);
+    await o.handle({ txHash: TX, signerUrl: SIGNER });
+    expect(policy.calls.length).toBe(2); // the control: a live held request IS asked again every poll
+
+    d.acc.pending.get(TX)!.failed = true; // the chain now says rejected
+    const r = await o.handle({ txHash: TX, signerUrl: SIGNER });
+    expect(r.status).toBe('expired');
+    expect(policy.calls.length).toBe(2); // gone before the engine is asked
+    expect(d.acc.submissions.length).toBe(0);
+    // the hold is kept as history, with the way it ended
+    expect(r.pending).toBeUndefined();
+    expect(r.pendingFinal?.outcome).toBe('gone:failed');
+    // ended: later polls are an idempotent skip
+    await o.handle({ txHash: TX, signerUrl: SIGNER });
+    expect(policy.calls.length).toBe(2);
+  });
+
+  it('DAX-F100: the resolver reports a final-failed tx as gone with its own reason, and the mock lists no failed tx as pending', async () => {
+    const d = setup();
+    d.acc.pending.get(TX)!.failed = true;
+    expect(await d.resolver.resolve({ txHash: TX, signerUrl: SIGNER })).toEqual({ kind: 'gone', reason: 'failed' });
+    expect(await d.acc.listPendingForSigner()).toEqual([]);
+    expect(await d.acc.listPendingForAccount()).toEqual([]);
+  });
+
   it('policy engine error → stays awaiting_policy (retryable), no submission', async () => {
     const d = setup();
     const failing: PolicyClient = { decide: async () => { throw new Error('policy down'); } };

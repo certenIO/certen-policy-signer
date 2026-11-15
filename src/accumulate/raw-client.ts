@@ -123,8 +123,8 @@ export class RawAccumulateClient implements AccumulateClient {
       const status: string = (rec?.status ?? '').toString();
       const executed = /delivered|executed/i.test(status);
       const expired = /expired/i.test(status);
-      // A final error status (the transaction ran and failed). Not used to retire a vote — the resolver
-      // never reads it — only to stop waiting on enrolment settlement for a transaction that will not execute.
+      // A final error status (the transaction was rejected, or ran and failed): it will never take another vote. The resolver retires
+      // the request on it (DAX-F100), the signature-chain listing drops it, and enrolment settlement stops waiting on it.
       const failed = !executed && !expired && /fail|error|reject/i.test(status);
       const principal = rawTransaction?.header?.principal ?? '';
       return {
@@ -329,13 +329,13 @@ export class RawAccumulateClient implements AccumulateClient {
       this.logger.warn({ book: bookUrl, err: (e as Error).message }, 'listPendingViaSignatureChain failed');
       return [];
     }
-    // A signatureRequest can reference a tx that has since executed/expired — confirm each is still pending.
+    // A signatureRequest can reference a tx that has since executed, expired or ended rejected/failed — confirm each is still pending.
     const out: string[] = [];
     for (const id of txIds) {
       const { hash, principal } = splitTxId(id);
       if (!hash) continue;
       const p = await this.getPendingTx(hash, principal || bookUrl).catch(() => ({ found: false } as PendingTxResult));
-      if (p.found && !p.executed && !p.expired) out.push(hash);
+      if (p.found && !p.executed && !p.expired && !p.failed) out.push(hash);
     }
     return [...new Set(out)];
   }
