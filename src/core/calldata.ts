@@ -17,11 +17,18 @@
  */
 import { ADDRESS_RE, isAmount, toHex } from './bytes.js';
 import { closedObject, dataObject } from './decision-identity.js';
-import { keccak256Hex } from './calldata-keccak.js';
+import { keccak256Hex, normalizeAddress } from './calldata-keccak.js';
 import { findToken, isNamedProxy, validateTokenRegistry, type TokenEntry, type TokenRegistry } from './calldata-registry.js';
 
 export const SELECTOR_TRANSFER = 'a9059cbb';
 export const SELECTOR_APPROVE = '095ea7b3';
+/**
+ * transferWithReference(address to, uint256 amount, bytes32 paymentRef): the payment of the lab's reference token (ADR 0038, Tier A: paymentRef is the
+ * instruction hash). Understood ONLY for a token the registry flags `paymentReference`, as an erc20.transfer that carries `reference` (round 8, finding
+ * DAXL4-F14, DECISION.md DE-107); at any other contract the selector stays unknown.
+ */
+export const SELECTOR_TRANSFER_WITH_REFERENCE = 'e2233eb8';
+const REFERENCE_LENGTH = 100;
 /** execute(address,uint256,bytes): the one wrapper form understood, and only for a wrapper the registry names */
 export const SELECTOR_EXECUTE = 'b61d27f6';
 /** transfer and approve calldata is exactly 4 + 64 bytes; a wrapper's head is 4 + 4 words */
@@ -172,6 +179,8 @@ export interface DecodedCall {
   viaProxy: string | null;
   /** native value of the outer call (0 for a token call) */
   value: string;
+  /** a payment reference (0x + 64 lower-case hex) of a transferWithReference to a reference-capable token: the last word of the calldata; absent otherwise */
+  reference?: string;
   /** keccak256 of the calldata bytes */
   calldataHash: string;
   text: string;
@@ -218,23 +227,28 @@ function undecoded(ctx: Context, reason: string, detail?: string, extra: { unkno
 
 const EXEC_MEMBERS = ['chainId', 'source', 'target', 'value', 'calldata'] as const;
 
-function readExecution(input: unknown): { ok: true; execution: DecodeExecution; calldata: string } | { ok: false; detail: string } {
+type ExecutionRead = { ok: true; execution: DecodeExecution; calldata: string } | { ok: false; detail: string };
+
+function readExecution(input: unknown): ExecutionRead {
   // a data snapshot: a non-object, an accessor, a symbol key or another prototype is a shape problem
   const probe = dataObject(input);
-  if (probe === null) return { ok: false, detail: 'shape' };
-  for (const k of Object.keys(probe)) if (!(EXEC_MEMBERS as readonly string[]).includes(k)) return { ok: false, detail: 'unknown:' + k };
-  for (const k of EXEC_MEMBERS) if (probe[k] === undefined) return { ok: false, detail: 'missing:' + k };
+  const malformed = (detail: string): ExecutionRead => ({ ok: false, detail });
+  if (probe === null) return malformed('shape');
+  for (const k of Object.keys(probe)) if (!(EXEC_MEMBERS as readonly string[]).includes(k)) return malformed('unknown:' + k);
+  for (const k of EXEC_MEMBERS) if (probe[k] === undefined) return malformed('missing:' + k);
   const chainId = probe['chainId'];
-  if (typeof chainId !== 'number' || !Number.isSafeInteger(chainId) || chainId < 1 || Object.is(chainId, -0)) return { ok: false, detail: 'chainId' };
-  const source = probe['source'];
-  if (typeof source !== 'string' || !ADDRESS_RE.test(source)) return { ok: false, detail: 'source' };
-  const target = probe['target'];
-  if (typeof target !== 'string' || !ADDRESS_RE.test(target)) return { ok: false, detail: 'target' };
+  if (typeof chainId !== 'number' || !Number.isSafeInteger(chainId) || chainId < 1 || Object.is(chainId, -0)) return malformed('chainId');
+  // an address arrives in lower case or in the EIP-55 checksum case and is its lower-case form from here on (round 8, DE-106); any other spelling, a mixed-case one with a wrong checksum
+  // included, is input_malformed naming the member, as the goldens u17 and g-input fix (the NAME address_checksum_invalid is the wire's: authenticateExecution and the binding parser say it first)
+  const source = normalizeAddress(probe['source']);
+  if (!source.ok) return malformed('source');
+  const target = normalizeAddress(probe['target']);
+  if (!target.ok) return malformed('target');
   const value = probe['value'];
-  if (!isAmount(value)) return { ok: false, detail: 'value' };
+  if (!isAmount(value)) return malformed('value');
   const calldata = probe['calldata'];
-  if (typeof calldata !== 'string') return { ok: false, detail: 'calldata' };
-  return { ok: true, execution: { chainId, source, target, value }, calldata };
+  if (typeof calldata !== 'string') return malformed('calldata');
+  return { ok: true, execution: { chainId, source: source.address, target: target.address, value }, calldata };
 }
 
 function readPolicy(policy: unknown): boolean | null {
@@ -246,7 +260,7 @@ function readPolicy(policy: unknown): boolean | null {
   }
 }
 
-function decodedCall(ex: DecodeExecution, hash: string, entry: TokenEntry, kind: Kind, beneficiary: string, asset: string, amount: string, via: string | null): DecodedCall {
+function decodedCall(ex: DecodeExecution, hash: string, entry: TokenEntry, kind: Kind, beneficiary: string, asset: string, amount: string, via: string | null, reference: string | null = null): DecodedCall {
   const amountText = formatUnitsExact(amount, entry.decimals) as string;
   const unlimited = kind === 'erc20.approve' && amount === '115792089237316195423570985008687907853269984665640564039457584007913129639935';
   let text: string;
@@ -254,6 +268,7 @@ function decodedCall(ex: DecodeExecution, hash: string, entry: TokenEntry, kind:
   else if (kind === 'erc20.approve') text = `APPROVE ${unlimited ? 'UNLIMITED ' : ''}ALLOWANCE (not a transfer): spender ${beneficiary} may spend up to ${amountText} ${entry.symbol} of ${ex.source} on chain ${ex.chainId} (token ${asset})`;
   else text = `SEND ${amountText} ${entry.symbol} (native) from ${ex.source} to ${beneficiary} on chain ${ex.chainId}`;
   if (via !== null) text += ` via proxy ${via}`;
+  if (reference !== null) text += ` with payment reference ${reference}`;
   return {
     status: 'decoded',
     approval: 'decoded',
@@ -272,6 +287,7 @@ function decodedCall(ex: DecodeExecution, hash: string, entry: TokenEntry, kind:
     viaProxy: via,
     value: ex.value,
     calldataHash: hash,
+    ...(reference !== null ? { reference } : {}),
     text,
   };
 }
@@ -298,6 +314,21 @@ function decodeInner(input: unknown, registryInput: unknown, policyInput: unknow
 
   // a wrapper selector at a contract the registry does not name is refused before the wrapper is read
   if (bytes.length >= 4 && hexOf(bytes, 0, 4) === SELECTOR_EXECUTE && !isNamedProxy(registry, ex.chainId, ex.target)) return undecoded(ctx, 'proxy_not_named', SELECTOR_EXECUTE);
+
+  // the reference payment (round 8, DE-107): understood only for a token the registry flags, and then read as strictly as transfer: exactly 4 + 96 bytes,
+  // the address word padded with twelve zero bytes, nothing after the reference; at any other contract the selector is as unknown as it ever was
+  if (bytes.length >= 4 && hexOf(bytes, 0, 4) === SELECTOR_TRANSFER_WITH_REFERENCE) {
+    const token = findToken(registry, ex.chainId, ex.target);
+    if (token === null || token.paymentReference !== true) return undecoded(ctx, 'selector_unknown', SELECTOR_TRANSFER_WITH_REFERENCE);
+    if (bytes.length < REFERENCE_LENGTH) return undecoded(ctx, 'calldata_too_short', 'expected ' + REFERENCE_LENGTH + ' got ' + bytes.length);
+    if (bytes.length > REFERENCE_LENGTH) return undecoded(ctx, 'calldata_trailing_bytes', 'expected ' + REFERENCE_LENGTH + ' got ' + bytes.length);
+    if (!zeroPad(bytes, 4, 16)) return undecoded(ctx, 'address_pad_dirty');
+    const to = '0x' + hexOf(bytes, 16, 36);
+    const amount = wordValue(bytes, 36).toString();
+    const reading = { kind: 'erc20.transfer' as const, beneficiary: to, amount };
+    if (ex.value !== '0') return undecoded(ctx, 'token_call_carries_value', undefined, { reading });
+    return decodedCall(ex, ctx.hash, token, 'erc20.transfer', to, ex.target, amount, null, '0x' + hexOf(bytes, 68, 100));
+  }
 
   const r = readBytes(bytes);
   if (!r.ok) return undecoded(ctx, r.reason, r.detail);

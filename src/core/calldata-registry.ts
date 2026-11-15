@@ -9,9 +9,12 @@
  *   symbol    1 to 12 ASCII letters and digits with at least one letter (no punctuation, no spaces, no Unicode, no controls)
  *   decimals  an integer from 0 to 36
  *   proxies   lowercase addresses of wrapper contracts the policy names for this token (never on a native entry)
+ *   paymentReference  true when the policy names the token as REFERENCE-CAPABLE: its transferWithReference(address,uint256,bytes32) is understood as an
+ *             erc20.transfer that carries a payment reference (round 8, finding DAXL4-F14, DECISION.md DE-107). Boolean; false is the absence of the flag
+ *             (it is dropped from the canonical form, so it does not move the hash); never on a native entry
  * Refusals (reason, detail is a path such as tokens[2].symbol): registry_malformed, registry_schema_invalid,
  * registry_too_large, token_malformed, token_chain_invalid, token_address_invalid, token_symbol_invalid,
- * token_decimals_invalid, token_proxies_invalid, token_duplicate, proxy_duplicate, symbol_collision, symbol_confusable.
+ * token_decimals_invalid, token_proxies_invalid, token_reference_invalid, token_duplicate, proxy_duplicate, symbol_collision, symbol_confusable.
  *
  * Hash: SHA-256( lp("certen:tokenreg:v1") || lp(canonical registry) ), the canonical form being the RFC 8785 text of the
  * validated registry with tokens sorted by chain then address and proxies sorted, an absent or empty `proxies` omitted. The
@@ -32,6 +35,8 @@ export interface TokenEntry {
   symbol: string;
   decimals: number;
   proxies?: string[];
+  /** reference-capable (true), or absent */
+  paymentReference?: true;
 }
 export interface TokenRegistry {
   schema: 'certen.tokenreg/v1';
@@ -70,7 +75,7 @@ function validateInner(v: unknown): RegistryValidation {
   const entries: TokenEntry[] = [];
   for (let i = 0; i < list.length; i++) {
     const at = 'tokens[' + i + ']';
-    const e = closedObject(list[i], ['chainId', 'address', 'symbol', 'decimals'], ['proxies']);
+    const e = closedObject(list[i], ['chainId', 'address', 'symbol', 'decimals'], ['proxies', 'paymentReference']);
     if (e === null) return refuse('token_malformed', at);
     const chainId = e['chainId'];
     if (typeof chainId !== 'number' || !Number.isSafeInteger(chainId) || chainId < 1 || Object.is(chainId, -0)) return refuse('token_chain_invalid', at + '.chainId');
@@ -92,6 +97,11 @@ function validateInner(v: unknown): RegistryValidation {
         if (typeof p !== 'string' || !ADDRESS_RE.test(p) || p === address) return refuse('token_proxies_invalid', at + '.proxies[' + j + ']');
       }
       if (proxies.length > 0) entry.proxies = [...(proxies as string[])].sort();
+    }
+    if ('paymentReference' in e) {
+      const flag = e['paymentReference'];
+      if (typeof flag !== 'boolean' || (flag && address === 'native')) return refuse('token_reference_invalid', at + '.paymentReference');
+      if (flag) entry.paymentReference = true;
     }
     entries.push(entry);
   }

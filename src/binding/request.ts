@@ -27,8 +27,8 @@
  *   - `chainId` must be numeric (`executionPayload.chainId` or `chainId`; both present must agree). A chain NAME is not an id.
  * The mapping is the signer's reading of the intent format; the Console must build the same object (OQ-DAX4S-2).
  */
-import { ADDRESS_RE, HASH_RE, isAmount } from '../core/bytes.js';
-import { singleCommitment } from '../core/calldata-keccak.js';
+import { HASH_RE, isAmount } from '../core/bytes.js';
+import { normalizeAddress, singleCommitment } from '../core/calldata-keccak.js';
 import { decode } from '../core/calldata.js';
 import { leafExpiryBound, VALIDATOR_HORIZON_SECONDS } from '../core/leaf-expiry.js';
 import { mapDecoded } from '../core/raw-approval.js';
@@ -101,8 +101,15 @@ function chainIdOf(leg: Record<string, unknown>, payload: Record<string, unknown
   return a ?? b ?? null;
 }
 
-/** a canonical address: 0x and 40 LOWER-case hex digits, exactly as the core hashes it. A checksum-case spelling is refused, as the strict decoder refuses it (DAX7A-F2). */
-const lowerAddress = (v: unknown): string | null => (typeof v === 'string' && ADDRESS_RE.test(v) ? v : null);
+/**
+ * An address as it ARRIVES (DAXL4-F13, DECISION.md DE-106): lower case, or the EIP-55 checksum case a real intent carries, read as its lower-case form: every member of the request, the commitment and the
+ * execution handed to the Console is the lower-case form. A mixed-case spelling that is not the checksum form is refused BY NAME (`address_checksum_invalid`), never normalised; an all-upper-case
+ * spelling and anything that is not 0x and 40 hex digits stays refused as before. The core's own function decides (the signer has no second reading of an address).
+ */
+const addressOf = (v: unknown): { ok: true; address: string } | { ok: false; checksum: boolean } => {
+  const a = normalizeAddress(v);
+  return a.ok ? a : { ok: false, checksum: a.reason === 'address_checksum_invalid' };
+};
 
 export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransaction' | 'summary'> & { header?: Pick<TransactionHeaderInfo, 'expiresAt'> }, opts: BuildOptions = {}): BuildResult {
   const allowRaw = opts.allowRaw === true;
@@ -214,10 +221,14 @@ function mapLeg(leg: unknown, txHash: string, operationId: string, allowRaw: boo
 
   const chainId = chainIdOf(leg, payload);
   if (chainId === null) return fail('chain_id');
-  const source = lowerAddress(leg['from'] ?? payload['from']);
-  if (source === null) return fail('source_address');
-  const targetPayload = lowerAddress(payload['target']);
-  const targetLeg = lowerAddress(leg['to']);
+  const sourceRead = addressOf(leg['from'] ?? payload['from']);
+  if (!sourceRead.ok) return fail(sourceRead.checksum ? 'address_checksum_invalid:source' : 'source_address');
+  const source = sourceRead.address;
+  const targetPayloadRead = addressOf(payload['target']);
+  const targetLegRead = addressOf(leg['to']);
+  if ((!targetPayloadRead.ok && targetPayloadRead.checksum) || (!targetLegRead.ok && targetLegRead.checksum)) return fail('address_checksum_invalid:target');
+  const targetPayload = targetPayloadRead.ok ? targetPayloadRead.address : null;
+  const targetLeg = targetLegRead.ok ? targetLegRead.address : null;
   if (targetPayload === null && targetLeg === null) return fail('target_address');
   if (targetPayload !== null && targetLeg !== null && targetPayload !== targetLeg) return fail('target_disagrees');
   const target = (targetPayload ?? targetLeg)!;
@@ -240,7 +251,9 @@ function mapLeg(leg: unknown, txHash: string, operationId: string, allowRaw: boo
 
   // The strict decode: the core decoder reads the bytes. The signer has no token registry, so it names the called address as the token (and the
   // chain's native currency): the STRUCTURE is decoded exactly and raw base units and addresses are bound. Everything else is undecoded.
-  const registry = { schema: 'certen.tokenreg/v1', tokens: [{ chainId, address: 'native', symbol: 'NATIVE', decimals: 0 }, { chainId, address: target, symbol: 'TOKEN', decimals: 0 }] };
+  // The called address is also flagged reference-capable (DAXL4-F14, DE-107): the signer binds the STRUCTURE of a transferWithReference as an erc20.transfer (the ten members); the Console's own registry flag decides
+  // whether that payment is understood and may be approved, and a token that registry does not flag is decode_required there.
+  const registry = { schema: 'certen.tokenreg/v1', tokens: [{ chainId, address: 'native', symbol: 'NATIVE', decimals: 0 }, { chainId, address: target, symbol: 'TOKEN', decimals: 0, paymentReference: true }] };
   const decoded = decode({ chainId, source, target, value: value ?? '0', calldata }, registry, { allowRaw });
   if (decoded.status === 'undecoded') {
     if (TEXT_REASONS.has(decoded.reason)) return fail(decoded.reason);

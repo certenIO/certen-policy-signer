@@ -52,7 +52,7 @@ describe('the request built from a pending intent', () => {
     const v = ok(intentBody({ legs: [leg({ commitment: c.toUpperCase().replace('0X', '0x') })] }), '0x' + TX.toUpperCase());
     expect(v.request['executionCommitment']).toBe(c);
     expect(v.request['txHash']).toBe('0x' + TX);
-    // a checksum-case address is refused by name, as the strict decoder refuses it (DAX7A-F2): no second spelling of one address
+    // an ALL-UPPER-CASE address is refused by name (DAX7A-F2 and DE-106): the EIP-55 checksum case is read as its lower-case form since round 8 (test/binding-request-r8.test.ts), nothing else is
     expect(build(intentBody({ legs: [leg({ from: '0x' + 'AB'.repeat(20) })] }))).toEqual({ ok: false, detail: 'source_address' });
     // hex digits of the CALLDATA are not normalised either (golden v2 g15, DE-91, DAXCORE2 R1): upper case is refused, never read as the same bytes
     expect(build(intentBody({ legs: [leg({ to: '0x' + 'CD'.repeat(20) })] }))).toEqual({ ok: false, detail: 'calldata_hex_invalid' });
