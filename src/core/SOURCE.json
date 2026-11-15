@@ -1,5 +1,5 @@
 {
-  "commit": "cef78ccc8a4e8fb63b3339d78bd7be5ead384228",
+  "commit": "641055f3ded3755a1de7b7528bfea7bcd7ddca67",
   "dir": "packages/core/src",
   "files": {
     "bytes.ts": "a6e87147398be7fab345727dbef4f4cb1b953972dff446ccbe14d3caef61d7d7",
@@ -15,7 +15,7 @@
     "main-chain-entry.ts": "4b25a40add1ed66760c0ad329514a5e4353059186cdd2c6c0695f535e9c98dbd",
     "acceptance.ts": "7eacf7b26a574daafc6f02cd0dcbc68d929d094ed73d94174e9a3a47f49035e5",
     "lineage-online.ts": "d61363d2f064254290c59c45108288ef7ea21538c17ccc81fb11420cc254b82d",
-    "registry-online.ts": "997eed674f523813dfb14956a789195b626e2433454333db3170a5920f164a98",
+    "registry-online.ts": "cd60ca035a6ac4400155ee540ec7c19bd06ee1e2f54b8d88abb4f3b330f47056",
     "reader.ts": "7c505ebff364ecc3c0462e0e2768f93cde931e7cbd5bebfd5d0bf0f7db6e0c64",
     "log.ts": "99f2b643e6a9f15309b01fa6d958ea5c5e13d7f3dd782b886b4823983c4fbc20",
     "decision-identity.ts": "477872451e1cc69d979494ed67e4a69797273a6115c94eec9d8fe3e151001cdf",

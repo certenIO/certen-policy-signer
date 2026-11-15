@@ -1,6 +1,6 @@
 /**
  * DAX7A-F2, the CROSS-CHECK: two readers of the same bytes can disagree. The 50 golden calldata cases of the strict core decoder, VERSION 2
- * (transaction-controls pl/dax-core-consolidated cef78ccc8a4e8fb63b3339d78bd7be5ead384228, packages/core/fixtures/calldata-golden.v2.json, sha256 2158dbce...2ed3,
+ * (transaction-controls pl/dax-core-spec-r7 641055f3ded3755a1de7b7528bfea7bcd7ddca67 (golden v2 unchanged since cef78ccc), packages/core/fixtures/calldata-golden.v2.json, sha256 2158dbce...2ed3,
  * copied byte for byte to test/fixtures/calldata-golden-v2-cef78cc.json; FICTIONAL parties and tokens) are run through BOTH
  * calldata readings the signer has:
  *   MAPPING  the request builder that DECIDES what a signature binds (src/binding/request.ts, from a one-leg intent), and

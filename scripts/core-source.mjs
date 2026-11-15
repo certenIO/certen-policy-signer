@@ -10,7 +10,7 @@
  *
  * Nothing else names the commit: scripts/sync-core.mjs and test/core-drift.test.ts both import this file.
  */
-export const CORE_SOURCE_COMMIT = 'cef78ccc8a4e8fb63b3339d78bd7be5ead384228';
+export const CORE_SOURCE_COMMIT = '641055f3ded3755a1de7b7528bfea7bcd7ddca67';
 /** the directory of the canonical files inside transaction-controls */
 export const CORE_SOURCE_DIR = 'packages/core/src';
 /** the folder of the copies, relative to the signer repository root */
