@@ -10,7 +10,8 @@
  * (GR-82, decision R4-3, DAX-2 round 6): a version that registers (an active version 1) or reactivates (suspended to
  * active) is never refused for lack of an acceptance at its entry time; it WAITS and is in force from the later of its
  * entry time and the entry time of the acceptance in force, never before; a suspension, a retirement or a change while
- * active keeps its own entry time and the head by version decides the status. The verdict is about a stated time `at`
+ * active keeps its own entry time and the head by version decides the status, BEFORE any acceptance is read (a suspended or retired head answers subject_suspended or
+ * subject_retired whatever the acceptance account holds or fails to hold: GR-56, the principal alone decides a decrease). The verdict is about a stated time `at`
  * (default: now, the end of time for the reader) and needs the acceptance in force at that time (GR-57, GR-83); an
  * entry written after `at` does not exist for it; the answer for a registration in force carries `activeSince`. The
  * legacy rule (every increase judged at its own entry time) has no place here: ERRATA.md E6-02 keeps it in the
@@ -142,31 +143,32 @@ export function resolveSubjectOnlineWith(input: Omit<ResolveSubjectOnlineInput, 
     if (registers || reactivates) needsAt.push({ time: times[i]!, version: r.version as number });
   });
   const head = parts.regs[parts.regs.length - 1]!;
-  const consentNeeded = needsAt.length > 0 || head.status === 'active';
+  // GR-56 (W6, finding DAXCORE2-F4): a decrease needs no acceptance and the principal alone decides it, so a head that is suspended or retired answers BEFORE any
+  // acceptance is read: an acceptance account that is missing, unreadable or revoked can never hide a suspension or a retirement (and is not even asked for).
+  if (head.status !== 'active') return headDecision(parts);
+  // the head is active: the increase that put it in force (a registration or a reactivation) needs the subject's consent
   const accepted: Array<Placed<Acceptance>> = [];
-  if (consentNeeded) {
-    const load = loadAcceptances();
-    if (!load.ok) return load.result;
-    const acc = load.value;
-    if (acc === undefined || acc === null) return unproven('subject_acceptance_missing');
-    if (!isPlainObject(acc) || !isPlainObject(acc['account']) || !Array.isArray(acc['entries'])) return unproven('subject_acceptance_missing', { detail: 'acceptance account unreadable' });
-    const a = acc['account'] as { ownerBook?: unknown; authorities?: unknown; history?: unknown; incomplete?: unknown };
-    const owner = a.ownerBook;
-    // GR-89: the owner of the acceptance account is a key book in the authority set of the subject ADI ITSELF (a book under a sub-ADI is not)
-    if (typeof owner !== 'string' || !subjectBooks.includes(owner)) return unproven('acceptance_account_not_subject');
-    const ag = checkAccountAuthority({ ownerBook: owner, forbiddenBooks: [], authorities: a.authorities, history: a.history, incomplete: a.incomplete, safeAfter });
-    if (!ag.ok) return unproven(ag.reason, ag.index === undefined ? {} : { index: ag.index });
-    const aEntries = acc['entries'] as unknown[];
-    for (let i = 0; i < aEntries.length; i++) {
-      const e = aEntries[i];
-      if (afterEvalTime(e)) continue;
-      const d = decodeAcceptanceEntry(isPlainObject(e) ? e['elements'] : undefined);
-      if (!d.ok) return unproven('account_entry_undecodable', { index: i, cause: d.reason });
-      const t = isPlainObject(e) ? e['entryTime'] : undefined;
-      if (typeof t !== 'number' || !Number.isSafeInteger(t) || t < 0) return unproven('account_entry_undecodable', { index: i, cause: 'entry_time_missing' });
-      if (d.acceptance.subject !== asserted.adi) return unproven('acceptance_names_another_subject', { index: i });
-      accepted.push({ value: d.acceptance, time: t });
-    }
+  const load = loadAcceptances();
+  if (!load.ok) return load.result;
+  const acc = load.value;
+  if (acc === undefined || acc === null) return unproven('subject_acceptance_missing');
+  if (!isPlainObject(acc) || !isPlainObject(acc['account']) || !Array.isArray(acc['entries'])) return unproven('subject_acceptance_missing', { detail: 'acceptance account unreadable' });
+  const a = acc['account'] as { ownerBook?: unknown; authorities?: unknown; history?: unknown; incomplete?: unknown };
+  const owner = a.ownerBook;
+  // GR-89: the owner of the acceptance account is a key book in the authority set of the subject ADI ITSELF (a book under a sub-ADI is not)
+  if (typeof owner !== 'string' || !subjectBooks.includes(owner)) return unproven('acceptance_account_not_subject');
+  const ag = checkAccountAuthority({ ownerBook: owner, forbiddenBooks: [], authorities: a.authorities, history: a.history, incomplete: a.incomplete, safeAfter });
+  if (!ag.ok) return unproven(ag.reason, ag.index === undefined ? {} : { index: ag.index });
+  const aEntries = acc['entries'] as unknown[];
+  for (let i = 0; i < aEntries.length; i++) {
+    const e = aEntries[i];
+    if (afterEvalTime(e)) continue;
+    const d = decodeAcceptanceEntry(isPlainObject(e) ? e['elements'] : undefined);
+    if (!d.ok) return unproven('account_entry_undecodable', { index: i, cause: d.reason });
+    const t = isPlainObject(e) ? e['entryTime'] : undefined;
+    if (typeof t !== 'number' || !Number.isSafeInteger(t) || t < 0) return unproven('account_entry_undecodable', { index: i, cause: 'entry_time_missing' });
+    if (d.acceptance.subject !== asserted.adi) return unproven('acceptance_names_another_subject', { index: i });
+    accepted.push({ value: d.acceptance, time: t });
   }
   /** GR-55: the action of the latest entry that names this principal and this registry at or before t (a later list position wins a tie) */
   const inForceAt = (t: number): { action: 'accept' | 'revoke'; time: number } | null => {
@@ -175,7 +177,7 @@ export function resolveSubjectOnlineWith(input: Omit<ResolveSubjectOnlineInput, 
     return best === null ? null : { action: best.value.action, time: best.time };
   };
 
-  // 5. the head decides the status, type and submitter (a suspension or a retirement written while an increase still waits is the status in force: the waiting increase never takes effect)
+  // 5. the active head decides the type and submitter, after the consent (a suspension or a retirement was answered above, before any acceptance was read)
   const decided = headDecision(parts);
   if (!decided.ok) return decided;
 
