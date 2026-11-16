@@ -41,6 +41,8 @@ export interface DecodedDisplaySet {
   amountBase: string;
   /** the exact decimal expansion */
   amountText: string;
+  /** the payment reference of a transferWithReference (0x + 64 lower-case hex), present exactly when the bound call carries one (round 8, DE-107) */
+  reference?: string;
 }
 export interface RawDisplaySet {
   mode: 'raw';
@@ -129,7 +131,7 @@ function expectedInner(bound: unknown, registry: unknown, policy: unknown): Expe
   if (request['beneficiary'] !== d.beneficiary) return refuse('request_decode_mismatch', 'beneficiary');
   if (request['asset'] !== d.asset) return refuse('request_decode_mismatch', 'asset');
   if (request['amount'] !== d.amount) return refuse('request_decode_mismatch', 'amount');
-  const expected: DecodedDisplaySet = { mode: 'decoded', kind: d.kind, chainId, source, beneficiary: d.beneficiary, asset: d.asset, assetSymbol: d.assetSymbol, amountBase: d.amount, amountText: d.amountText };
+  const expected: DecodedDisplaySet = { mode: 'decoded', kind: d.kind, chainId, source, beneficiary: d.beneficiary, asset: d.asset, assetSymbol: d.assetSymbol, amountBase: d.amount, amountText: d.amountText, ...(d.reference !== undefined ? { reference: d.reference } : {}) };
   return { ok: true, mode: 'decoded', expected, unverified: [] };
 }
 
@@ -157,7 +159,8 @@ function compareDisplayed(expected: ExpectedDisplay & { ok: true }, displayed: u
   if (s['mode'] !== 'decoded' && s['mode'] !== 'raw') return refuse('display_malformed', 'mode');
   if (s['mode'] !== expected.mode) return refuse('display_mode_mismatch');
 
-  const members: readonly string[] = expected.mode === 'decoded' ? DECODED_MEMBERS : RAW_MEMBERS;
+  // the displayed set is closed: the reference is a member of it exactly when the bound call carries one (a screen that shows none for a reference call is incomplete, one that shows one for a call without is malformed)
+  const members: readonly string[] = expected.mode === 'decoded' ? (expected.expected.reference !== undefined ? [...DECODED_MEMBERS, 'reference'] : DECODED_MEMBERS) : RAW_MEMBERS;
   for (const m of members) if (s[m] === undefined) return refuse('display_incomplete', m);
   for (const k of Object.keys(s)) if (!members.includes(k)) return refuse('display_malformed', k);
   for (const m of members) {
@@ -175,6 +178,7 @@ function compareDisplayed(expected: ExpectedDisplay & { ok: true }, displayed: u
     if (!sameAddress(s['beneficiary'] as string, e.beneficiary)) return refuse('display_beneficiary_mismatch', 'beneficiary');
     if (s['amountBase'] !== e.amountBase) return refuse('display_amount_mismatch', 'amountBase');
     if (s['amountText'] !== e.amountText) return refuse('display_amount_mismatch', 'amountText');
+    if (e.reference !== undefined && s['reference'] !== e.reference) return refuse('display_reference_mismatch', 'reference');
     return expected;
   }
 

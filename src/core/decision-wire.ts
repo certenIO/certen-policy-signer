@@ -23,9 +23,9 @@
  *
  * Pure functions of their arguments: no I/O, no clock; the keccak is the core's own (calldata-keccak.ts).
  */
-import { ADDRESS_RE, HASH_RE, fromHex, hasLoneSurrogate, isAmount } from './bytes.js';
+import { HASH_RE, fromHex, hasLoneSurrogate, isAmount } from './bytes.js';
 import { MAX_CALLDATA_BYTES } from './calldata.js';
-import { singleCommitment } from './calldata-keccak.js';
+import { normalizeAddress, singleCommitment } from './calldata-keccak.js';
 import { ACTION_KINDS } from './grant-profile.js';
 import { hashRequest } from './hashes.js';
 import { dataObject, isPositiveInt, isTime } from './decision-identity.js';
@@ -54,11 +54,15 @@ export interface WireBinding extends Omit<WireRequest, 'operationId'> { validato
 
 export type WireBindingResult =
   | { ok: true; binding: WireBinding; request: WireRequest; requestHash: string; legCount: number; grantRef: GrantRefClaim | null; leafExpiry: number | null }
-  | { ok: false; reason: 'binding_absent' | 'binding_malformed' | 'binding_field_invalid'; detail?: string };
+  | { ok: false; reason: 'binding_absent' | 'binding_malformed' | 'binding_field_invalid' | 'address_checksum_invalid'; detail?: string };
 
-const refuse = (reason: 'binding_absent' | 'binding_malformed' | 'binding_field_invalid', detail?: string): { ok: false; reason: typeof reason; detail?: string } => (detail === undefined ? { ok: false, reason } : { ok: false, reason, detail });
+const refuse = (reason: 'binding_absent' | 'binding_malformed' | 'binding_field_invalid' | 'address_checksum_invalid', detail?: string): { ok: false; reason: typeof reason; detail?: string } => (detail === undefined ? { ok: false, reason } : { ok: false, reason, detail });
 const isHash = (v: unknown): v is string => typeof v === 'string' && HASH_RE.test(v);
-const isAddress = (v: unknown): v is string => typeof v === 'string' && ADDRESS_RE.test(v);
+/** an address that arrived in lower case or in the EIP-55 checksum case, as its lower-case canonical form; the refusal names the member (round 8, DE-106) */
+function addressOf(v: unknown, member: string): { ok: true; address: string } | { ok: false; reason: 'binding_field_invalid' | 'address_checksum_invalid'; detail: string } {
+  const a = normalizeAddress(v);
+  return a.ok ? a : { ok: false, reason: a.reason === 'address_checksum_invalid' ? 'address_checksum_invalid' : 'binding_field_invalid', detail: member };
+}
 
 export function parseWireBinding(input: unknown): WireBindingResult {
   const inp = dataObject(input);
@@ -96,18 +100,29 @@ export function parseWireBinding(input: unknown): WireBindingResult {
   if (!isPositiveInt(o['legCount'])) return refuse('binding_field_invalid', 'legCount');
   if (!isPositiveInt(o['chainId'])) return refuse('binding_field_invalid', 'chainId');
   if (typeof o['kind'] !== 'string' || !(ACTION_KINDS as readonly string[]).includes(o['kind'])) return refuse('binding_field_invalid', 'kind');
-  for (const m of ['source', 'target', 'beneficiary'] as const) if (!isAddress(o[m])) return refuse('binding_field_invalid', m);
-  if (o['asset'] !== 'native' && !isAddress(o['asset'])) return refuse('binding_field_invalid', 'asset');
+  // every address is read once, in lower case or the checksum case, and is the lower-case form from here on: the hash, the commitment and every comparison are over it
+  const addr: Record<'source' | 'target' | 'beneficiary' | 'asset', string> = { source: '', target: '', beneficiary: '', asset: '' };
+  for (const m of ['source', 'target', 'beneficiary'] as const) {
+    const a = addressOf(o[m], m);
+    if (!a.ok) return refuse(a.reason, a.detail);
+    addr[m] = a.address;
+  }
+  if (o['asset'] === 'native') addr.asset = 'native';
+  else {
+    const a = addressOf(o['asset'], 'asset');
+    if (!a.ok) return refuse(a.reason, a.detail);
+    addr.asset = a.address;
+  }
   if (!isAmount(o['amount'])) return refuse('binding_field_invalid', 'amount');
   if (!isHash(o['executionCommitment'])) return refuse('binding_field_invalid', 'executionCommitment');
 
   const request: WireRequest = {
     chainId: o['chainId'],
     kind: o['kind'],
-    source: o['source'] as string,
-    target: o['target'] as string,
-    beneficiary: o['beneficiary'] as string,
-    asset: o['asset'] as string,
+    source: addr.source,
+    target: addr.target,
+    beneficiary: addr.beneficiary,
+    asset: addr.asset,
     amount: o['amount'],
     executionCommitment: o['executionCommitment'],
     operationId: o['validatorOperationId'],
@@ -131,9 +146,9 @@ export function parseWireBinding(input: unknown): WireBindingResult {
 
 export type ExecutionResult =
   | { ok: true; commitment: string }
-  | { ok: false; reason: 'binding_absent' | 'binding_malformed' | 'binding_field_invalid' | 'multi_leg_unsupported' | 'execution_absent' | 'execution_malformed' | 'request_execution_mismatch' | 'raw_mapping_mismatch'; detail?: string };
+  | { ok: false; reason: 'binding_absent' | 'binding_malformed' | 'binding_field_invalid' | 'address_checksum_invalid' | 'multi_leg_unsupported' | 'execution_absent' | 'execution_malformed' | 'request_execution_mismatch' | 'raw_mapping_mismatch'; detail?: string };
 
-const refuseExec = (reason: 'multi_leg_unsupported' | 'execution_absent' | 'execution_malformed' | 'request_execution_mismatch' | 'raw_mapping_mismatch', detail?: string): ExecutionResult => (detail === undefined ? { ok: false, reason } : { ok: false, reason, detail });
+const refuseExec = (reason: 'address_checksum_invalid' | 'multi_leg_unsupported' | 'execution_absent' | 'execution_malformed' | 'request_execution_mismatch' | 'raw_mapping_mismatch', detail?: string): ExecutionResult => (detail === undefined ? { ok: false, reason } : { ok: false, reason, detail });
 const CALLDATA_RE = /^0x([0-9a-f]{2})*$/;
 
 /**
@@ -152,20 +167,22 @@ export function authenticateExecution(binding: unknown, execution: unknown): Exe
   for (const k of Object.keys(e)) if (!(EXECUTION_MEMBERS as readonly string[]).includes(k)) return refuseExec('execution_malformed', 'unknown member ' + k);
   for (const m of EXECUTION_MEMBERS) if (e[m] === undefined) return refuseExec('execution_malformed', 'missing member ' + m);
   if (!isPositiveInt(e['chainId'])) return refuseExec('execution_malformed', 'chainId');
-  if (!isAddress(e['source'])) return refuseExec('execution_malformed', 'source');
-  if (!isAddress(e['target'])) return refuseExec('execution_malformed', 'target');
+  const exSource = normalizeAddress(e['source']);
+  if (!exSource.ok) return refuseExec(exSource.reason === 'address_checksum_invalid' ? 'address_checksum_invalid' : 'execution_malformed', 'source');
+  const exTarget = normalizeAddress(e['target']);
+  if (!exTarget.ok) return refuseExec(exTarget.reason === 'address_checksum_invalid' ? 'address_checksum_invalid' : 'execution_malformed', 'target');
   if (!isAmount(e['value'])) return refuseExec('execution_malformed', 'value');
   const calldata = e['calldata'];
   if (typeof calldata !== 'string' || !CALLDATA_RE.test(calldata) || (calldata.length - 2) / 2 > MAX_CALLDATA_BYTES) return refuseExec('execution_malformed', 'calldata');
 
   if (e['chainId'] !== p.binding.chainId) return refuseExec('request_execution_mismatch', 'chainId');
-  if (e['source'] !== p.binding.source) return refuseExec('request_execution_mismatch', 'source');
-  if (e['target'] !== p.binding.target) return refuseExec('request_execution_mismatch', 'target');
-  const commitment = singleCommitment(e['chainId'], e['target'], e['value'], fromHex(calldata.slice(2)));
+  if (exSource.address !== p.binding.source) return refuseExec('request_execution_mismatch', 'source');
+  if (exTarget.address !== p.binding.target) return refuseExec('request_execution_mismatch', 'target');
+  const commitment = singleCommitment(e['chainId'], exTarget.address, e['value'], fromHex(calldata.slice(2)));
   if (commitment === null || commitment !== p.binding.executionCommitment) return refuseExec('request_execution_mismatch', 'executionCommitment');
   // DE-90: the three members a raw binding maps are compared with the AUTHENTICATED execution, after the commitment
   if (p.binding.kind === 'raw') {
-    if (p.binding.beneficiary !== e['target']) return refuseExec('raw_mapping_mismatch', 'beneficiary');
+    if (p.binding.beneficiary !== exTarget.address) return refuseExec('raw_mapping_mismatch', 'beneficiary');
     if (p.binding.asset !== 'native') return refuseExec('raw_mapping_mismatch', 'asset');
     if (p.binding.amount !== e['value']) return refuseExec('raw_mapping_mismatch', 'amount');
   }

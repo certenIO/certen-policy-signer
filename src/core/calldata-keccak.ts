@@ -81,18 +81,38 @@ export function toChecksumAddress(address: unknown): string | null {
   return out;
 }
 
+const ANY_CASE_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+export type AddressResult = { ok: true; address: string } | { ok: false; reason: 'address_malformed' | 'address_checksum_invalid' };
+
+/**
+ * An address as it may ARRIVE (round 8, finding DAXL4-F13; DECISION.md section 2, DE-106): `0x` and 40 hex digits, all lower-case, or in the EIP-55 checksum
+ * case (real intents carry it: the producer passes addresses as the lab wrote them). The answer is ALWAYS the lower-case canonical form, and every hash and
+ * every comparison of the specification is over that form, so no decision, evidence or Grant member ever holds a mixed-case address. A mixed-case spelling
+ * that is not the checksum form of the address is `address_checksum_invalid`; an all-upper-case spelling stays refused as `address_malformed` (as it always was);
+ * anything that is not `0x` and 40 hex digits is `address_malformed`.
+ */
+export function normalizeAddress(v: unknown): AddressResult {
+  if (typeof v !== 'string' || !ANY_CASE_ADDRESS_RE.test(v)) return { ok: false, reason: 'address_malformed' };
+  const lower = v.toLowerCase();
+  if (v === lower) return { ok: true, address: lower };
+  // an all-upper-case spelling (no lower-case letter) is refused as it always was, even in the negligible case that it is the checksum form
+  if (v.slice(2) === v.slice(2).toUpperCase()) return { ok: false, reason: 'address_malformed' };
+  return v === toChecksumAddress(lower) ? { ok: true, address: lower } : { ok: false, reason: 'address_checksum_invalid' };
+}
+
 const word = (n: bigint): Uint8Array => fromHex(n.toString(16).padStart(64, '0'));
 
 /**
  * The commitment of ONE call: keccak256( chainid as 32 bytes || target as 20 bytes || value as 32 bytes || keccak256(data) ),
  * exactly the abi.encodePacked of CertenAccountV7.computeSingleCommitment. Null when an argument has no commitment (a chain id
  * that is not a safe integer from 1, a target that is not a lowercase address, a value that is not a decimal amount of at most
- * 2^256-1, data that is not bytes). A multi-leg batch commitment is a different form and is not computed here.
+ * 2^256-1, data that is not bytes). A target in the EIP-55 checksum case is committed as its lower-case form (round 8, DE-106). A multi-leg batch commitment is a different form and is not computed here.
  */
 export function singleCommitment(chainId: unknown, target: unknown, value: unknown, data: unknown): string | null {
   if (typeof chainId !== 'number' || !Number.isSafeInteger(chainId) || chainId < 1) return null;
-  if (typeof target !== 'string' || !ADDRESS_RE.test(target)) return null;
+  const t = normalizeAddress(target);
+  if (!t.ok) return null;
   if (!isAmount(value)) return null;
   if (!(data instanceof Uint8Array)) return null;
-  return keccak256Hex(concat(word(BigInt(chainId)), fromHex(target.slice(2)), word(BigInt(value)), keccak256(data)));
+  return keccak256Hex(concat(word(BigInt(chainId)), fromHex(t.address.slice(2)), word(BigInt(value)), keccak256(data)));
 }

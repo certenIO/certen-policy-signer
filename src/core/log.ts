@@ -135,12 +135,49 @@ export type VerifyLogResult =
   | { ok: true; head: LogHead | null; pinned: boolean }
   | { ok: false; reason: string; seq?: number; detail?: string };
 
-const refuse = (reason: string, seq?: number, detail?: string): VerifyLogResult => {
+type LogRefusal = { ok: false; reason: string; seq?: number; detail?: string };
+const refuse = (reason: string, seq?: number, detail?: string): LogRefusal => {
   const r: { ok: false; reason: string; seq?: number; detail?: string } = { ok: false, reason };
   if (seq !== undefined) r.seq = seq;
   if (detail !== undefined) r.detail = detail;
   return r;
 };
+
+/**
+ * The walk of the chain, shared by the full log and the slice from a checkpoint: `base` entries precede the first one carried (0 for a full log: seq
+ * starts at 1), `prevHash` is the hash the first entry must link to (the genesis of the log id, or the hash of the checkpoint entry) and
+ * `firstPrevReason` names a first entry that does not link to it.
+ */
+function walkChain(entries: unknown[], base: number, prevStart: string, firstPrevReason: string): { ok: true; prevHash: string } | { ok: false; refusal: LogRefusal } {
+  let prevHash = prevStart;
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const seq = isPlainObject(e) && isSeq(e['seq']) ? (e['seq'] as number) : undefined;
+    if (!isPlainObject(e) || Object.keys(e).length !== ENTRY_KEYS.length || !ENTRY_KEYS.every((k) => k in e) || seq === undefined || !isPlainObject(e['payload']) || !isHash(e['prev']) || !isHash(e['hash']) || typeof e['kind'] !== 'string') {
+      return { ok: false, refusal: refuse('log_entry_malformed', seq, 'entry ' + i) };
+    }
+    if (!isTime(e['at'])) return { ok: false, refusal: refuse('log_at_invalid', seq) };
+    if (!isKind(e['kind'])) return { ok: false, refusal: refuse('log_kind_unknown', seq) };
+    let recomputed: string;
+    try {
+      recomputed = logEntryHash({ prev: e['prev'] as string, seq, kind: e['kind'], payload: e['payload'], at: e['at'] as number });
+    } catch (err) {
+      if (err instanceof CoreError) return { ok: false, refusal: refuse('log_entry_malformed', seq, err.code) };
+      throw err;
+    }
+    if (recomputed !== e['hash']) return { ok: false, refusal: refuse('log_entry_hash_mismatch', seq) };
+    const expected = base + i + 1;
+    if (seq !== expected) {
+      if (seq < expected) return { ok: false, refusal: refuse('log_seq_duplicate', seq) };
+      const laterHasExpected = entries.slice(i + 1).some((x) => isPlainObject(x) && x['seq'] === expected);
+      return { ok: false, refusal: refuse(laterHasExpected ? 'log_seq_out_of_order' : 'log_seq_gap', seq) };
+    }
+    if (!payloadReadable(e['kind'], e['payload'])) return { ok: false, refusal: refuse('log_payload_invalid', seq, e['kind']) };
+    if (e['prev'] !== prevHash) return { ok: false, refusal: refuse(i === 0 ? firstPrevReason : 'log_prev_mismatch', seq) };
+    prevHash = e['hash'] as string;
+  }
+  return { ok: true, prevHash };
+}
 
 /**
  * Per entry, in order: shape, known kind, hash recomputed from the fields, sequence (gap, out of order, duplicate),
@@ -158,33 +195,9 @@ export function verifyLog(input: VerifyLogInput): VerifyLogResult {
   const entries = input.entries;
   if (!Array.isArray(entries)) return refuse('log_entries_malformed');
 
-  let prevHash = genesisHash(input.logId);
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i];
-    const seq = isPlainObject(e) && isSeq(e['seq']) ? (e['seq'] as number) : undefined;
-    if (!isPlainObject(e) || Object.keys(e).length !== ENTRY_KEYS.length || !ENTRY_KEYS.every((k) => k in e) || seq === undefined || !isPlainObject(e['payload']) || !isHash(e['prev']) || !isHash(e['hash']) || typeof e['kind'] !== 'string') {
-      return refuse('log_entry_malformed', seq, 'entry ' + i);
-    }
-    if (!isTime(e['at'])) return refuse('log_at_invalid', seq);
-    if (!isKind(e['kind'])) return refuse('log_kind_unknown', seq);
-    let recomputed: string;
-    try {
-      recomputed = logEntryHash({ prev: e['prev'] as string, seq, kind: e['kind'], payload: e['payload'], at: e['at'] as number });
-    } catch (err) {
-      if (err instanceof CoreError) return refuse('log_entry_malformed', seq, err.code);
-      throw err;
-    }
-    if (recomputed !== e['hash']) return refuse('log_entry_hash_mismatch', seq);
-    const expected = i + 1;
-    if (seq !== expected) {
-      if (seq < expected) return refuse('log_seq_duplicate', seq);
-      const laterHasExpected = entries.slice(i + 1).some((x) => isPlainObject(x) && x['seq'] === expected);
-      return refuse(laterHasExpected ? 'log_seq_out_of_order' : 'log_seq_gap', seq);
-    }
-    if (!payloadReadable(e['kind'], e['payload'])) return refuse('log_payload_invalid', seq, e['kind']);
-    if (e['prev'] !== prevHash) return refuse(i === 0 ? 'log_genesis_mismatch' : 'log_prev_mismatch', seq);
-    prevHash = e['hash'] as string;
-  }
+  const walked = walkChain(entries, 0, genesisHash(input.logId), 'log_genesis_mismatch');
+  if (!walked.ok) return walked.refusal;
+  const prevHash = walked.prevHash;
 
   const head: LogHead | null = entries.length === 0 ? null : { seq: entries.length, hash: prevHash };
   if (pinned !== null) {
@@ -193,4 +206,49 @@ export function verifyLog(input: VerifyLogInput): VerifyLogResult {
     return { ok: true, head, pinned: true };
   }
   return { ok: true, head, pinned: false };
+}
+
+export interface VerifyLogFromInput {
+  logId: string;
+  /** the entry the slice follows: `{seq, hash}` of entry `seq` of the log; the first entry carried is `seq + 1` and links to `hash` */
+  checkpoint: unknown;
+  entries: unknown;
+  /** a pinned head the slice must reach (round 8, EVIDENCE.md section 3b): one AFTER the checkpoint is reached by the chain; one AT the checkpoint must be the checkpoint itself (and pins the checkpoint, not the slice); one BEFORE it is refused: the slice does not reach it */
+  expectedHead?: unknown;
+}
+export type VerifyLogFromResult =
+  | { ok: true; checkpoint: LogHead; head: LogHead | null; pinned: boolean; checkpointPinned: boolean }
+  | { ok: false; reason: string; seq?: number; detail?: string };
+
+/**
+ * The slice of a log that follows a CHECKPOINT (round 8, OQ-7P-3, EVIDENCE.md section 3b): the entries from `checkpoint.seq + 1`, each checked as in
+ * `verifyLog`, the first one linking to the checkpoint hash instead of the genesis (`log_checkpoint_mismatch`). It proves the chain FROM the checkpoint
+ * forward and nothing about what precedes it: whether the checkpoint is the log's own entry is the caller's commitment (a pin or an earlier verified head),
+ * never this function's. Entries before the checkpoint are neither carried nor read.
+ */
+export function verifyLogFrom(input: VerifyLogFromInput): VerifyLogFromResult {
+  if (!isStr(input.logId) || input.logId.length === 0 || input.logId.length > MAX_LOG_ID) return refuse('log_id_malformed');
+  const cp = input.checkpoint;
+  if (!isPlainObject(cp) || Object.keys(cp).length !== 2 || !isSeq(cp['seq']) || !isHash(cp['hash'])) return refuse('log_checkpoint_malformed');
+  const checkpoint: LogHead = { seq: cp['seq'] as number, hash: cp['hash'] as string };
+  const pin = input.expectedHead;
+  let pinned: LogHead | null = null;
+  if (pin !== undefined && pin !== null) {
+    if (!isPlainObject(pin) || Object.keys(pin).length !== 2 || !isSeq(pin['seq']) || !isHash(pin['hash'])) return refuse('log_pin_malformed');
+    pinned = { seq: pin['seq'] as number, hash: pin['hash'] as string };
+    if (pinned.seq < checkpoint.seq) return refuse('log_pin_before_checkpoint');
+  }
+  const atCheckpoint = pinned !== null && pinned.seq === checkpoint.seq;
+  if (atCheckpoint && pinned!.hash !== checkpoint.hash) return refuse('log_head_mismatch');
+  const entries = input.entries;
+  if (!Array.isArray(entries)) return refuse('log_entries_malformed');
+  const walked = walkChain(entries, checkpoint.seq, checkpoint.hash, 'log_checkpoint_mismatch');
+  if (!walked.ok) return walked.refusal;
+  const head: LogHead | null = entries.length === 0 ? null : { seq: checkpoint.seq + entries.length, hash: walked.prevHash };
+  if (pinned !== null && !atCheckpoint) {
+    if (checkpoint.seq + entries.length < pinned.seq) return refuse('log_truncated');
+    if ((entries[pinned.seq - checkpoint.seq - 1] as { hash: string }).hash !== pinned.hash) return refuse('log_head_mismatch');
+    return { ok: true, checkpoint, head, pinned: true, checkpointPinned: true };
+  }
+  return { ok: true, checkpoint, head, pinned: false, checkpointPinned: atCheckpoint };
 }
