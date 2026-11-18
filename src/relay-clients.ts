@@ -11,6 +11,8 @@
  * signing), restricted to pages in this signer's keyring and gated by the `x-governance-key` as well.
  * The upstream fetch, parameter patterns and the Accumulate record normalisation are the Phase 5 relay's.
  */
+import type { PauseOp, PauseOutcome } from './binding/pause-store.js';
+import type { PauseState } from './core/pause.js';
 import http from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { normalizeTxRecord } from './accumulate/raw-client.js';
@@ -25,7 +27,7 @@ import type { CountedReader } from './binding/read-cache.js';
 import { relayAccountRoute } from './binding/relay-routes.js';
 
 export const RELAY_CLIENT_PREFIX = '/relay';
-export type RelayScope = 'proof' | 'tx' | 'pending' | 'governance' | 'chain';
+export type RelayScope = 'proof' | 'tx' | 'pending' | 'governance' | 'chain' | 'pause';
 
 export interface RelayClientsDeps {
   clients: Array<{ name: string; key: string; scopes: RelayScope[] }>;
@@ -56,6 +58,12 @@ export interface RelayClientsDeps {
    * counters. Absent => the chain routes are 503.
    */
   chainReader?: () => CountedReader;
+  /**
+   * AGT-3: the PERSISTED pause this signer reads before every signature (src/binding/pause-store.ts), for the Console's person-held
+   * agent pause (scope `pause`): `GET /relay/pause` reads it, `POST /relay/pause` and `/relay/resume` set and lift a SUBJECT pause
+   * with a named seat and a reason (the core's own rules, DE-24 to DE-27). A seat-wide pause stays with the admin route. Absent => 503.
+   */
+  pause?: { snapshot(): PauseState; set(op: PauseOp): Promise<PauseOutcome>; resume(op: PauseOp): Promise<PauseOutcome> };
   timeoutMs?: number;
   logger: Logger;
   fetchImpl?: typeof fetch;
@@ -146,6 +154,29 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
       const out = await relayAccountRoute(d.chainReader(), m[1] as 'data' | 'authorities' | 'history' | 'keybook' | 'chainlen', m[2]);
       for (const [k, v] of Object.entries(out.headers)) res.setHeader(k, v);
       return send(res, out.status, out.body);
+    }
+
+    // AGT-3: the agent pause (scope pause). The signer is the enforcement point: what is set here is journalled and read again before
+    // EVERY signature, a reject vote included (orchestrator pausedFor -> PauseStore.check -> core checkSigningFromText).
+    if (path === '/relay/pause' || path === '/relay/resume') {
+      if (!need('pause')) return send(res, 403, { error: 'forbidden: scope pause required' });
+      if (!d.pause) return send(res, 503, { error: 'pause store not configured' });
+      if (method === 'GET' && path === '/relay/pause') {
+        const st = d.pause.snapshot();
+        return send(res, 200, { pauses: st.pauses.filter((p) => p.scope === 'subject') });
+      }
+      if (method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+      let b: Record<string, unknown>;
+      try { b = JSON.parse((await readJsonBody(req)) || '{}'); } catch { return send(res, 400, { error: 'body must be JSON' }); }
+      if (b === null || typeof b !== 'object' || Array.isArray(b)) return send(res, 400, { error: 'body must be a JSON object' });
+      const keys = Object.keys(b).sort().join(',');
+      if (keys !== 'by,id,reason,scope') return send(res, 400, { error: 'body must be exactly {scope, id, by, reason}' });
+      if (b.scope !== 'subject') return send(res, 400, { error: 'scope must be subject: a seat-wide pause is the admin route' });
+      const op = { scope: 'subject' as const, id: String(b.id), by: String(b.by), reason: String(b.reason) };
+      const out = path === '/relay/pause' ? await d.pause.set(op) : await d.pause.resume(op);
+      if (!out.ok) return send(res, out.reason === 'not_paused' ? 409 : out.reason.startsWith('journal_') ? 500 : 400, { error: out.reason, ...(out.detail !== undefined ? { detail: out.detail } : {}) });
+      d.logger.warn({ audit: path === '/relay/pause' ? 'subject_paused' : 'subject_resumed', client: client.name, id: op.id, by: op.by }, 'subject pause changed');
+      return send(res, 200, { pauses: out.state.pauses.filter((p) => p.scope === 'subject'), ...(out.status ? { status: out.status } : {}) });
     }
 
     // GET /relay/proof/tx/:hash
@@ -323,4 +354,14 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
 
     return send(res, 404, { error: 'not found' });
   };
+}
+
+/** a request body, at most 4 KiB (a pause body is a few short strings) */
+function readJsonBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let b = '';
+    req.on('data', (c) => { b += c; if (b.length > 4096) { reject(new Error('body too large')); req.destroy(); } });
+    req.on('end', () => resolve(b));
+    req.on('error', reject);
+  });
 }
