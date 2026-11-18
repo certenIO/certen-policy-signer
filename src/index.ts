@@ -468,6 +468,8 @@ async function main() {
       governanceKey: cfg.admin.governance_admin_key,
       ...(readCache ? { chainReader: () => readCache.evaluation() } : {}),
       pages: () => keyring.scopes().map((s) => s.page),
+      // AGT-3: the Console's agent pause writes the SAME persisted pause every signature reads
+      pause,
       applyKeyPageOp: governKeyPage,
       // G-65: the whole operation list is checked against the page as it reads now, before anything is signed.
       readPage: (page) => readPage(accumulate, page),
