@@ -454,7 +454,7 @@ const Schema = z.object({
     relay_clients: z.array(z.object({
       name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, 'admin.relay_clients[].name must be 1-64 of [A-Za-z0-9._-]'),
       key: z.string(),                   // `env:NAME`
-      scopes: z.array(z.enum(['proof', 'tx', 'pending', 'governance', 'chain'])).min(1),
+      scopes: z.array(z.enum(['proof', 'tx', 'pending', 'governance', 'chain', 'pause'])).min(1),
     }).strict()).optional(),
   }).default({})),
   // Phase 7 officer intake (contract §3–4): personal signatures made on a person's own device, verified and
