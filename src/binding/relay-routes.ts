@@ -22,7 +22,7 @@
  *                                                                                           the Console cache keys its facts on, like this one
  *
  * `:account` is the acc:// URL, percent-encoded as ONE path segment. Not a generic chain proxy: `data`, `history` and `chainlen` answer only
- * for the three CERTEN data accounts (certen-grants, certen-subjects, certen-acceptances); `authorities` for those and for an ADI
+ * for the four CERTEN data accounts (certen-grants, certen-subjects, certen-acceptances, certen-mandates); `authorities` for those and for an ADI
  * root; `keybook` for a key book URL. Anything else is 400. A fact the node could not give is 502 `unreadable`: never an empty
  * answer, never an allow. Every response carries `x-reader-queries`, `x-reader-cache-hits`, `x-reader-cache-misses` and
  * `x-reader-max-fact-age-ms` so a caller can measure what its read cost the node.
@@ -32,7 +32,8 @@ import type { CountedReader } from './read-cache.js';
 
 export type AccountRoute = 'data' | 'authorities' | 'history' | 'keybook' | 'chainlen';
 
-const DATA_ACCOUNT = /^acc:\/\/[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*\/certen-(?:grants|subjects|acceptances)$/;
+// AGT-2: + certen-mandates, the principal's mandate account the Console reads online and keys its cache on (findings AGT-F21, AGT-F24)
+const DATA_ACCOUNT = /^acc:\/\/[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*\/certen-(?:grants|subjects|acceptances|mandates)$/;
 const BOOK = /^acc:\/\/[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)+$/;
 
 const toHex = (b: Uint8Array): string => Buffer.from(b).toString('hex');
@@ -59,7 +60,7 @@ export async function relayAccountRoute(reader: CountedReader, route: AccountRou
   }
   if (account !== account.toLowerCase() || !isAccUrl(account)) return refuse(400, 'account must be a lower-case acc:// URL');
   if (route === 'data' || route === 'history' || route === 'chainlen') {
-    if (!DATA_ACCOUNT.test(account)) return refuse(400, 'account must be a certen-grants, certen-subjects or certen-acceptances data account');
+    if (!DATA_ACCOUNT.test(account)) return refuse(400, 'account must be a certen-grants, certen-subjects, certen-acceptances or certen-mandates data account');
   } else if (route === 'authorities') {
     if (!DATA_ACCOUNT.test(account) && !isAdiUrl(account)) return refuse(400, 'account must be a CERTEN data account or an ADI');
   } else if (!BOOK.test(account) || /\/\d+$/.test(account)) {

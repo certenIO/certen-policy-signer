@@ -92,6 +92,21 @@ describe('the chain relay routes (GET only, strictly validated)', () => {
     expect((await call(`/relay/chainlen/${enc(GRANTS)}`)).json).toEqual({ length: 4 });
   });
 
+  it("AGT-2: the principal's certen-mandates account is served like the other CERTEN data accounts (data, history, authorities, chainlen)", async () => {
+    const { call, node } = await start();
+    const MANDATES = `${GRANTOR}/certen-mandates`;
+    node.dataAccount(MANDATES, [`${GRANTOR}/book`]);
+    node.write(MANDATES, [new Uint8Array([7]), new Uint8Array([8])], 1_800_000_100);
+    const d = await call(`/relay/data/${enc(MANDATES)}`);
+    expect([d.status, d.json.entries.length, d.json.entries[0]?.elements]).toEqual([200, 1, ['07', '08']]);
+    expect((await call(`/relay/history/${enc(MANDATES)}`)).status).toBe(200);
+    expect((await call(`/relay/authorities/${enc(MANDATES)}`)).json).toEqual({ authorities: [`${GRANTOR}/book`] });
+    const before = (await call(`/relay/chainlen/${enc(MANDATES)}`)).json.length;
+    node.write(MANDATES, [new Uint8Array([9])], 1_800_000_200); // a withdrawal: the main chain grows by one
+    expect((await call(`/relay/chainlen/${enc(MANDATES)}`)).json).toEqual({ length: before + 1 });
+    expect((await call(`/relay/data/${enc(`${GRANTOR}/certen-mandatesx`)}`)).status).toBe(400);
+  });
+
   it('chainlen has the same account whitelist and the same refusals as data and history', async () => {
     const { call, node } = await start();
     const before = node.calls.length;
