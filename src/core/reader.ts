@@ -18,11 +18,20 @@
  * signatures against a snapshot that travels with an evidence pack (GR-60) and keep the sr-31..52 behaviour as documented
  * fixtures of the rejected two-role model.
  */
-import { isAccUrl, validateGrant } from './grant-profile.js';
+import { isAccUrl, isUnderAdi, validateGrant } from './grant-profile.js';
 import { verifyGrantEnvelope, type ChainSnapshot, type EnvelopeVerdict } from './envelope.js';
 import { SAFE_AFTER } from './account.js';
 import { readLineageOnline, type LineageOnlineEntry, type LineageOnlineResult } from './lineage-online.js';
 import { resolveSubjectOnline, type ResolveSubjectOnlineResult } from './registry-online.js';
+
+/**
+ * AGT-5 (finding AGT-F46/F50): a subject's OWN books are the authorities of its ADI that are books OF that ADI. An enrolled agent's ADI also carries its
+ * principal's book as a required authority (AGENT-IDENTITY.md section 3, the overseer); that book is the principal's, so taking it as a subject book
+ * refused every agent Grant (signed by that book) and every registry owned by it (account_authority_includes_subject). Null (unreadable) stays null.
+ */
+export function ownBooks(authorities: string[] | null, subjectAdi: string): string[] | null {
+  return authorities === null ? null : authorities.filter((b) => isUnderAdi(b, subjectAdi));
+}
 
 export interface KeyPageInfo { url: string; keyHashes: string[]; threshold: number }
 export interface DataEntry {
@@ -88,7 +97,7 @@ export async function readGrantLineage(
 ): Promise<ReadLineageResult> {
   const account = a.grantorAdi + '/' + GRANTS_ACCOUNT;
   const facts = await readAccount(reader, account);
-  const subjectBooks = a.subjectAdi === undefined ? [] : await guarded(() => reader.authorities(a.subjectAdi!));
+  const subjectBooks = a.subjectAdi === undefined ? [] : ownBooks(await guarded(() => reader.authorities(a.subjectAdi!)), a.subjectAdi);
   if (subjectBooks === null) return { ok: false, reason: 'account_authority_unreadable', detail: 'subject books' };
   let chain: ChainSnapshot | undefined;
   if (a.advisory === true && reader.keyBookPages !== undefined && facts.authorities !== null) {
@@ -123,7 +132,7 @@ export async function readSubjectRegistry(
   const grantorAdi = g.ok ? g.grant.grantor.adi : '';
   const subject = a.asserted.adi;
   if (!g.ok || !isAccUrl(subject)) return resolveSubjectOnline({ grant: a.grant, asserted: a.asserted, expectType: a.expectType, registries: {}, subjectBooks: [] });
-  const subjectBooks = await guarded(() => reader.authorities(subject));
+  const subjectBooks = ownBooks(await guarded(() => reader.authorities(subject)), subject);
   const registry = await readAccount(reader, grantorAdi + '/' + SUBJECTS_ACCOUNT);
   const acceptance = await readAccount(reader, subject + '/' + ACCEPTANCES_ACCOUNT);
   const toEntries = (e: DataEntry[] | null) => (e === null ? null : e.map((x) => ({ elements: x.elements, ...(x.time === undefined ? {} : { entryTime: x.time }) })));
@@ -149,7 +158,7 @@ export async function snapshotFor(reader: AccumulateReader, a: { dataAccount: st
   if (reader.keyBookPages === undefined) return unreadable('reader offers no key pages');
   const auths = await guarded(() => reader.authorities(a.dataAccount));
   if (auths === null) return unreadable('authorities ' + a.dataAccount);
-  const subj = await guarded(() => reader.authorities(a.subjectAdi));
+  const subj = ownBooks(await guarded(() => reader.authorities(a.subjectAdi)), a.subjectAdi);
   if (subj === null) return unreadable('authorities ' + a.subjectAdi);
   const pages: ChainSnapshot['pages'] = {};
   for (const book of new Set([a.ownerBook, ...subj])) {

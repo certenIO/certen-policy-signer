@@ -128,8 +128,11 @@ describe('the Grant head (online model: no key page is read)', () => {
     expect(await detail((n) => { n.accounts.get(GRANTS)!.authorities = ['acc://other.acme/book']; })).toContain('account_authority_not_owner_only');
     // the subject's own book among the authorities
     expect(await detail((n) => n.accounts.get(GRANTS)!.authorities.push(`${SUBJECT}/book`))).toContain('account_authority_includes_subject');
-    // the grantor's book IS a book of the subject (a delegation): the owner book is forbidden by name, which only the second lineage pass can know
-    expect(await detail((n) => n.identity(SUBJECT, [BOOK]))).toContain('account_authority_includes_subject');
+    // AGT-5 (findings AGT-F46/F50, core f1d5038 ownBooks): the subject's OWN books are the books under the subject's ADI. The grantor's book governing the
+    // subject's ADI is the OVERSEER that AGENT-IDENTITY.md section 3 requires of an enrolled agent, not a book of the subject, so it no longer refuses the head.
+    // The subject's own book among the grants account's authorities is still refused by name (the line above).
+    expect(await detail((n) => n.identity(SUBJECT, [BOOK]))).toBe('OK');
+    expect(await detail((n) => { n.identity(SUBJECT, [`${SUBJECT}/book`, BOOK]); n.accounts.get(GRANTS)!.authorities.push(`${SUBJECT}/book`); })).toContain('account_authority_includes_subject');
     // an authority change after the creation, even one that restored the same set
     expect(await detail((n) => n.updateAuth(GRANTS, [BOOK]))).toContain('account_authority_changed');
     // a main chain that does not start at the creation
