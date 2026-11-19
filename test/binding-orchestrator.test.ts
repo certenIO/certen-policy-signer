@@ -231,10 +231,26 @@ describe('the Grant and the subject join (DAX-4-A15, DE-06, DE-54, DE-61, DE-71,
     expect((await r.store.getReceipt(TX))?.policyEvidence).toMatchObject({ reason: 'subject_unproven', detail: 'subject_unproven:not_registered' });
     expect(r.acc.submissions).toHaveLength(0);
   });
-  it('an intent that asserts no subject cannot be joined: subject_unproven', async () => {
+  it('an intent that asserts no subject cannot be joined: subject_unproven (the payer, claimed in its place, is not a registered subject)', async () => {
     const noSubject = intentBody({ grantRef: ref });
-    const r = rig({ body: noSubject, rules: grantRules, world: fakeWorld(), reply: approveFor(noSubject, { grantHash: GRANT_HASH }) });
+    const world = fakeWorld({ registered: [SUBJECT.adi] });
+    const r = rig({ body: noSubject, rules: grantRules, world, reply: approveFor(noSubject, { grantHash: GRANT_HASH }) });
     expect((await r.handle()).lastError).toBe('binding: subject_unproven');
+    expect(world.claims).toEqual([{ adi: PRINCIPAL, assertedBy: PRINCIPAL }]);
+  });
+  it('AGT-F58: an agent paying from its OWN account with no subject in the intent is claimed for the payer ADI and joined through the registry', async () => {
+    const noSubject = intentBody({ grantRef: ref });
+    const world = fakeWorld({ registered: [SUBJECT.adi] });
+    const r = rig({ body: noSubject, rules: grantRules, world, reply: approveFor(noSubject, { grantHash: GRANT_HASH }), principal: `${SUBJECT.adi}/data` });
+    expect((await r.handle()).status).toBe('signed');
+    expect(world.claims).toEqual([{ adi: SUBJECT.adi, assertedBy: SUBJECT.adi }]);
+  });
+  it('AGT-F58: an intent from the GRANTOR own account that names no subject has no claim: subject_unproven, as before', async () => {
+    const noSubject = intentBody({ grantRef: ref });
+    const world = fakeWorld({ registered: [SUBJECT.adi] });
+    const r = rig({ body: noSubject, rules: grantRules, world, reply: approveFor(noSubject, { grantHash: GRANT_HASH }), principal: `${GRANTOR}/tokens` });
+    expect((await r.handle()).lastError).toBe('binding: subject_unproven');
+    expect(world.claims).toEqual([null]);
   });
   it('a superseded Grant is reported as stale BEFORE a subject mismatch', async () => {
     const world = fakeWorld({ head: { hash: H('grant-v2'), subject: { adi: 'acc://agent-two.fic-grantor.acme', type: 'agent' } } });

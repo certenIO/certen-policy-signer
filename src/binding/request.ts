@@ -46,6 +46,8 @@ export interface PresentedRequest {
   grantRefHash: string | null;
   /** the intent's asserted subject, or null; the world resolves it, the signer never trusts it */
   assertedSubject: { adi: string; assertedBy: string } | null;
+  /** AGT-5 (AGT-F58): the transaction's principal (the payer's account), the one field Accumulate authenticated; null when the caller did not give it */
+  principal: string | null;
   /** the validator operation id (also inside `request.operationId`) */
   operationId: string;
   /**
@@ -111,7 +113,7 @@ const addressOf = (v: unknown): { ok: true; address: string } | { ok: false; che
   return a.ok ? a : { ok: false, checksum: a.reason === 'address_checksum_invalid' };
 };
 
-export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransaction' | 'summary'> & { header?: Pick<TransactionHeaderInfo, 'expiresAt'> }, opts: BuildOptions = {}): BuildResult {
+export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransaction' | 'summary'> & { header?: Pick<TransactionHeaderInfo, 'expiresAt'>; account?: string }, opts: BuildOptions = {}): BuildResult {
   const allowRaw = opts.allowRaw === true;
   const horizonSeconds = opts.horizonSeconds ?? VALIDATOR_HORIZON_SECONDS;
   const raw = tx.rawTransaction;
@@ -195,6 +197,7 @@ export function buildPresentedRequest(tx: Pick<ResolvedTx, 'txHash' | 'rawTransa
       grantRef,
       grantRefHash: grantRef === null ? null : grantRef.grantHash,
       assertedSubject,
+      principal: typeof tx.account === 'string' && tx.account !== '' ? tx.account : null,
       operationId,
       execution,
       leafExpiry,

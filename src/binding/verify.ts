@@ -29,6 +29,9 @@ import type { ResolvedTx } from '../types.js';
 import type { BindingWorld, ResolvedSubject } from './world.js';
 import type { EvaluationStats } from './read-cache.js';
 
+/** the ADI of an acc:// account URL (lower case), or null */
+const adiOfUrl = (u: string): string | null => { const m = /^acc:\/\/([^/]+)/i.exec(u.trim()); return m ? `acc://${m[1]!.toLowerCase()}` : null; };
+
 /** the member of the policy reply that carries the certen.decision/v1 record (INTERFACE-1 of DESIGN.md) */
 export const DECISION_RECORD_MEMBER = 'record';
 
@@ -118,7 +121,14 @@ export async function verifyBinding(a: {
   const pin = runtime.pins.gate(rules.seat);
   if (!pin.ok) return refuse(rfacts, pin.reason, undefined, pin.cause);
   if (!built.ok) return refuse(rfacts, built.reason ?? 'presented_malformed', built.detail);
-  const { request, grantRef, grantRefHash, assertedSubject } = built.value;
+  const { request, grantRef, grantRefHash, assertedSubject, principal } = built.value;
+  // AGT-5 (finding AGT-F58, the signer's twin of the Console's AGT-F53): an intent that names NO subject, from an account of an ADI other than the
+  // configured grantor (an agent paying from its own key-less account), is claimed for that payer ADI: the transaction principal, which Accumulate
+  // authenticated. The claim is still resolved ONLY through the grantor's registry and the subject's acceptance (the world), and the core still
+  // refuses a resolved subject that is not the Grant head's. An intent that names a subject keeps its own claim; one from the grantor's own
+  // account that names none has none (subject_unproven, as before).
+  const payerAdi = principal === null ? null : adiOfUrl(principal);
+  const claim = assertedSubject ?? (payerAdi !== null && rules.grantorAdi !== undefined && payerAdi !== rules.grantorAdi.toLowerCase() ? { adi: payerAdi, assertedBy: payerAdi } : null);
   // DE-76: a legCount other than 1 is refused by the core (multi_leg_unsupported) after the presented transaction is read, so a
   // multi-leg intent never reaches the world: the refusal is the first thing it gets
 
@@ -141,7 +151,7 @@ export async function verifyBinding(a: {
       headDetail = rules.grantorAdi === undefined || rules.grantorBook === undefined ? 'no_grantor_configured' : 'no_world_configured';
     } else {
       try {
-        const w = await runtime.world.establish({ grantorAdi: rules.grantorAdi, grantorBook: rules.grantorBook, grantId: grantRef.grantId, asserted: assertedSubject });
+        const w = await runtime.world.establish({ grantorAdi: rules.grantorAdi, grantorBook: rules.grantorBook, grantId: grantRef.grantId, asserted: claim });
         facts = w.stats ?? null;
         if (w.head.ok) head = w.head.value;
         else headDetail = w.head.detail;
