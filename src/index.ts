@@ -503,6 +503,7 @@ async function main() {
     // keyPage above, which changes who can act and therefore carries a second one. `keyring.forPage` still
     // bounds WHICH pages: the route only ever asks about scopes this wallet holds a key for.
     pageState: (page) => readPage(accumulate, page),
+    humanPages: cfg.officer_intake?.enabled ? cfg.officer_intake.human_pages ?? [] : [],
   });
   const { host, port } = parseBind(cfg.health.bind);
   server.listen(port, host, () => logger.info({ host, port }, 'http server listening (health/metrics/webhook/admin)'));

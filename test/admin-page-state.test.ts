@@ -238,3 +238,32 @@ describe('GET /v1/admin/pubkey', () => {
     expect(p256.public_key.length).toBe(182);
   });
 });
+
+/**
+ * AGT-5 (finding AGT-F49): a people-only page (officer_intake.human_pages) holds no key of this signer, so it is not a keyring scope; but it is the roster page
+ * whose delegated seats the Console's two-person enrolment watches through this route. Before, the route listed keyed scopes only and an officers' page was
+ * invisible: an enrolment on it was never observed and could never be seated.
+ */
+describe('AGT-F49: /v1/admin/page lists the people-only pages too', () => {
+  const HUMAN = 'acc://demo-org.acme/book/3';
+  let server: http.Server;
+  let port: number;
+  afterEach(() => new Promise<void>((r) => server.close(() => r())));
+  it('a human page is listed with its live delegates and no signature type', async () => {
+    const acc = new MockAccumulateClient();
+    const keyring = new MapKeyring([{ page: ED_PAGE, book: bookOf(ED_PAGE), signer: new LocalSigner(new Uint8Array(32).fill(9)) }]);
+    const store = new MemoryStore();
+    const pause = memoryPauseStore();
+    const orchestrator = new Orchestrator({ accumulate: acc, keyring, policy: new MockPolicyClient({ decision: 'approve' }), store, resolver: new Resolver(acc), logger: silent, pauses: pause });
+    const pageState = async (page: string): Promise<PageState> => ({ version: 3, threshold: 2, keyHashes: [], entries: page === HUMAN ? [{ keyHash: '', delegate: 'acc://officer-1.acme/book' }, { keyHash: '', delegate: 'acc://officer-2.acme/book' }] : [{ keyHash: 'aa'.repeat(32) }] } as unknown as PageState);
+    server = createServer({ orchestrator, store, keyring, accumulate: acc, pause, logger: silent, adminApiKey: ADMIN_KEY, pageState, humanPages: [HUMAN] });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    port = (server.address() as AddressInfo).port;
+    const r = await get(port, '/v1/admin/page', ADMIN);
+    expect(r.status).toBe(200);
+    const human = r.json.pages.find((p: any) => p.page === HUMAN);
+    expect(human).toMatchObject({ page: HUMAN, book: 'acc://demo-org.acme/book', signature_type: null, state: { threshold: 2, entry_count: 2 } });
+    expect(human.state.entries.map((e: any) => e.delegate)).toEqual(['acc://officer-1.acme/book', 'acc://officer-2.acme/book']);
+    expect(r.json.pages.filter((p: any) => p.page === ED_PAGE)).toHaveLength(1);
+  });
+});

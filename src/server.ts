@@ -72,6 +72,11 @@ export interface ServerDeps {
    * route without one. index.ts wires it to `readPage`.
    */
   pageState?: (page: string) => Promise<PageState>;
+  /**
+   * AGT-5 (finding AGT-F49): the PEOPLE-ONLY pages this signer serves (officer_intake.human_pages). They hold no key of this signer, so they are not keyring
+   * scopes, but they are the roster pages whose seats the Console's two-person enrolment watches: /v1/admin/page lists them too, marked signature_type null.
+   */
+  humanPages?: string[];
   /** The poller, when enabled — a wallet whose discovery loop is dead is NOT healthy. */
   poller?: HealthSource;
   /** Serve /metrics without authentication (only when the port is already private). */
@@ -417,8 +422,10 @@ export function createServer(d: ServerDeps): http.Server {
       // others. Per scope, so an operator sees which one is unreachable.
       if (method === 'GET' && path === '/v1/admin/page') {
         if (!d.pageState) return json(res, 403, { error: 'page state unavailable: no page reader configured' });
-        const pages = await Promise.all(d.keyring.scopes().map(async (s) => {
-          const head = { page: s.page, book: s.book, signature_type: s.signer.signatureType };
+        const keyed = d.keyring.scopes().map((s) => ({ page: s.page, book: s.book, signature_type: s.signer.signatureType as string | null }));
+        const human = (d.humanPages ?? []).filter((p) => !keyed.some((k) => k.page === p)).map((p) => ({ page: p, book: p.replace(/\/[^/]+$/, ''), signature_type: null as string | null }));
+        const pages = await Promise.all([...keyed, ...human].map(async (s) => {
+          const head = { page: s.page, book: s.book, signature_type: s.signature_type };
           try {
             const st = await d.pageState!(s.page);
             return {
