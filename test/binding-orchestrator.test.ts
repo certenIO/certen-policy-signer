@@ -161,6 +161,18 @@ describe('a refused decision causes no vote, no cancel and no account change (DA
     }
   }
 
+  // AGT-F72 (lead; live A-05 smoke-14, tx 53a793ed..., 2026-11-20): the seat's named denial with no record (a recheck denial, DECISION.md section 5;
+  // DE-23) is withheld as decision_malformed/record_absent; the receipt - the audit trail - now also says what the seat decided and why.
+  it('a named denial with no record is withheld and its receipt carries the seat decision and reason', async () => {
+    const r = rig({ body: BASE, submitRejectVote: true, reply: () => ({ decision: 'deny', reason: 'grant_ended' }) });
+    const row = await r.handle();
+    expect(row.lastError).toBe('binding: decision_malformed');
+    expect(r.acc.submissions).toHaveLength(0);
+    const receipts = await r.store.getReceipts(TX);
+    expect(receipts[0]?.vote).toBeUndefined();
+    expect(receipts[0]?.policyEvidence).toMatchObject({ blockedBy: 'decision_binding', reason: 'decision_malformed', detail: 'record_absent', seatDecision: 'deny', seatReason: 'grant_ended' });
+  });
+
   it('a DENY that fails the binding casts no reject vote even when submitRejectVote is true', async () => {
     const r = rig({ body: BASE, submitRejectVote: true, reply: approveFor(BASE, { policyHash: H('other') }, 'deny') });
     expect((await r.handle()).lastError).toBe('binding: policy_hash_mismatch');
