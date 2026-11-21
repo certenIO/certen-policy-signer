@@ -24,6 +24,8 @@ function chain(opts: { head?: number; logs?: ReturnType<typeof log>[]; status?: 
       return (opts.logs ?? []).filter((l) => { const n = Number.parseInt(l.blockNumber, 16); return n >= a && n <= b; });
     }
     if (method === 'eth_getTransactionReceipt') return opts.status === null ? null : { status: opts.status ?? '0x1' };
+    // block n was made at 1_000_000 + 2n (a 2-second chain like Base Sepolia)
+    if (method === 'eth_getBlockByNumber') return { timestamp: hex(1_000_000 + 2 * Number.parseInt((params as any[])[0], 16)) };
     throw new Error(`unexpected ${method}`);
   };
   return { rpc, calls };
@@ -43,8 +45,10 @@ describe('findExecution', () => {
   it('not found: says how far it looked (at most maxWindows windows) so the caller resumes there', async () => {
     const c = chain({ head: 5000, logs: [] });
     expect(await findExecution(c.rpc, { account: ACCOUNT, operationId: OP, fromBlock: 1000 }, { maxWindows: 3 })).toEqual({ found: false, scannedFrom: 1000, scannedTo: 1569, head: 5000 });
-    // absent fromBlock: lookback below the head
-    expect(await findExecution(chain({ head: 5000 }).rpc, { account: ACCOUNT, operationId: OP })).toMatchObject({ found: false, scannedFrom: 3200 });
+    // fromTime: the last block at or before it (block 1500 was made at 1_003_000; 1_003_001 is still block 1500)
+    expect(await findExecution(chain({ head: 5000 }).rpc, { account: ACCOUNT, operationId: OP, fromTime: 1_003_001 }, { maxWindows: 1 })).toMatchObject({ found: false, scannedFrom: 1500 });
+    expect(await findExecution(chain({ head: 5000 }).rpc, { account: ACCOUNT, operationId: OP, fromTime: 999 }, { maxWindows: 1 })).toMatchObject({ scannedFrom: 0 });
+    expect(await findExecution(chain({ head: 5000 }).rpc, { account: ACCOUNT, operationId: OP, fromTime: 2_000_000 }, { maxWindows: 1 })).toMatchObject({ scannedFrom: 5000 });
   });
 
   it('a log on another address, with another topic, another operation or removed by a reorg is not the execution', async () => {
@@ -64,10 +68,32 @@ describe('findExecution', () => {
 
   it('malformed input is an input error before any call', async () => {
     const c = chain({});
-    for (const q of [{ account: 'nope', operationId: OP }, { account: ACCOUNT, operationId: '0x12' }, { account: ACCOUNT, operationId: OP, fromBlock: -1 }, { account: ACCOUNT, operationId: OP, fromBlock: 1.5 }]) {
+    for (const q of [{ account: 'nope', operationId: OP, fromBlock: 1 }, { account: ACCOUNT, operationId: '0x12', fromBlock: 1 }, { account: ACCOUNT, operationId: OP, fromBlock: -1 }, { account: ACCOUNT, operationId: OP, fromBlock: 1.5 },
+      // never a guessed start: exactly one of fromBlock and fromTime (AGT world 2, 2026-11-21: a lookback below the head stepped past an older execution)
+      { account: ACCOUNT, operationId: OP }, { account: ACCOUNT, operationId: OP, fromBlock: 1, fromTime: 1 }, { account: ACCOUNT, operationId: OP, fromTime: 0 }]) {
       await expect(findExecution(c.rpc, q as any)).rejects.toBeInstanceOf(ExecutionInputError);
     }
     expect(c.calls).toEqual([]);
+  });
+
+  it('fromTime reads only recent blocks: a node that prunes old history (Base Sepolia public) still answers', async () => {
+    const read: number[] = [];
+    const rpc: Rpc = async (method, params) => {
+      if (method === 'eth_blockNumber') return hex(60_000_000);
+      if (method === 'eth_getBlockByNumber') {
+        const n = Number.parseInt((params as any[])[0], 16);
+        read.push(n);
+        if (n < 48_000_000) throw new Error('pruned history unavailable');
+        return { timestamp: hex(1_000_000 + 2 * n) };
+      }
+      if (method === 'eth_getLogs') return [];
+      throw new Error(method);
+    };
+    // block 59_990_000 was made at 1_000_000 + 119_980_000
+    const a = await findExecution(rpc, { account: ACCOUNT, operationId: OP, fromTime: 1_000_000 + 2 * 59_990_000 }, { maxWindows: 1 });
+    expect(a).toMatchObject({ found: false, scannedFrom: 59_990_000 });
+    expect(Math.min(...read)).toBeGreaterThanOrEqual(59_990_000 - 20_000); // the gallop stays near the answer
+    expect(read.length).toBeLessThan(60);
   });
 
   it('the topic is keccak256 of LeafConsumed(bytes32,bytes32,bytes32) (the live event of 2026-11-21)', () => {

@@ -317,8 +317,9 @@ describe('relay clients: routes', () => {
     expect(sent.map((x) => x.method)).toEqual(['eth_blockNumber', 'eth_getLogs', 'eth_getLogs', 'eth_getLogs', 'eth_getTransactionReceipt']);
     expect(sent[1].params[0]).toEqual({ address: EXEC_ACCOUNT, topics: [LEAF_CONSUMED_TOPIC], fromBlock: '0x44c', toBlock: '0x509' });
     expect((await call(port, 'POST', '/relay/evm/1/execution', C, body)).status).toBe(404);
-    expect((await call(port, 'POST', '/relay/evm/84532/execution', C, JSON.stringify({ account: 'nope', operationId: EXEC_OP }))).status).toBe(400);
-    expect((await call(port, 'POST', '/relay/evm/84532/execution', C, JSON.stringify({ account: EXEC_ACCOUNT, operationId: '0x12' }))).status).toBe(400);
+    expect((await call(port, 'POST', '/relay/evm/84532/execution', C, JSON.stringify({ account: 'nope', operationId: EXEC_OP, fromBlock: 1 }))).status).toBe(400);
+    expect((await call(port, 'POST', '/relay/evm/84532/execution', C, JSON.stringify({ account: EXEC_ACCOUNT, operationId: EXEC_OP }))).status).toBe(400); // no start: never guessed
+    expect((await call(port, 'POST', '/relay/evm/84532/execution', C, JSON.stringify({ account: EXEC_ACCOUNT, operationId: '0x12', fromBlock: 1 }))).status).toBe(400);
     expect((await call(port, 'POST', '/relay/evm/84532/execution', C, '[]')).status).toBe(400);
     expect((await call(port, 'GET', '/relay/evm/84532/execution', C)).status).toBe(405);
     // the governance client holds no tx scope

@@ -261,7 +261,7 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
       if (typeof rpc?.result !== 'string') return send(res, 502, { error: 'eth_call returned no result' });
       return send(res, 200, { result: rpc.result });
     }
-    // POST /relay/evm/:chainId/execution  { account, operationId, fromBlock? } - read only (AGT scene-verify-9, EVIDENCE-AGT section 1): the ONE
+    // POST /relay/evm/:chainId/execution  { account, operationId, fromBlock | fromTime } - read only (AGT scene-verify-9, EVIDENCE-AGT section 1): the ONE
     // transaction in which the account emitted LeafConsumed for this operation id, and whose receipt succeeded (src/binding/evm-execution.ts)
     if ((m = /^\/relay\/evm\/([^/]+)\/execution$/.exec(path))) {
       if (!need('tx')) return send(res, 403, { error: 'forbidden: scope tx required' });
@@ -271,7 +271,7 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
       if (!rpcUrl) return send(res, 404, { error: 'unknown chain' });
       const raw = await readCapped(req, 16 * 1024);
       if (raw === null) return send(res, 413, { error: 'body too large' });
-      let b: { account?: unknown; operationId?: unknown; fromBlock?: unknown };
+      let b: { account?: unknown; operationId?: unknown; fromBlock?: unknown; fromTime?: unknown };
       try { b = JSON.parse(raw); } catch { return send(res, 400, { error: 'body must be JSON' }); }
       if (b === null || typeof b !== 'object' || Array.isArray(b)) return send(res, 400, { error: 'body must be a JSON object' });
       const rpc: Rpc = async (rpcMethod, params) => {
@@ -285,7 +285,7 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
         return r?.result;
       };
       try {
-        const answer = await findExecution(rpc, { account: b.account as string, operationId: b.operationId as string, ...(b.fromBlock !== undefined ? { fromBlock: b.fromBlock as number } : {}) });
+        const answer = await findExecution(rpc, { account: b.account as string, operationId: b.operationId as string, ...(b.fromBlock !== undefined ? { fromBlock: b.fromBlock as number } : {}), ...(b.fromTime !== undefined ? { fromTime: b.fromTime as number } : {}) });
         return send(res, 200, answer);
       } catch (e) {
         if (e instanceof ExecutionInputError) return send(res, 400, { error: e.message });

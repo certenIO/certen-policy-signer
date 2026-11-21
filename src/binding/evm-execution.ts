@@ -12,7 +12,10 @@
  *
  * HOW IT IS FOUND. eth_getLogs on the account and the event topic, in windows of at most `windowBlocks` (Base Sepolia's public endpoints refuse
  * more than 200 blocks per call), from `fromBlock` forward, at most `maxWindows` windows per call; the answer says how far it looked so the
- * caller resumes there. Two matching logs are a named refusal (an operation executes once), never a pick. A receipt that is absent or failed
+ * caller resumes there. WHERE IT STARTS is never guessed: the caller gives `fromBlock` (where it stopped) or `fromTime` (the approval's relay time:
+ * an operation cannot execute before it was approved), and `fromTime` is turned into the last block at or before it by binary search over block
+ * timestamps. (A fixed lookback below the head - the first version - started AFTER an execution older than the lookback and stepped past it
+ * for good: found live on world 2, 2026-11-21.) Two matching logs are a named refusal (an operation executes once), never a pick. A receipt that is absent or failed
  * is not an execution.
  */
 
@@ -23,8 +26,10 @@ export type Rpc = (method: string, params: unknown[]) => Promise<unknown>;
 export interface ExecutionQuery {
   account: string;
   operationId: string;
-  /** first block to look at; absent: `lookbackBlocks` below the head */
+  /** first block to look at (where the previous ask stopped) */
   fromBlock?: number;
+  /** or: a Unix time at or before the execution (the approval's relay time); the search starts at the last block at or before it */
+  fromTime?: number;
 }
 
 export type ExecutionAnswer =
@@ -47,19 +52,20 @@ const hexNum = (v: unknown, what: string): number => {
 export async function findExecution(
   rpc: Rpc,
   q: ExecutionQuery,
-  o: { windowBlocks?: number; maxWindows?: number; lookbackBlocks?: number } = {},
+  o: { windowBlocks?: number; maxWindows?: number } = {},
 ): Promise<ExecutionAnswer> {
   if (typeof q.account !== 'string' || !ADDR.test(q.account)) throw new ExecutionInputError('account must be a 0x 20-byte address');
   if (typeof q.operationId !== 'string' || !H32.test(q.operationId)) throw new ExecutionInputError('operationId must be 0x plus 64 hex');
   if (q.fromBlock !== undefined && (!Number.isSafeInteger(q.fromBlock) || q.fromBlock < 0)) throw new ExecutionInputError('fromBlock must be a non-negative integer');
+  if (q.fromTime !== undefined && (!Number.isSafeInteger(q.fromTime) || q.fromTime <= 0)) throw new ExecutionInputError('fromTime must be a positive Unix time in seconds');
+  if ((q.fromBlock === undefined) === (q.fromTime === undefined)) throw new ExecutionInputError('give exactly one of fromBlock and fromTime');
   const windowBlocks = o.windowBlocks ?? 190;
   const maxWindows = o.maxWindows ?? 10;
-  const lookback = o.lookbackBlocks ?? 1800;
   const account = q.account.toLowerCase();
   const op = q.operationId.toLowerCase();
 
   const head = hexNum(await rpc('eth_blockNumber', []), 'eth_blockNumber');
-  const from = q.fromBlock ?? Math.max(0, head - lookback);
+  const from = q.fromBlock ?? (await blockAtOrBefore(rpc, q.fromTime!, head));
   const matches: Array<{ tx: string; block: number }> = [];
   let to = from - 1;
   for (let i = 0; i < maxWindows && to < head; i++) {
@@ -86,4 +92,33 @@ export async function findExecution(
   if (!receipt) throw new Error(`no receipt for ${hit.tx}`); // the node knows the log but not the receipt: unreadable, ask again
   if (receipt['status'] !== '0x1') return { found: false, refusal: 'execution_receipt_failed', detail: `${hit.tx} status ${String(receipt['status'])}` };
   return { found: true, txHash: hit.tx, blockNumber: hit.block, scannedFrom: from, scannedTo: to };
+}
+
+const blockTime = async (rpc: Rpc, n: number): Promise<number> => {
+  const b = (await rpc('eth_getBlockByNumber', ['0x' + n.toString(16), false])) as Record<string, unknown> | null;
+  if (!b) throw new Error(`block ${n} is unreadable`);
+  return hexNum(b['timestamp'], `block ${n} timestamp`);
+};
+
+/**
+ * the last block whose timestamp is at or before `t`: gallop back from the head (doubling the step) to a block at or before `t`, then binary search
+ * between it and the last block found after `t`. Only blocks between that point and the head are read (about 2 log2 of the distance), so a node that
+ * prunes old history (Base Sepolia public: nothing below 48,000,000 on 2026-11-21) still answers; a block it cannot serve is an error, never a guess.
+ */
+export async function blockAtOrBefore(rpc: Rpc, t: number, head: number): Promise<number> {
+  if ((await blockTime(rpc, head)) <= t) return head;
+  let hi = head; // time(hi) > t
+  let lo = -1;
+  for (let step = 1; ; step *= 2) {
+    const cand = Math.max(0, head - step);
+    if ((await blockTime(rpc, cand)) <= t) { lo = cand; break; }
+    hi = cand;
+    if (cand === 0) return 0; // every block is after t
+  }
+  while (hi - lo > 1) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if ((await blockTime(rpc, mid)) <= t) lo = mid;
+    else hi = mid;
+  }
+  return lo;
 }
