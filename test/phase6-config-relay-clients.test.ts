@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import pino from 'pino';
 import { loadConfig, computeConfigVersion } from '../src/config.js';
 import { createRelayClientsHandler, RelayClientsDeps } from '../src/relay-clients.js';
+import { LEAF_CONSUMED_TOPIC } from '../src/binding/evm-execution.js';
 import { createServer } from '../src/server.js';
 import type { KeyPageOp, KeyPageResult } from '../src/ops/keypage.js';
 import { KeyPageGuardError } from '../src/ops/keypage-guard.js';
@@ -135,6 +136,9 @@ function call(port: number, method: string, path: string, headers: Record<string
   });
 }
 
+const EXEC_ACCOUNT = '0x' + 'de'.repeat(20);
+const EXEC_OP = '0x' + '66'.repeat(32);
+const EXEC_TX = '0x' + '1d'.repeat(32);
 const upstreamCalls: string[] = [];
 const gw = http.createServer((req, res) => {
   upstreamCalls.push(`gw ${req.url}`);
@@ -146,7 +150,13 @@ const rpc = http.createServer((req, res) => {
   let t = ''; req.on('data', (c) => (t += c)); req.on('end', () => {
     upstreamCalls.push(`rpc ${t}`);
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + '0'.repeat(63) + '1' }));
+    // AGT scene-verify-9: the execution route's three methods; every other method (eth_call) keeps the fixed answer
+    const m = (() => { try { return JSON.parse(t).method; } catch { return ''; } })();
+    const result = m === 'eth_blockNumber' ? '0x5dc'
+      : m === 'eth_getLogs' ? [{ address: EXEC_ACCOUNT, topics: [LEAF_CONSUMED_TOPIC], data: EXEC_OP, transactionHash: EXEC_TX, blockNumber: '0x4b0' }]
+      : m === 'eth_getTransactionReceipt' ? { status: '0x1' }
+      : '0x' + '0'.repeat(63) + '1';
+    res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result }));
   });
 });
 
@@ -297,6 +307,23 @@ describe('relay clients: routes', () => {
     expect((await call(port, 'POST', '/relay/evm/84532/call', C, JSON.stringify({ to: 'nope', data: '0x' }))).status).toBe(400);
     expect((await call(port, 'POST', '/relay/evm/84532/call', C, JSON.stringify({ to, data: '0x123' }))).status).toBe(400);
     expect((await call(port, 'GET', '/relay/evm/84532/call', C)).status).toBe(405);
+  });
+
+  it('evm execution: the one LeafConsumed transaction of the operation on the account (scope tx), validated, unknown chain 404', async () => {
+    const body = JSON.stringify({ account: EXEC_ACCOUNT, operationId: EXEC_OP, fromBlock: 1100 });
+    const r = await call(port, 'POST', '/relay/evm/84532/execution', C, body);
+    expect(r).toEqual({ status: 200, json: { found: true, txHash: EXEC_TX, blockNumber: 1200, scannedFrom: 1100, scannedTo: 1500 } });
+    const sent = upstreamCalls.map((x) => JSON.parse(x.slice(4)));
+    expect(sent.map((x) => x.method)).toEqual(['eth_blockNumber', 'eth_getLogs', 'eth_getLogs', 'eth_getLogs', 'eth_getTransactionReceipt']);
+    expect(sent[1].params[0]).toEqual({ address: EXEC_ACCOUNT, topics: [LEAF_CONSUMED_TOPIC], fromBlock: '0x44c', toBlock: '0x509' });
+    expect((await call(port, 'POST', '/relay/evm/1/execution', C, body)).status).toBe(404);
+    expect((await call(port, 'POST', '/relay/evm/84532/execution', C, JSON.stringify({ account: 'nope', operationId: EXEC_OP, fromBlock: 1 }))).status).toBe(400);
+    expect((await call(port, 'POST', '/relay/evm/84532/execution', C, JSON.stringify({ account: EXEC_ACCOUNT, operationId: EXEC_OP }))).status).toBe(400); // no start: never guessed
+    expect((await call(port, 'POST', '/relay/evm/84532/execution', C, JSON.stringify({ account: EXEC_ACCOUNT, operationId: '0x12', fromBlock: 1 }))).status).toBe(400);
+    expect((await call(port, 'POST', '/relay/evm/84532/execution', C, '[]')).status).toBe(400);
+    expect((await call(port, 'GET', '/relay/evm/84532/execution', C)).status).toBe(405);
+    // the governance client holds no tx scope
+    expect((await call(port, 'POST', '/relay/evm/84532/execution', T, body)).status).toBe(403);
   });
 });
 

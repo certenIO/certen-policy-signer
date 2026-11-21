@@ -25,6 +25,7 @@ import type { PolicyRequest } from './types.js';
 import { Logger } from './logger.js';
 import type { CountedReader } from './binding/read-cache.js';
 import { relayAccountRoute } from './binding/relay-routes.js';
+import { ExecutionInputError, findExecution, rpcOver } from './binding/evm-execution.js';
 
 export const RELAY_CLIENT_PREFIX = '/relay';
 export type RelayScope = 'proof' | 'tx' | 'pending' | 'governance' | 'chain' | 'pause';
@@ -259,6 +260,28 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
       if (rpc?.error) return send(res, 502, { error: 'eth_call failed', code: rpc.error.code ?? null });
       if (typeof rpc?.result !== 'string') return send(res, 502, { error: 'eth_call returned no result' });
       return send(res, 200, { result: rpc.result });
+    }
+    // POST /relay/evm/:chainId/execution  { account, operationId, fromBlock | fromTime } - read only (AGT scene-verify-9, EVIDENCE-AGT section 1): the ONE
+    // transaction in which the account emitted LeafConsumed for this operation id, and whose receipt succeeded (src/binding/evm-execution.ts)
+    if ((m = /^\/relay\/evm\/([^/]+)\/execution$/.exec(path))) {
+      if (!need('tx')) return send(res, 403, { error: 'forbidden: scope tx required' });
+      if (method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+      if (!/^[1-9][0-9]{0,15}$/.test(m[1])) return send(res, 400, { error: 'chainId must be a positive integer' });
+      const rpcUrl = chains.get(Number(m[1]));
+      if (!rpcUrl) return send(res, 404, { error: 'unknown chain' });
+      const raw = await readCapped(req, 16 * 1024);
+      if (raw === null) return send(res, 413, { error: 'body too large' });
+      let b: { account?: unknown; operationId?: unknown; fromBlock?: unknown; fromTime?: unknown };
+      try { b = JSON.parse(raw); } catch { return send(res, 400, { error: 'body must be JSON' }); }
+      if (b === null || typeof b !== 'object' || Array.isArray(b)) return send(res, 400, { error: 'body must be a JSON object' });
+      const rpc = rpcOver((body) => upstream(rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body }));
+      try {
+        const answer = await findExecution(rpc, { account: b.account as string, operationId: b.operationId as string, ...(b.fromBlock !== undefined ? { fromBlock: b.fromBlock as number } : {}), ...(b.fromTime !== undefined ? { fromTime: b.fromTime as number } : {}) });
+        return send(res, 200, answer);
+      } catch (e) {
+        if (e instanceof ExecutionInputError) return send(res, 400, { error: e.message });
+        return send(res, 502, { error: `execution lookup failed: ${(e as Error).message}` });
+      }
     }
     // POST /relay/governance/proposal  { page, operations: [...], proposer } — Phase 7; nothing is signed or submitted.
     if (path === '/relay/governance/proposal') {
