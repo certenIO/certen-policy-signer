@@ -2,7 +2,7 @@
 // LeafConsumed with data = the request's operationId, and whose receipt succeeded. FICTIONAL addresses; the event shape is world 2 A-01's
 // (Base Sepolia 0x1d83890a...2d93, 2026-11-21).
 import { describe, expect, it } from 'vitest';
-import { ExecutionInputError, LEAF_CONSUMED_TOPIC, findExecution, type Rpc } from '../src/binding/evm-execution.js';
+import { ExecutionInputError, LEAF_CONSUMED_TOPIC, findExecution, rpcOver, type Rpc } from '../src/binding/evm-execution.js';
 
 const ACCOUNT = '0x' + 'de'.repeat(20);
 const OP = '0x' + '66'.repeat(32);
@@ -98,5 +98,23 @@ describe('findExecution', () => {
 
   it('the topic is keccak256 of LeafConsumed(bytes32,bytes32,bytes32) (the live event of 2026-11-21)', () => {
     expect(LEAF_CONSUMED_TOPIC).toBe('0xf65d46899882fe56bab13370dcd464db22e179625c161992c07d962286f7ea73');
+  });
+});
+
+describe('rpcOver (AGT world 2: a public endpoint answers a burst with 429 and no result)', () => {
+  const seq = (answers: Array<{ status: number; body: unknown } | { error: string }>) => { const sent: string[] = []; return { sent, post: async (b: string) => { sent.push(b); return answers.shift()!; } }; };
+  const nap = async () => {};
+  it('asks again after a 429 or a 5xx, with backoff, and returns the result', async () => {
+    const delays: number[] = [];
+    const p = seq([{ status: 429, body: { message: 'rate limited' } }, { status: 503, body: null }, { status: 200, body: { jsonrpc: '2.0', id: 1, result: [] } }]);
+    expect(await rpcOver(p.post, { sleep: async (ms) => { delays.push(ms); } })('eth_getLogs', [{}])).toEqual([]);
+    expect(delays).toEqual([400, 800]);
+    expect(JSON.parse(p.sent[0]!)).toMatchObject({ method: 'eth_getLogs' });
+  });
+  it('a 429 that never ends, a 200 without result, a JSON-RPC error and an unreachable upstream are each named, never an answer', async () => {
+    await expect(rpcOver(seq(Array(4).fill({ status: 429, body: {} })).post, { sleep: nap })('eth_getLogs', [])).rejects.toThrow(/eth_getLogs: upstream HTTP 429/);
+    await expect(rpcOver(seq([{ status: 200, body: { message: 'x' } }]).post, { sleep: nap })('eth_getLogs', [])).rejects.toThrow(/has no result/);
+    await expect(rpcOver(seq([{ status: 200, body: { error: { code: -32005 } } }]).post, { sleep: nap })('eth_getLogs', [])).rejects.toThrow(/eth_getLogs failed/);
+    await expect(rpcOver(seq([{ error: 'upstream unreachable' }]).post, { sleep: nap })('eth_blockNumber', [])).rejects.toThrow(/eth_blockNumber: upstream unreachable/);
   });
 });

@@ -25,7 +25,7 @@ import type { PolicyRequest } from './types.js';
 import { Logger } from './logger.js';
 import type { CountedReader } from './binding/read-cache.js';
 import { relayAccountRoute } from './binding/relay-routes.js';
-import { ExecutionInputError, findExecution, type Rpc } from './binding/evm-execution.js';
+import { ExecutionInputError, findExecution, rpcOver } from './binding/evm-execution.js';
 
 export const RELAY_CLIENT_PREFIX = '/relay';
 export type RelayScope = 'proof' | 'tx' | 'pending' | 'governance' | 'chain' | 'pause';
@@ -274,16 +274,7 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
       let b: { account?: unknown; operationId?: unknown; fromBlock?: unknown; fromTime?: unknown };
       try { b = JSON.parse(raw); } catch { return send(res, 400, { error: 'body must be JSON' }); }
       if (b === null || typeof b !== 'object' || Array.isArray(b)) return send(res, 400, { error: 'body must be a JSON object' });
-      const rpc: Rpc = async (rpcMethod, params) => {
-        const out = await upstream(rpcUrl, {
-          method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: rpcMethod, params }),
-        });
-        if ('error' in out) throw new Error(out.error);
-        const r = out.body as { result?: unknown; error?: unknown } | null;
-        if (r?.error) throw new Error(`${rpcMethod} failed`);
-        return r?.result;
-      };
+      const rpc = rpcOver((body) => upstream(rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body }));
       try {
         const answer = await findExecution(rpc, { account: b.account as string, operationId: b.operationId as string, ...(b.fromBlock !== undefined ? { fromBlock: b.fromBlock as number } : {}), ...(b.fromTime !== undefined ? { fromTime: b.fromTime as number } : {}) });
         return send(res, 200, answer);

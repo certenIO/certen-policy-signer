@@ -122,3 +122,29 @@ export async function blockAtOrBefore(rpc: Rpc, t: number, head: number): Promis
   }
   return lo;
 }
+
+/**
+ * A JSON-RPC caller over the relay's upstream for one chain. AGT world 2 (2026-11-21): the public Base Sepolia endpoint answers a burst with HTTP 429
+ * and a body without `result`, which the first version read as "eth_getLogs returned no list". Now: a non-200 status is named, a 429 or 5xx is asked
+ * again with backoff (at most `attempts` times), a JSON-RPC error is named by method, and a 200 without `result` is named - never read as an answer.
+ */
+export function rpcOver(
+  post: (body: string) => Promise<{ status: number; body: unknown } | { error: string }>,
+  o: { attempts?: number; baseDelayMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Rpc {
+  const attempts = o.attempts ?? 4;
+  const base = o.baseDelayMs ?? 400;
+  const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  return async (method, params) => {
+    for (let i = 1; ; i++) {
+      const out = await post(JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }));
+      if ('error' in out) throw new Error(`${method}: ${out.error}`);
+      if ((out.status === 429 || out.status >= 500) && i < attempts) { await sleep(base * 2 ** (i - 1)); continue; }
+      if (out.status !== 200) throw new Error(`${method}: upstream HTTP ${out.status}`);
+      const r = out.body as { result?: unknown; error?: unknown } | null;
+      if (r && typeof r === 'object' && 'error' in r && r.error) throw new Error(`${method} failed`);
+      if (!r || typeof r !== 'object' || !('result' in r)) throw new Error(`${method}: the answer has no result`);
+      return r.result;
+    }
+  };
+}
