@@ -959,10 +959,11 @@ describe('G-39: open prepares and proposals are persisted and restored', () => {
     const recs = await a.store.listIntakeRecords('prepare');
     expect(recs).toHaveLength(1);
     expect(Object.keys(recs[0]!).sort()).toEqual([
-      'delegators', 'display', 'expiresAt', 'keyHash', 'kind', 'page', 'prepareId', 'principal', 'ref', 'sigMdHash',
+      'delegators', 'display', 'expiresAt', 'keyHash', 'keyType', 'kind', 'page', 'prepareId', 'principal', 'ref', 'sigMdHash',
       'signerVersion', 'spki', 'summaryHash', 'timestamp', 'txHash', 'vote',
     ]);
     expect(recs[0]!.spki).toBe(bytesToHex(alice.spki));   // the PUBLIC key
+    expect(recs[0]!.keyType).toBe('ecdsaSha256');         // AGT-F42: the key's type, public
     expect(readFileSync(path, 'utf8')).not.toContain('"signature"');
     expect(pr.status).toBe(200);
   });
@@ -1175,5 +1176,103 @@ describe('a submit error is decided from the chain, for a transaction ref and fo
     const r2 = await sign(b.port, alice, ap2.json);
     expect(r2.status).toBe(502);
     expect(r2.json).toMatchObject({ error: 'submit_rejected', onChain: 'absent' });
+  });
+});
+
+// ── AGT-F42: an officer with an ed25519 key (the key type the validators settle; ecdsaSha256 is refused, G-42). The key is generated in
+// memory by node:crypto, never written; every party is FICTIONAL. ──
+describe('AGT-F42: ed25519 officer keys', () => {
+  interface EdOfficer { priv: import('node:crypto').KeyObject; raw: Uint8Array; spki: Uint8Array; keyHash: string }
+  const newEd = async (): Promise<EdOfficer> => {
+    const { generateKeyPairSync } = await import('node:crypto');
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const spki = new Uint8Array(publicKey.export({ format: 'der', type: 'spki' }));
+    const raw = new Uint8Array(Buffer.from((publicKey.export({ format: 'jwk' }) as { x: string }).x, 'base64url'));
+    return { priv: privateKey, raw, spki, keyHash: createHash('sha256').update(raw).digest('hex') };
+  };
+  const edSign = async (o: EdOfficer, msg: Uint8Array) => { const { sign } = await import('node:crypto'); return new Uint8Array(sign(null, msg, o.priv)); };
+  const edHeader = async (o: EdOfficer, method: string, path: string, form: 'raw' | 'spki' = 'raw', ts = Date.now(), signer: EdOfficer = o) =>
+    `v1 key=${bytesToHex(form === 'raw' ? o.raw : o.spki)},ts=${ts},sig=${bytesToHex(await edSign(signer, officerAuthMessage(method, path, String(ts))))}`;
+  const edPrepare = async (o: EdOfficer, body: Record<string, unknown>) => {
+    const p = '/relay/officer-signature/prepare';
+    return call(port, 'POST', p, { 'x-officer-auth': await edHeader(o, 'POST', p) }, body);
+  };
+  const sha = (b: Uint8Array) => new Uint8Array(createHash('sha256').update(b).digest());
+  /** Accumulate's ed25519 rule, independently: ed25519.Verify(raw key, sha256(sigMdHash || txHash), sig) over the sigMdHash rebuilt from the object. */
+  const accEdVerifies = (sigObj: any, delegators: string[] = []) => {
+    const sigMd = buildSigMetaHash({
+      publicKey: hexToBytes(sigObj.publicKey), signatureType: 'ed25519', signerUrl: String(sigObj.signer), signerVersion: Number(sigObj.signerVersion),
+      timestamp: Number(sigObj.timestamp), vote: sigObj.vote === 'reject' || sigObj.vote === 1 ? 'reject' : 'approve', ...(delegators.length ? { delegators } : {}),
+    });
+    const key = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: Buffer.from(sigObj.publicKey, 'hex').toString('base64url') }, format: 'jwk' });
+    return nodeVerify(null, sha(concatBytes(sigMd, hexToBytes(String(sigObj.transactionHash)))), key, Buffer.from(String(sigObj.signature), 'hex'));
+  };
+  let eve: EdOfficer, edMallory: EdOfficer;
+  beforeAll(async () => { [eve, edMallory] = await Promise.all([newEd(), newEd()]); });
+  beforeEach(() => {
+    chain.pages.get(HARBOR_P1.toLowerCase())!.keys.push({ publicKeyHash: eve.keyHash });
+    chain.pages.get(TREASURY_P1.toLowerCase())!.keys.push({ publicKeyHash: eve.keyHash });
+  });
+  const path = `/relay/officer/pending/${TX}`;
+  const preimageOf = (prep: any) => sha(concatBytes(hexToBytes(prep.sigMdHash), hexToBytes(prep.txHash)));
+
+  it('authenticates an ed25519 officer by the raw key or its RFC 8410 SPKI; the page entry is sha256(raw key)', async () => {
+    for (const form of ['raw', 'spki'] as const) {
+      const r = await call(port, 'GET', path, { 'x-officer-auth': await edHeader(eve, 'GET', path, form) });
+      expect(r.status, form).toBe(200);
+    }
+  });
+
+  it('refuses an ed25519 header signed by another key, a key not on any human page, a stale one, or one over another path', async () => {
+    const cases = [
+      await edHeader(eve, 'GET', path, 'raw', Date.now(), edMallory),
+      await edHeader(edMallory, 'GET', path),
+      await edHeader(eve, 'GET', path, 'raw', Date.now() - 10 * 60_000),
+      await edHeader(eve, 'GET', `/relay/officer/pending/${'ab'.repeat(32)}`),
+    ];
+    for (const h of cases) {
+      const r = await call(port, 'GET', path, { 'x-officer-auth': h });
+      expect(r).toEqual({ status: 401, json: { error: 'officer_auth_failed' } });
+    }
+  });
+
+  it('prepare then signature: submits ONE ed25519 signature (raw public key) that verifies by the Accumulate rule, then reports landed', async () => {
+    const prep = await edPrepare(eve, { ref: TX, page: HARBOR_P1, vote: 'approve' });
+    expect(prep.status).toBe(200);
+    const sig = await edSign(eve, preimageOf(prep.json));
+    const r = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prep.json.prepareId, signature: bytesToHex(sig) });
+    expect(r).toEqual({ status: 200, json: { txHash: TX, status: 'landed', page: HARBOR_P1, keyHash: eve.keyHash } });
+    expect(chain.submitted).toHaveLength(1);
+    const s = chain.submitted[0].signatures[0];
+    expect(s).toMatchObject({ type: 'ed25519', signer: HARBOR_P1, signerVersion: 3, transactionHash: TX, publicKey: bytesToHex(eve.raw), signature: bytesToHex(sig) });
+    expect(accEdVerifies(s)).toBe(true);
+  });
+
+  it('refuses, and submits nothing for: a signature over the unhashed preimage, a DER-shaped signature, a short one, another key', async () => {
+    const prepFor = async () => (await edPrepare(eve, { ref: TX, page: HARBOR_P1, vote: 'approve' })).json;
+    const p1 = await prepFor();
+    const unhashed = await edSign(eve, concatBytes(hexToBytes(p1.sigMdHash), hexToBytes(p1.txHash)));
+    expect((await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: p1.prepareId, signature: bytesToHex(unhashed) })).status).not.toBe(200);
+    const p2 = await prepFor();
+    expect((await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: p2.prepareId, signature: '3044' + 'ab'.repeat(68) })).status).not.toBe(200);
+    const p3 = await prepFor();
+    expect((await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: p3.prepareId, signature: 'ab'.repeat(63) })).status).not.toBe(200);
+    const p4 = await prepFor();
+    const other = await edSign(edMallory, preimageOf(p4));
+    expect((await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: p4.prepareId, signature: bytesToHex(other) })).status).not.toBe(200);
+    expect(chain.submitted).toHaveLength(0);
+  });
+
+  it('delegated: an ed25519 key on treasury/book/1 for issuance/book/1 is wrapped and verifies over the delegated sigMdHash only', async () => {
+    const prep = await edPrepare(eve, { ref: TX, page: TREASURY_P1, delegators: [ISSUANCE_P1], vote: 'approve' });
+    expect(prep.status).toBe(200);
+    const sig = await edSign(eve, preimageOf(prep.json));
+    const r = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: prep.json.prepareId, signature: bytesToHex(sig) });
+    expect(r.json).toEqual({ txHash: TX, status: 'landed', page: TREASURY_P1, keyHash: eve.keyHash });
+    const outer = chain.submitted[0].signatures[0];
+    expect(outer.type).toBe('delegated');
+    expect(outer.signature.type).toBe('ed25519');
+    expect(accEdVerifies(outer.signature, [ISSUANCE_P1])).toBe(true);
+    expect(accEdVerifies(outer.signature)).toBe(false);
   });
 });

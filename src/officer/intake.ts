@@ -34,7 +34,7 @@ import type { ActionSummary } from '../types.js';
 import { checkKeyPageChange, KeyPageRefusal, operationsFromKeyPageOps } from '../ops/keypage-guard.js';
 import { awaitOwnSignature, type SubmitOutcome } from '../accumulate/submit-outcome.js';
 import { createOfficerAuthenticator, OFFICER_AUTH_FAILED } from './auth.js';
-import { P256Key, hexBytes, parseP256Spki, toCanonicalDer, verifyP256Sha256 } from './crypto.js';
+import { hexBytes, parseOfficerKey, toCanonicalDer, verifyOfficerTxSignature } from './crypto.js';
 
 export const PREPARE_TTL_MS = 10 * 60_000;
 export const PROPOSAL_TTL_MS = 24 * 60 * 60_000;
@@ -112,6 +112,9 @@ interface PrepareRecord {
   kind: 'transaction' | 'proposal';
   ref: string;
   keyHash: string;
+  /** the officer key's type (AGT-F42): P-256 personal credentials sign ecdsaSha256, ed25519 keys sign ed25519 */
+  keyType: 'ecdsaSha256' | 'ed25519';
+  /** the bytes the signature's publicKey carries and whose sha256 is the page entry (P-256: SPKI DER; ed25519: the raw 32 bytes) */
   spki: Uint8Array;
   page: string;
   delegators: string[];
@@ -169,7 +172,11 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
   function prepareFromRecord(o: Record<string, unknown>): PrepareRecord | undefined {
     const spki = typeof o.spki === 'string' && /^[0-9a-f]+$/i.test(o.spki) ? hexToBytes(o.spki) : undefined;
     if (!spki || typeof o.prepareId !== 'string' || typeof o.expiresAt !== 'number') return undefined;
-    return { ...(o as unknown as PrepareRecord), spki };
+    // A record persisted before AGT-F42 carries no keyType: the intake then accepted P-256 keys ONLY, so it is ecdsaSha256. Any other
+    // value is unreadable and the record is dropped.
+    const keyType = o.keyType === undefined ? 'ecdsaSha256' : o.keyType;
+    if (keyType !== 'ecdsaSha256' && keyType !== 'ed25519') return undefined;
+    return { ...(o as unknown as PrepareRecord), keyType, spki };
   }
   const savePrepare = (r: PrepareRecord) => d.state?.saveIntakeRecord('prepare', r.prepareId, prepareToRecord(r)) ?? Promise.resolve();
   const dropPrepare = (id: string) => d.state?.deleteIntakeRecord('prepare', id) ?? Promise.resolve();
@@ -331,9 +338,9 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
   }
   const refusalStatus = (r: KeyPageRefusal) => (r.reason === 'page_unreadable' ? 503 : 400);
 
-  function sigParams(r: Pick<PrepareRecord, 'spki' | 'page' | 'signerVersion' | 'timestamp' | 'vote' | 'delegators'>): PreimageParams {
+  function sigParams(r: Pick<PrepareRecord, 'keyType' | 'spki' | 'page' | 'signerVersion' | 'timestamp' | 'vote' | 'delegators'>): PreimageParams {
     return {
-      publicKey: r.spki, signatureType: 'ecdsaSha256', signerUrl: r.page, signerVersion: r.signerVersion,
+      publicKey: r.spki, signatureType: r.keyType, signerUrl: r.page, signerVersion: r.signerVersion,
       timestamp: r.timestamp, vote: r.vote, ...(r.delegators.length ? { delegators: r.delegators } : {}),
     };
   }
@@ -416,7 +423,7 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     try { info = await d.chain.getSignerInfo(page); }
     catch { return send(res, 503, { error: 'signer page unreadable' }); }
     const timestamp = computeTimestamp(info.lastUsedOn, now() * 1000);
-    const base = { spki: officer.key.spki, page, signerVersion: info.version, timestamp, vote, delegators };
+    const base = { keyType: officer.key.type, spki: officer.key.spki, page, signerVersion: info.version, timestamp, vote, delegators };
     const sigMdHash = buildSigMetaHash(sigParams(base));
 
     let kind: PrepareRecord['kind'], refStr: string, principal: string, txHash: string, display: DisplayPair[], summaryHash: string, proposalId: string | undefined;
@@ -523,8 +530,9 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
 
     const sigBytes = hexBytes(b.signature, 128);
     if (!sigBytes) return reject('signature_not_hex');
-    const der = toCanonicalDer(sigBytes);
-    if (!der) return reject('signature_encoding');
+    // P-256: canonical DER or 64-byte r‖s; ed25519: exactly 64 bytes. The encoding is judged with the verification (step 4).
+    if (rec.keyType === 'ed25519' ? sigBytes.length !== 64 : !toCanonicalDer(sigBytes)) return reject('signature_encoding');
+    const der = sigBytes;
 
     // A proposal is claimed SYNCHRONOUSLY, before the first await below, so two concurrent intakes for the same
     // proposal cannot both pass the open check and each submit a different updateKeyPage transaction.
@@ -573,8 +581,8 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     if (refusal) return reject(refusal);
 
     // 4. Recompute sigMdHash from the bound fields, and the tx hash for a proposal, then verify.
-    const key: P256Key | undefined = parseP256Spki(rec.spki);
-    if (!key || key.keyHash !== rec.keyHash) return reject('key_mismatch');
+    const key = parseOfficerKey(rec.spki);
+    if (!key || key.type !== rec.keyType || key.keyHash !== rec.keyHash) return reject('key_mismatch');
     const params = sigParams(rec);
     const sigMd = buildSigMetaHash(params);
     if (bytesToHex(sigMd) !== rec.sigMdHash) return reject('sigmd_mismatch');
@@ -585,7 +593,8 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
       if (bytesToHex(proposalTransaction.hash()) !== rec.txHash) return reject('tx_hash_mismatch');
     }
     const txHashBytes = hexToBytes(rec.txHash);
-    if (!verifyP256Sha256(key, concatBytes(sigMd, txHashBytes), der)) return reject('bad_signature');
+    const verified = verifyOfficerTxSignature(key, sigMd, txHashBytes, der);
+    if (!verified) return reject('bad_signature');
 
     // 5. A transaction ref must still be pending at its principal.
     let rawTransaction: unknown;
@@ -619,7 +628,7 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
 
     // 6. Submit.
     const pre = buildPreimage(txHashBytes, params);
-    const sigObj = rec.delegators.length ? buildDelegatedSignatureObject(pre, der, rec.txHash) : buildSignatureObject(pre, der, rec.txHash);
+    const sigObj = rec.delegators.length ? buildDelegatedSignatureObject(pre, verified, rec.txHash) : buildSignatureObject(pre, verified, rec.txHash);
     let sub: SubmitResult;
     try {
       sub = await d.chain.submit(buildSubmitEnvelope(rawTransaction, sigObj));

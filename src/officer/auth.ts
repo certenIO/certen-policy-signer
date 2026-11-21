@@ -5,6 +5,9 @@
  *   x-officer-auth: v1 key=<SPKI DER hex>,ts=<unix ms>,sig=<DER ECDSA hex, or 64-byte r‖s hex>
  *   signed message = UTF-8 "tcl-officer-read/v1\n<METHOD>\n<path including query>\n<ts>", ECDSA-P256-SHA256
  *
+ * The key is a P-256 SPKI (ECDSA-P256-SHA256) or an ed25519 key, raw 32 bytes or RFC 8410 SPKI (ed25519 over the message): finding
+ * AGT-F42, the validators settle ed25519 and refuse ecdsaSha256 (G-42).
+ *
  * Accepted only when the timestamp is within ±120 s, the signature verifies, and sha256(SPKI) is a key hash on
  * one of this signer's configured human pages, read live (cached at most 30 s). Every failure is the same
  * answer to the caller; the reason goes to the log only.
@@ -12,7 +15,7 @@
 import type http from 'node:http';
 import type { PageState } from '../ops/rotate.js';
 import type { Logger } from '../logger.js';
-import { P256Key, hexBytes, parseP256Spki, verifyP256Sha256 } from './crypto.js';
+import { OfficerKey, hexBytes, parseOfficerKey, verifyOfficerMessage } from './crypto.js';
 
 export const OFFICER_AUTH_HEADER = 'x-officer-auth';
 export const OFFICER_AUTH_FAILED = 'officer_auth_failed';
@@ -23,7 +26,7 @@ export function officerAuthMessage(method: string, pathAndQuery: string, ts: str
   return new Uint8Array(Buffer.from(`tcl-officer-read/v1\n${method.toUpperCase()}\n${pathAndQuery}\n${ts}`, 'utf8'));
 }
 
-export interface ParsedOfficerAuth { key: P256Key; ts: string; sig: Uint8Array }
+export interface ParsedOfficerAuth { key: OfficerKey; ts: string; sig: Uint8Array }
 
 const HEADER_RE = /^v1 key=([0-9a-fA-F]+),ts=(\d{1,16}),sig=([0-9a-fA-F]+)$/;
 
@@ -34,7 +37,7 @@ export function parseOfficerAuthHeader(h: unknown): ParsedOfficerAuth | undefine
   const spki = hexBytes(m[1], 512);
   const sig = hexBytes(m[3], 128);
   if (!spki || !sig) return undefined;
-  const key = parseP256Spki(spki);
+  const key = parseOfficerKey(spki);
   return key ? { key, ts: m[2], sig } : undefined;
 }
 
@@ -47,7 +50,7 @@ export interface OfficerAuthDeps {
 }
 
 export interface AuthenticatedOfficer {
-  key: P256Key;
+  key: OfficerKey;
   /** The configured human pages that list this key hash (as read, ≤ cacheMs old). */
   pages: string[];
 }
@@ -81,7 +84,7 @@ export function createOfficerAuthenticator(d: OfficerAuthDeps) {
       return undefined;
     }
     const msg = officerAuthMessage(req.method ?? 'GET', req.url ?? '/', parsed.ts);
-    if (!verifyP256Sha256(parsed.key, msg, parsed.sig)) {
+    if (!verifyOfficerMessage(parsed.key, msg, parsed.sig)) {
       d.logger.warn({ audit: 'officer_auth_rejected', reason: 'bad_signature', keyHash: parsed.key.keyHash }, 'officer auth rejected');
       return undefined;
     }
