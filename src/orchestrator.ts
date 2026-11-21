@@ -279,7 +279,7 @@ export class Orchestrator {
    * `submit`. The item stays retryable (`awaiting_policy`): the Console may issue a fresh decision. The refusal is an
    * append-only receipt, not repeated while the same refusal stands (a poll every few seconds would otherwise write one per poll).
    */
-  private async refuseBinding(tx: ResolvedTx, key: string, out: Extract<BindingOutcome, { ok: false }>, verb: string, seat: string): Promise<SigningRequest> {
+  private async refuseBinding(tx: ResolvedTx, key: string, out: Extract<BindingOutcome, { ok: false }>, verb: string, seat: string, seatReason?: string): Promise<SigningRequest> {
     const reason = `binding: ${out.reason}`;
     this.d.logger.warn({ tx: tx.txHash, key, reason: out.reason, detail: out.detail, cause: out.cause, decision: verb }, 'decision refused by the binding check; signing nothing');
     // DE-97: the refusal receipt, the `binding.refused` entry of the journal: the request the signer built, the seat, the reason and, where they could be
@@ -303,7 +303,9 @@ export class Orchestrator {
       await this.saveReceipt({
         ...this.receiptKey(tx), operationId: tx.operationId, reason,
         ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
-        policyEvidence: { blockedBy: 'decision_binding', reason: out.reason, ...(out.detail !== undefined ? { detail: out.detail } : {}), ...(out.cause !== undefined ? { cause: out.cause } : {}), refusalReceipt: receipt, refusalJournal: journalled },
+        // AGT-F72: what the seat itself answered, beside the binding refusal: a named denial with no record (DECISION.md section 5, DE-23) is withheld
+        // here as decision_malformed/record_absent, and the receipt - the audit trail - must still say what the seat decided and why
+        policyEvidence: { blockedBy: 'decision_binding', reason: out.reason, ...(out.detail !== undefined ? { detail: out.detail } : {}), ...(out.cause !== undefined ? { cause: out.cause } : {}), seatDecision: verb, ...(seatReason !== undefined ? { seatReason } : {}), refusalReceipt: receipt, refusalJournal: journalled },
       });
     }
     return this.d.store.update(key, { status: 'awaiting_policy', lastError: reason });
@@ -826,7 +828,7 @@ export class Orchestrator {
       });
       if (!out.ok) {
         if (out.reason === 'paused' || out.reason === 'pause_state_unreadable') return this.withholdPaused(key, ref.txHash, decision.decision, out.reason);
-        return this.refuseBinding(tx, key, out, decision.decision, seat.seat);
+        return this.refuseBinding(tx, key, out, decision.decision, seat.seat, decision.reason);
       }
       bound = out;
       logger.info({ tx: ref.txHash, seat: bound.seat, requestHash: bound.requestHash, approver: bound.approver, policyPinned: bound.policyPinned }, 'decision bound and consumed');

@@ -63,6 +63,8 @@ export interface RigOpts {
   stalePin?: string;
   /** the transaction header deadline (`header.expire.atTime`), RFC 3339 */
   header?: string;
+  /** AGT-F58: the transaction principal (default `${PRINCIPAL}/tokens`) */
+  principal?: string;
 }
 export const PIN_BY = 'seat:fic-operator';
 export const PIN_WHY = 'FICTIONAL: the rule set was reviewed by two officers';
@@ -81,7 +83,8 @@ export function rig(o: RigOpts) {
   const pauses = new PauseStore({ journal, statePath: join(dir, 'pause-state.json'), seats: [seat], nowSeconds: () => NOW_S });
   const acc = new MockAccumulateClient();
   const tx = o.tx ?? TX;
-  acc.addPending(tx, { body: o.body, principal: `${PRINCIPAL}/tokens`, ...(o.header ? { rawTransaction: { header: { principal: `${PRINCIPAL}/tokens`, expire: { atTime: o.header } }, body: o.body } } : {}) });
+  const principal = o.principal ?? `${PRINCIPAL}/tokens`;
+  acc.addPending(tx, { body: o.body, principal, ...(o.header ? { rawTransaction: { header: { principal, expire: { atTime: o.header } }, body: o.body } } : {}) });
   const store = o.store ?? new MemoryStore();
   const policy = new MockPolicyClient(o.reply);
   const loaded = { ...RULES, ...(o.rules ?? {}) }.policyHash;

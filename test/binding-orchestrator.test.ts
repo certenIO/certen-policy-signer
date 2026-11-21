@@ -161,6 +161,18 @@ describe('a refused decision causes no vote, no cancel and no account change (DA
     }
   }
 
+  // AGT-F72 (lead; live A-05 smoke-14, tx 53a793ed..., 2026-11-20): the seat's named denial with no record (a recheck denial, DECISION.md section 5;
+  // DE-23) is withheld as decision_malformed/record_absent; the receipt - the audit trail - now also says what the seat decided and why.
+  it('a named denial with no record is withheld and its receipt carries the seat decision and reason', async () => {
+    const r = rig({ body: BASE, submitRejectVote: true, reply: () => ({ decision: 'deny', reason: 'grant_ended' }) });
+    const row = await r.handle();
+    expect(row.lastError).toBe('binding: decision_malformed');
+    expect(r.acc.submissions).toHaveLength(0);
+    const receipts = await r.store.getReceipts(TX);
+    expect(receipts[0]?.vote).toBeUndefined();
+    expect(receipts[0]?.policyEvidence).toMatchObject({ blockedBy: 'decision_binding', reason: 'decision_malformed', detail: 'record_absent', seatDecision: 'deny', seatReason: 'grant_ended' });
+  });
+
   it('a DENY that fails the binding casts no reject vote even when submitRejectVote is true', async () => {
     const r = rig({ body: BASE, submitRejectVote: true, reply: approveFor(BASE, { policyHash: H('other') }, 'deny') });
     expect((await r.handle()).lastError).toBe('binding: policy_hash_mismatch');
@@ -231,10 +243,26 @@ describe('the Grant and the subject join (DAX-4-A15, DE-06, DE-54, DE-61, DE-71,
     expect((await r.store.getReceipt(TX))?.policyEvidence).toMatchObject({ reason: 'subject_unproven', detail: 'subject_unproven:not_registered' });
     expect(r.acc.submissions).toHaveLength(0);
   });
-  it('an intent that asserts no subject cannot be joined: subject_unproven', async () => {
+  it('an intent that asserts no subject cannot be joined: subject_unproven (the payer, claimed in its place, is not a registered subject)', async () => {
     const noSubject = intentBody({ grantRef: ref });
-    const r = rig({ body: noSubject, rules: grantRules, world: fakeWorld(), reply: approveFor(noSubject, { grantHash: GRANT_HASH }) });
+    const world = fakeWorld({ registered: [SUBJECT.adi] });
+    const r = rig({ body: noSubject, rules: grantRules, world, reply: approveFor(noSubject, { grantHash: GRANT_HASH }) });
     expect((await r.handle()).lastError).toBe('binding: subject_unproven');
+    expect(world.claims).toEqual([{ adi: PRINCIPAL, assertedBy: PRINCIPAL }]);
+  });
+  it('AGT-F58: an agent paying from its OWN account with no subject in the intent is claimed for the payer ADI and joined through the registry', async () => {
+    const noSubject = intentBody({ grantRef: ref });
+    const world = fakeWorld({ registered: [SUBJECT.adi] });
+    const r = rig({ body: noSubject, rules: grantRules, world, reply: approveFor(noSubject, { grantHash: GRANT_HASH }), principal: `${SUBJECT.adi}/data` });
+    expect((await r.handle()).status).toBe('signed');
+    expect(world.claims).toEqual([{ adi: SUBJECT.adi, assertedBy: SUBJECT.adi }]);
+  });
+  it('AGT-F58: an intent from the GRANTOR own account that names no subject has no claim: subject_unproven, as before', async () => {
+    const noSubject = intentBody({ grantRef: ref });
+    const world = fakeWorld({ registered: [SUBJECT.adi] });
+    const r = rig({ body: noSubject, rules: grantRules, world, reply: approveFor(noSubject, { grantHash: GRANT_HASH }), principal: `${GRANTOR}/tokens` });
+    expect((await r.handle()).lastError).toBe('binding: subject_unproven');
+    expect(world.claims).toEqual([null]);
   });
   it('a superseded Grant is reported as stale BEFORE a subject mismatch', async () => {
     const world = fakeWorld({ head: { hash: H('grant-v2'), subject: { adi: 'acc://agent-two.fic-grantor.acme', type: 'agent' } } });

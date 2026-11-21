@@ -143,17 +143,25 @@ export interface FakeWorld extends BindingWorld {
   head: { hash: string; subject: { adi: string; type: 'agent' | 'merchant' | 'client' } } | null;
   resolved: { adi: string; type: 'agent' | 'merchant' | 'client' } | null;
   calls: string[];
+  /** AGT-F58: when set, only these ADIs are registered: a claim for any other ADI resolves not_registered (as the grantor's registry would) */
+  registered?: string[];
+  /** the claims the world was asked to resolve */
+  claims: Array<{ adi: string; assertedBy: string } | null>;
 }
-export function fakeWorld(over: Partial<Pick<FakeWorld, 'head' | 'resolved'>> = {}): FakeWorld {
+export function fakeWorld(over: Partial<Pick<FakeWorld, 'head' | 'resolved' | 'registered'>> = {}): FakeWorld {
   const w: FakeWorld = {
     head: over.head === undefined ? { hash: GRANT_HASH, subject: { ...SUBJECT } } : over.head,
     resolved: over.resolved === undefined ? { ...SUBJECT } : over.resolved,
     calls: [],
+    claims: [],
+    ...(over.registered ? { registered: over.registered } : {}),
     async establish(q) {
       w.calls.push('establish');
+      w.claims.push(q.asserted);
       if (w.head === null) return { head: { ok: false, detail: 'unreadable' }, subject: null };
       const head = { ok: true as const, value: { ...w.head, grant: { fake: true } } };
       if (q.asserted === null) return { head, subject: null };
+      if (w.registered && !w.registered.includes(q.asserted.adi)) return { head, subject: { ok: false, detail: 'subject_unproven:not_registered' } };
       return { head, subject: w.resolved === null ? { ok: false, detail: 'subject_unproven:not_registered' } : { ok: true, value: w.resolved } };
     },
   };
