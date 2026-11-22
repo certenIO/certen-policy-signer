@@ -268,7 +268,9 @@ export function createServer(d: ServerDeps): http.Server {
         const seats = await Promise.all(rows.map(async (r) => ({ page: r.signerUrl, request: r, receipt: await d.store.getReceipt(keyOf(r)) })));
         // G-64: WHY the seat is holding (`pending`, only while it is) and the last hold once it ended
         // (`pendingFinal`). Also on `request`; repeated here so a reader need not know the row's shape.
-        return json(res, 200, { request: reqRow, receipt, pending: reqRow.pending ?? null, pendingFinal: reqRow.pendingFinal ?? null, seats });
+        // AGT-7: every receipt of the keyed row, oldest first (the store appends; `receipt` is the latest), so an earlier answer is readable, never lost
+        const receiptHistory = await d.store.getReceipts(keyOf(reqRow));
+        return json(res, 200, { request: reqRow, receipt, receiptHistory, pending: reqRow.pending ?? null, pendingFinal: reqRow.pendingFinal ?? null, seats });
       }
       // POST /v1/requests/:key/retry
       m = /^\/v1\/requests\/([a-f0-9]{64}(?::[a-f0-9]{16})?)\/retry$/.exec(path);

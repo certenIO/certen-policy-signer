@@ -4,7 +4,7 @@
  * that records every `submit` (a vote, a cancel, anything): FICTIONAL parties only.
  */
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { DECISION_RECORD_MEMBER } from '../src/binding/verify.js';
 import { ADDR, APPROVER, GRANTOR, GRANTOR_BOOK, GRANT_HASH, H, KEY, POLICY, PRINCIPAL, SEAT, SUBJECT, fakeWorld, intentBody, leg, subjectClaim } from './support/binding-fixtures.js';
@@ -171,6 +171,22 @@ describe('a refused decision causes no vote, no cancel and no account change (DA
     const receipts = await r.store.getReceipts(TX);
     expect(receipts[0]?.vote).toBeUndefined();
     expect(receipts[0]?.policyEvidence).toMatchObject({ blockedBy: 'decision_binding', reason: 'decision_malformed', detail: 'record_absent', seatDecision: 'deny', seatReason: 'grant_ended' });
+  });
+
+  // AGT-7 (live A-05, every gate run): the seat answered grant_superseded at one poll (its binding check) and grant_ended at the next (its recheck's
+  // recorded denial). The refusal's own identity (reason/detail/cause/nonce) did not change, so the receipt kept the first seat reason forever: a stale
+  // audit record. A changed seat answer is now a NEW receipt (the log is append-only, so the earlier answer stays in the history); the journal entry,
+  // which names the signer's refusal and not the seat's reason, is not written twice.
+  it('a later poll answered for another seat reason appends a receipt with it; the earlier answer stays in the history; the journal is not repeated', async () => {
+    const answers = ['grant_superseded', 'grant_ended', 'grant_ended'];
+    let n = 0;
+    const r = rig({ body: BASE, reply: () => ({ decision: 'deny', reason: answers[Math.min(n++, answers.length - 1)] }) });
+    await r.handle(); await r.handle(); await r.handle();
+    const receipts = await r.store.getReceipts(TX);
+    expect(receipts.map((x) => x.policyEvidence?.['seatReason'])).toEqual(['grant_superseded', 'grant_ended']);
+    expect((await r.store.getReceipt(TX))?.policyEvidence).toMatchObject({ blockedBy: 'decision_binding', reason: 'decision_malformed', detail: 'record_absent', seatDecision: 'deny', seatReason: 'grant_ended', refusalJournal: 'written' });
+    const journal = readFileSync(join(r.dir, 'decision-journal.jsonl'), 'utf8').split(/\r?\n/).filter((l) => l.includes('binding.refused'));
+    expect(journal).toHaveLength(1);
   });
 
   it('a DENY that fails the binding casts no reject vote even when submitRejectVote is true', async () => {
