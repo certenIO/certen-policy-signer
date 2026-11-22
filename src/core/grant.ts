@@ -22,6 +22,21 @@ export function parseGrantText(text: string): ParseGrantResult {
   return { ok: true, grant: p.grant, canonical: p.canonical, grantHash: hashGrant(p.grant) };
 }
 
+// ---- revocation (GRANT.md section 7, GR-27, GR-40; INTERVENTION.md section 2) ----------------------------------
+
+/**
+ * The revocation of a Grant: the next version of the lineage whose validity interval is EMPTY (`notAfter` equals `notBefore`), the anchor kept at
+ * the head's `notBefore` (GR-40), chained to the head by its hash, issued at `issuedAt`. It ends the Grant at every time (GR-26), which a version
+ * whose `notAfter` is "now" does not: that one is a Grant in force until now (an expiry), and the ledger names it `expired`, not `revoked`. The same
+ * document the SDK's `revocationOf` builds (certen-sdk packages/sdk/src/principal-intervention.ts). Refused: a head that is not a Grant object
+ * with a validity and a version, and an `issuedAt` that is not positive Unix seconds.
+ */
+export function revocationOf(head: Grant, issuedAt: number): Grant {
+  if (!isPlainObject(head) || !isPlainObject((head as { validity?: unknown }).validity) || typeof head.version !== 'number') throw new Error('revocationOf: the current Grant head is required');
+  if (!Number.isSafeInteger(issuedAt) || issuedAt <= 0) throw new Error('revocationOf: issuedAt must be Unix seconds');
+  return { ...head, version: head.version + 1, priorHash: hashGrant(head), issuedAt, validity: { notBefore: head.validity.notBefore, notAfter: head.validity.notBefore } } as Grant;
+}
+
 // ---- checkAction ---------------------------------------------------------------------------------------------
 
 export interface CheckActionInput {

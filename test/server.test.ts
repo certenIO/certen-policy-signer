@@ -313,6 +313,19 @@ describe('http server', () => {
     expect(ctx.acc.submissions.length).toBe(1);
   });
 
+  it('GET /v1/requests/:hash also returns the receipt history, oldest first; `receipt` stays the latest (AGT-7: an earlier seat answer is never lost)', async () => {
+    const body = { tx_hash: TX, signer_url: SIGNER };
+    await reqH(port, 'POST', '/v1/pending', hookSig(body), body);
+    for (let i = 0; i < 20 && !(await ctx.store.get(TX)); i++) await sleep(25);
+    await ctx.store.saveReceipt({ txHash: TX, reason: 'binding: decision_malformed', policyEvidence: { blockedBy: 'decision_binding', seatReason: 'grant_superseded' } });
+    await ctx.store.saveReceipt({ txHash: TX, reason: 'binding: decision_malformed', policyEvidence: { blockedBy: 'decision_binding', seatReason: 'grant_ended' } });
+    const g = await reqH(port, 'GET', `/v1/requests/${TX}`, ADMIN);
+    expect(g.status).toBe(200);
+    expect(g.json.receipt.policyEvidence.seatReason).toBe('grant_ended');
+    const reasons = (g.json.receiptHistory as Array<{ policyEvidence?: { seatReason?: string } }>).map((x) => x.policyEvidence?.seatReason).filter(Boolean);
+    expect(reasons.slice(-2)).toEqual(['grant_superseded', 'grant_ended']);
+  });
+
   it('POST /v1/pending missing fields → 400', async () => {
     const body = { tx_hash: TX };
     const r = await reqH(port, 'POST', '/v1/pending', hookSig(body), body);

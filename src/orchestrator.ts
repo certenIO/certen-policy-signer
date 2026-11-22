@@ -291,14 +291,24 @@ export class Orchestrator {
     const latest = await this.d.store.getReceipt(key);
     const le = latest?.policyEvidence;
     const lr = le?.['refusalReceipt'] as { nonce?: string } | undefined;
-    const same = le?.['blockedBy'] === 'decision_binding' && le['reason'] === out.reason && (le['detail'] ?? null) === (out.detail ?? null) && (le['cause'] ?? null) === (out.cause ?? null) && (lr?.nonce ?? '') === (receipt.nonce ?? '');
-    if (!same) {
-      try {
-        await this.d.binding!.refusals.record(receipt);
-      } catch (e) {
-        if (!(e instanceof JournalError)) throw e;
-        journalled = `not_written: ${e.reason}${e.detail ? ' ' + e.detail : ''}`;
-        this.d.logger.error({ tx: tx.txHash, reason: out.reason, journal: journalled }, 'the binding.refused receipt could not be written to the decision journal; the refusal stands (nothing was signed)');
+    const sameRefusal = le?.['blockedBy'] === 'decision_binding' && le['reason'] === out.reason && (le['detail'] ?? null) === (out.detail ?? null) && (le['cause'] ?? null) === (out.cause ?? null) && (lr?.nonce ?? '') === (receipt.nonce ?? '');
+    // AGT-7: what the seat answered is part of the audit record. The same refusal answered for ANOTHER seat decision or reason (live A-05: the seat's
+    // binding check said grant_superseded at one poll, its recheck's recorded denial grant_ended at the next) is a new receipt, appended, so the latest
+    // receipt is always the latest answer and the earlier one stays in the receipt history (getReceipts). The journal entry names the signer's refusal
+    // (request, seat, reason, nonce, transaction), not the seat's reason: it is written once per refusal, not again for a changed seat answer.
+    const sameSeatAnswer = sameRefusal && (le['seatDecision'] ?? null) === verb && (le['seatReason'] ?? null) === (seatReason ?? null);
+    if (!sameSeatAnswer) {
+      if (!sameRefusal) {
+        try {
+          await this.d.binding!.refusals.record(receipt);
+        } catch (e) {
+          if (!(e instanceof JournalError)) throw e;
+          journalled = `not_written: ${e.reason}${e.detail ? ' ' + e.detail : ''}`;
+          this.d.logger.error({ tx: tx.txHash, reason: out.reason, journal: journalled }, 'the binding.refused receipt could not be written to the decision journal; the refusal stands (nothing was signed)');
+        }
+      } else {
+        // the journal entry of this refusal was already made (or its failure recorded) by the receipt before; this receipt carries that state
+        journalled = String(le['refusalJournal'] ?? 'written');
       }
       await this.saveReceipt({
         ...this.receiptKey(tx), operationId: tx.operationId, reason,
