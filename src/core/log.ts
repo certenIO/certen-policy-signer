@@ -11,8 +11,18 @@
 import { CoreError, HASH_RE, isPlainObject } from './bytes.js';
 import { genesisHash, logEntryHash } from './hashes.js';
 import { canonicalize } from './jcs.js';
+import { DEFAULT_MIN_REASON_LENGTH } from './pause.js';
+import { isSeatId } from './decision-identity.js';
+import { isAccUrl } from './grant-profile.js';
 
-/** the fourteen kinds (DECISION.md section 9, DE-103): binding.refused (DAX7E-R2-F2, the signer's refusal receipt) is the thirteenth, policy.pinned (the pin step, DE-94) the fourteenth; any other kind is refused by name */
+/** AGT-F135 (DE-109): the acts an intervention.recorded entry may name */
+export const INTERVENTION_ACTS: readonly string[] = ['revoke', 'replace', 'reject'];
+
+/**
+ * the fifteen kinds (DECISION.md section 9, DE-103): binding.refused (DAX7E-R2-F2, the signer's refusal receipt) is the thirteenth, policy.pinned (the pin
+ * step, DE-94) the fourteenth, intervention.recorded (AGT-F135, DE-109: a revoke, replace or cancel by reject vote held by a named seat with a reason) the
+ * fifteenth; any other kind is refused by name
+ */
 export const LOG_KINDS = [
   'decision.issued',
   'decision.consumed',
@@ -28,6 +38,7 @@ export const LOG_KINDS = [
   'grant.observed',
   'binding.refused',
   'policy.pinned',
+  'intervention.recorded',
 ] as const;
 export type LogKind = (typeof LOG_KINDS)[number];
 
@@ -75,6 +86,12 @@ function payloadReadable(kind: string, p: Record<string, unknown>): boolean {
       return str('requestHash', 'seat', 'reason') && (!present(p, 'nonce') || hashOrEmpty(p['nonce'])) && (!present(p, 'txHash') || hashOrEmpty(p['txHash']));
     case 'policy.pinned':
       return str('seat', 'by', 'reason') && present(p, 'policyHash') && isHash(p['policyHash']) && present(p, 'previous') && (p['previous'] === null || isHash(p['previous']));
+    case 'intervention.recorded':
+      // AGT-F135 (DE-109): act one of revoke/replace/reject, subject an acc:// URL, seat the seat:<name> form, by non-empty, reason at least the core's
+      // minimum reason length (trimmed), txHash the 32-byte hash of the Accumulate transaction that is the act
+      return str('act', 'subject', 'seat', 'by', 'reason') && INTERVENTION_ACTS.includes(p['act'] as string) && isAccUrl(p['subject']) &&
+        isSeatId(p['seat']) && (p['by'] as string).trim().length > 0 && (p['reason'] as string).trim().length >= DEFAULT_MIN_REASON_LENGTH &&
+        present(p, 'txHash') && isHash(p['txHash']);
     case 'grant.observed':
       return str('grantId', 'grantHash') && typeof p['version'] === 'number' && Number.isSafeInteger(p['version']) && p['version'] >= 1;
     default:
