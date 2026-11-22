@@ -36,6 +36,7 @@ import type { Logger } from '../logger.js';
 import type { PageState } from '../ops/rotate.js';
 import type { ChainSignature, TxSignatures } from '../accumulate/client.js';
 import type { HumanSignature, SigningRequest } from '../types.js';
+import { finaliseHold } from '../store/pending-hold.js';
 
 const norm = (u: string) => u.toLowerCase().replace(/\/+$/, '');
 const bookOf = (page: string) => norm(page).replace(/\/\d+$/, '');
@@ -200,4 +201,220 @@ export async function advanceAwaitingHuman(d: HumanTallyDeps, txHash: string, pa
     humanSignatures: counted,
     ...(override ? { humanOverride: override, lastError: `human_override: owed ${override.owed}, cast ${override.cast}` } : { lastError: undefined }),
   });
+}
+
+/* ------------------------------------------------------------------------------------------------------------------ */
+/* AGT-F130: a KEYED seat's request held on the personal path ends when the people's authority has signed on chain.    */
+/* ------------------------------------------------------------------------------------------------------------------ */
+
+/**
+ * One officer signature THIS signer's intake submitted to the network: who, how, and WHEN it was sent. Persisted per
+ * prepare (intake state kind `submission`), so the time survives a restart between two officers' signatures.
+ * `delegators` are in hop order (outermost last), as the intake prepared them.
+ */
+export interface IntakeSubmission {
+  prepareId: string;
+  txHash: string;
+  keyHash: string;
+  page: string;
+  delegators: string[];
+  vote: 'approve' | 'reject';
+  /** ms since the epoch: the moment the intake sent the signature to the network. */
+  submittedAt: number;
+}
+
+/** What officer intake reports when a signature it submitted on a TRANSACTION ref has landed. */
+export interface LandedOfficerSignature {
+  txHash: string;
+  /** The page whose seat the signature satisfies: the outermost delegator, else the signing page. */
+  authority: string;
+  page: string;
+  delegators: string[];
+  keyHash: string;
+  vote: 'approve' | 'reject';
+  /** When this intake sent THIS signature to the network. */
+  submittedAt: number;
+  /** Every signature this intake has submitted on the transaction (this one included), from its persisted state. */
+  submissions: IntakeSubmission[];
+}
+
+export interface PersonalPathDeps extends HumanTallyDeps {
+  /** How long to wait for a policy poll to release the request's lock (default 60 s); past it the miss is logged as an error. */
+  lockWaitMs?: number;
+  lockPollMs?: number;
+}
+
+/** A keyed seat's request that has not been decided: the policy engine is still being asked (or was never answered). */
+const UNDECIDED: ReadonlyArray<SigningRequest['status']> = ['discovered', 'awaiting_policy'];
+
+const sameSet = (a: string[], b: string[]) =>
+  JSON.stringify(a.map((x) => x.toLowerCase()).sort()) === JSON.stringify(b.map((x) => x.toLowerCase()).sort());
+
+/** The intake submission that put chain signature `s` on the transaction, if this intake submitted it. */
+const submissionOf = (s: ChainSignature, subs: IntakeSubmission[]): IntakeSubmission | undefined =>
+  subs.find((x) => x.keyHash.toLowerCase() === s.publicKeyHash.toLowerCase() && x.vote === voteOf(s) && sameSet(x.delegators, s.delegators));
+
+/** Does chain signature `s` reach `authority` (made on it directly, or delegated through it as the outermost delegator)? */
+const reaches = (s: ChainSignature, authority: string) =>
+  s.delegators.length ? norm(s.delegators[0]!) === norm(authority) : !!s.signer && norm(s.signer) === norm(authority);
+
+/**
+ * When did THIS intake send the signature that completed `authority`'s threshold for `vote`? Determined by replaying
+ * the chain's signature set in this intake's submission order: the earliest submission at which the signatures sent up
+ * to then reach the threshold (delegate books counted exactly as `countedSignatures` counts them).
+ *
+ * Every signature reaching the authority with that vote must be one this intake submitted; otherwise the order in which
+ * they arrived is not known here and `undefined` is returned (the receipt then states no relay time rather than a
+ * wrong one).
+ */
+async function completingSubmission(sigs: TxSignatures, authority: string, st: PageState, vote: CountedVote, needed: number, subs: IntakeSubmission[], readPage: ReadPage): Promise<IntakeSubmission | undefined> {
+  const relevant = sigs.signatures.filter((s) => reaches(s, authority) && voteOf(s) === vote);
+  const mine = relevant.map((s) => ({ s, sub: submissionOf(s, subs) }));
+  if (mine.some((m) => !m.sub)) return undefined;
+  const order = [...mine].sort((a, b) => a.sub!.submittedAt - b.sub!.submittedAt);
+  for (let i = 0; i < order.length; i++) {
+    const sentBy = new Set(order.slice(0, i + 1).map((m) => m.s));
+    const subset: TxSignatures = { ...sigs, signatures: sigs.signatures.filter((s) => !relevant.includes(s) || sentBy.has(s)) };
+    const counted = await countedSignatures(subset, authority, st, readPage);
+    if (counted.filter((c) => c.vote === vote).length >= needed) return order[i]!.sub;
+  }
+  return undefined;
+}
+
+async function withLock<T>(d: PersonalPathDeps, key: string, fn: () => Promise<T>): Promise<T | 'locked'> {
+  const wait = d.lockWaitMs ?? 60_000;
+  const step = d.lockPollMs ?? 50;
+  const until = Date.now() + wait;
+  while (!d.store.tryLock(key)) {
+    if (Date.now() >= until) return 'locked';
+    await new Promise((res) => setTimeout(res, step));
+  }
+  try { return await fn(); } finally { d.store.unlock(key); }
+}
+
+/**
+ * AGT-F130. A KEYED seat (its page holds the policy key) whose decision service answered `pending` because the payment
+ * is approved by people signing with their OWN keys through officer intake (the personal path): the seat casts no
+ * machine vote, and its request sat `awaiting_policy` for ever once the people's signatures executed the transaction,
+ * with no receipt -- so nothing could say the signer relayed the people's act, or when.
+ *
+ * Called when a signature THIS intake submitted on a transaction ref lands. For each undecided keyed request on that
+ * transaction whose page belongs to the same key book as the authority the people signed for (the book's authority is
+ * satisfied by any one of its pages reaching its threshold), the chain is read -- the signature set and the authority's
+ * page -- and counted exactly as `advanceAwaitingHuman` counts:
+ *
+ *   - threshold not met: the counted signatures are kept on the request (`humanSignatures`); it stays open, because
+ *     partial signatures are not a decision;
+ *   - accept threshold met: the request ends `signed`; reject threshold met: it ends `rejected`. The receipt states the
+ *     PEOPLE's act, relayed by this signer: `vote` (the cast vote), `submittedAt` (when this intake sent the signature
+ *     that completed the threshold -- never the moment the landing was noticed), `signedBy` (a decisive signature: the
+ *     page its key sits on, its type, key hash and delegation path), `humanSignatures`, and
+ *     `policyEvidence.personalSignature: { page, vote, ... }` so nobody reads it as a machine vote. Existing receipt
+ *     fields are kept. No machine signature is ever cast.
+ *   - a vote opposite to the one a prior receipt says was owed (the human-only marker, or the engine's own `decision`)
+ *     is recorded as an override, exactly as `advanceAwaitingHuman` records one.
+ *
+ * The request's lock is taken (waiting for a policy poll of it to finish), so a poll in flight cannot write
+ * `awaiting_policy` back over the ended request.
+ */
+export async function advancePersonalPath(d: PersonalPathDeps, r: LandedOfficerSignature): Promise<SigningRequest[]> {
+  if (!d.getTxSignatures || !d.readPage) return [];
+  const authorityBook = bookOf(r.authority);
+  const candidates = (await d.store.listForTx(r.txHash)).filter((q) =>
+    q.recordId === undefined && UNDECIDED.includes(q.status) && bookOf(q.signerUrl) === authorityBook);
+  const out: SigningRequest[] = [];
+  for (const cand of candidates) {
+    const key = cand.workKey ?? cand.txHash;
+    const res = await withLock(d, key, () => advanceOne(d, r, key));
+    if (res === 'locked') {
+      d.logger?.error({ tx: r.txHash, key, authority: r.authority }, 'personal path: the request stayed locked by a policy poll; the landed signature could not be recorded on it now');
+      continue;
+    }
+    if (res) out.push(res);
+  }
+  return out;
+}
+
+async function advanceOne(d: PersonalPathDeps, r: LandedOfficerSignature, key: string): Promise<SigningRequest | undefined> {
+  const req = await d.store.get(key);
+  if (!req || !UNDECIDED.includes(req.status)) return req;
+  const sigs = await d.getTxSignatures!(r.txHash, req.account || r.authority).catch(() => undefined);
+  if (!sigs || sigs.unavailable) {
+    d.logger?.warn({ tx: r.txHash, authority: r.authority }, 'personal path: the signature set could not be read; nothing recorded');
+    return req;
+  }
+  let st: PageState;
+  try { st = await d.readPage!(r.authority); } catch (e) {
+    d.logger?.warn({ tx: r.txHash, authority: r.authority, err: (e as Error).message }, 'personal path: the authority page could not be read; nothing recorded');
+    return req;
+  }
+  const pageCache = new Map<string, Promise<PageState>>();
+  const readPage: ReadPage = (pg) => { const k = norm(pg); if (!pageCache.has(k)) pageCache.set(k, d.readPage!(pg)); return pageCache.get(k)!; };
+
+  const unread: string[] = [];
+  const counted = await countedSignatures(sigs, r.authority, st, readPage, unread);
+  if (unread.length) d.logger?.warn({ tx: r.txHash, authority: r.authority, unread }, 'personal path: some delegate seats could not be counted from the chain; they do not count');
+  const approvals = counted.filter((s) => s.vote === 'approve');
+  const rejections = counted.filter((s) => s.vote === 'reject');
+  const accept = st.threshold;
+  const reject = st.rejectThreshold || st.threshold;
+  const cast: CountedVote | undefined = approvals.length >= accept ? 'approve' : rejections.length >= reject ? 'reject' : undefined;
+
+  if (!cast) {
+    if (JSON.stringify(counted) === JSON.stringify(req.humanSignatures ?? [])) return req;
+    d.logger?.info({ tx: r.txHash, authority: r.authority, approvals: approvals.length, rejections: rejections.length, accept, reject }, "personal path: signatures counted; the authority's threshold is not yet met");
+    return d.store.update(key, { humanSignatures: counted });
+  }
+
+  const receipt = await d.store.getReceipt(key);
+  const marker = (receipt?.policyEvidence?.awaitingHumanSignature as { vote?: unknown } | undefined)?.vote;
+  const owed: CountedVote | undefined = marker === 'approve' || marker === 'reject'
+    ? marker
+    : receipt?.decision === 'approve' ? 'approve' : receipt?.decision === 'deny' ? 'reject' : undefined;
+  const override = owed && owed !== cast ? { owed, cast } : undefined;
+  const decisive = cast === 'approve' ? approvals : rejections;
+  const first = decisive[0]!;
+  // The page a decisive signature's key sits on (the signature's own signer), so `signedBy` can be compared with a page entry.
+  const firstSig = sigs.signatures.find((s) => s.publicKeyHash.toLowerCase() === first.publicKeyHash && voteOf(s) === first.vote && sameSet(s.delegators, first.delegators));
+  const completing = await completingSubmission(sigs, r.authority, st, cast, cast === 'approve' ? accept : reject, r.submissions, readPage);
+  if (!completing) {
+    d.logger?.warn({ tx: r.txHash, authority: r.authority, cast }, 'personal path: the threshold is met but not every signature that met it was submitted by this intake; the receipt records no relay time');
+  }
+  const t = (d.now ?? Date.now)();
+  await d.store.saveReceipt({
+    ...(receipt ?? { txHash: r.txHash, ...(req.workKey ? { workKey: req.workKey } : {}) }),
+    ...(req.operationId && !receipt?.operationId ? { operationId: req.operationId } : {}),
+    vote: cast,
+    ...(completing ? { submittedAt: completing.submittedAt } : {}),
+    signedBy: { page: firstSig?.signer ?? r.authority, signatureType: first.type, publicKeyHash: first.publicKeyHash, delegators: first.delegators },
+    humanSignatures: counted,
+    policyEvidence: {
+      ...(receipt?.policyEvidence ?? {}),
+      personalSignature: { page: r.authority, vote: cast, relayedBy: completing ? 'this-signer' : 'not-determined', ...(completing ? { completingKeyHash: completing.keyHash } : {}) },
+    },
+    ...(override ? { humanOverride: override } : {}),
+  });
+  if (override) {
+    d.logger?.warn({ tx: r.txHash, authority: r.authority, owed: override.owed, cast: override.cast }, 'personal path: the people signed the OPPOSITE of the vote owed; recorded as an override');
+  } else {
+    d.logger?.info({ tx: r.txHash, authority: r.authority, cast, signatures: decisive.length, submittedAt: completing?.submittedAt }, "personal path: the people's authority met its threshold on chain; the seat's request ended with their act (no machine vote)");
+  }
+  return d.store.update(key, {
+    status: cast === 'approve' ? 'signed' : 'rejected',
+    humanSignatures: counted,
+    ...finaliseHold(req, `personal:${cast}`, t),
+    ...(override ? { humanOverride: override, lastError: `human_override: owed ${override.owed}, cast ${override.cast}` } : { lastError: undefined }),
+  });
+}
+
+/**
+ * The officer intake's `onLanded` hook, for the intake-only process AND the full signer (both build their intake with
+ * `buildOfficerIntake`): a human-only seat's `awaiting_human` request (G-69) and a keyed seat's request held on the
+ * personal path (AGT-F130) are each advanced from the chain.
+ */
+export function officerLandedHandler(d: PersonalPathDeps): (r: LandedOfficerSignature) => Promise<void> {
+  return async (r) => {
+    await advanceAwaitingHuman(d, r.txHash, r.authority);
+    await advancePersonalPath(d, r);
+  };
 }

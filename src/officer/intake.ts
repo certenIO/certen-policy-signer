@@ -27,6 +27,7 @@ import type { PageState } from '../ops/rotate.js';
 import type { PolicyRequest } from '../types.js';
 import type { Logger } from '../logger.js';
 import type { Store } from '../store/store.js';
+import type { IntakeSubmission, LandedOfficerSignature } from './landed.js';
 import { ACC_URL, DOT_SEGMENT, readCapped, send } from '../relay.js';
 import { buildProposalDisplay, proposalOperations, tclSummaryV1, withDisplay, DisplayPair } from '../display.js';
 import { extractAcceptance, extractGovernance } from '../decode/facts.js';
@@ -39,6 +40,11 @@ import { hexBytes, parseOfficerKey, toCanonicalDer, verifyOfficerTxSignature } f
 export const PREPARE_TTL_MS = 10 * 60_000;
 export const PROPOSAL_TTL_MS = 24 * 60 * 60_000;
 export const SIGNATURE_INVALID = 'signature_invalid';
+/**
+ * AGT-F130: how long the record of a signature this intake SENT is kept (its relay time): well past the network's default
+ * pending window, so it outlives the landings it is asked about; older records are dropped on restore and on sweep.
+ */
+export const SUBMISSION_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const MAX_DELEGATORS = 4;
 const MAX_OPEN_PREPARES = 1000;
 const MAX_OPEN_PROPOSALS = 1000;
@@ -70,8 +76,12 @@ export interface OfficerIntakeDeps {
    * human-only seat recorded as `awaiting_human` can end. `authority` is the page whose seat the
    * signature satisfies (the outermost delegator, else the signing page). Best-effort: a failure is
    * logged and never changes the answer, because the signature is already on chain.
+   *
+   * AGT-F130: it also carries when THIS intake sent the signature (`submittedAt`) and every signature it has sent on the
+   * transaction (`submissions`, persisted per prepare), so a keyed seat held on the personal path can end with a receipt
+   * that states the time the threshold-completing signature was relayed.
    */
-  onLanded?: (r: { txHash: string; authority: string; page: string; delegators: string[]; keyHash: string; vote: 'approve' | 'reject' }) => Promise<void>;
+  onLanded?: (r: LandedOfficerSignature) => Promise<void>;
   pollIntervalMs?: number;
   /** G-39: persistence for open prepares and proposals. Absent => in memory only (a restart drops them). */
   state?: IntakeState;
@@ -184,8 +194,19 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
   const dropProposal = (id: string) => d.state?.deleteIntakeRecord('proposal', id) ?? Promise.resolve();
   const logDrop = (kind: string, id: string) => (e: unknown) => d.logger.error({ kind, id, err: (e as Error).message }, 'officer intake: could not drop an expired record from the store');
 
+  // AGT-F130: every signature this intake SENT on a transaction ref, with when, keyed by its prepare (persisted when a store is given).
+  const submissions = new Map<string, IntakeSubmission>();
+  const submissionFromRecord = (o: Record<string, unknown>): IntakeSubmission | undefined =>
+    typeof o.prepareId === 'string' && typeof o.txHash === 'string' && typeof o.keyHash === 'string' && typeof o.page === 'string'
+      && Array.isArray(o.delegators) && o.delegators.every((x) => typeof x === 'string') && (o.vote === 'approve' || o.vote === 'reject')
+      && typeof o.submittedAt === 'number' && Number.isFinite(o.submittedAt)
+      ? (o as unknown as IntakeSubmission) : undefined;
+  const dropSubmission = (id: string) => d.state?.deleteIntakeRecord('submission', id) ?? Promise.resolve();
+  const submissionsFor = (txHash: string) => [...submissions.values()].filter((s) => s.txHash === txHash).map((s) => ({ ...s, delegators: [...s.delegators] }));
+
   function sweep() {
     const t = now();
+    for (const [k, s] of submissions) if (s.submittedAt + SUBMISSION_RETENTION_MS <= t) { submissions.delete(k); dropSubmission(k).catch(logDrop('submission', k)); }
     // Expired is refused whether or not the store has caught up: the map entry goes now, the record after.
     for (const [k, r] of prepares) if (r.expiresAt <= t) { prepares.delete(k); dropPrepare(k).catch(logDrop('prepare', k)); }
     for (const [k, p] of proposals) {
@@ -240,7 +261,12 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
       // Expired: dropped -- unless it is still `submitting` with an unknown fate (review #7), which is kept.
       if (p.expiresAt <= t && p.status !== 'submitting') { proposals.delete(p.id); await dropProposal(p.id); }
     }
-    d.logger.info({ prepares: prepares.size, proposals: proposals.size }, 'officer intake: open prepares and proposals restored');
+    for (const o of await d.state.listIntakeRecords('submission')) {
+      const s = submissionFromRecord(o);
+      if (!s || s.submittedAt + SUBMISSION_RETENTION_MS <= t) { await dropSubmission(String(o.prepareId)); continue; }
+      submissions.set(s.prepareId, s);
+    }
+    d.logger.info({ prepares: prepares.size, proposals: proposals.size, submissions: submissions.size }, 'officer intake: open prepares and proposals restored');
   }
 
   /** Parse `ref` into a tx hash or a live proposal. */
@@ -630,6 +656,8 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     const pre = buildPreimage(txHashBytes, params);
     const sigObj = rec.delegators.length ? buildDelegatedSignatureObject(pre, verified, rec.txHash) : buildSignatureObject(pre, verified, rec.txHash);
     let sub: SubmitResult;
+    // AGT-F130: the moment this intake sends the signature to the network -- the relay time a receipt states.
+    const sentAt = now();
     try {
       sub = await d.chain.submit(buildSubmitEnvelope(rawTransaction, sigObj));
     } catch (e) {
@@ -659,6 +687,14 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
       d.logger.warn({ audit: 'officer_signature_submit_error_but_on_chain', ref: rec.ref, txHash: rec.txHash, keyHash: rec.keyHash, err: sub.error }, 'submit reported an error, but this signature is on chain; treating it as submitted');
     }
     markSubmitted();
+    if (rec.kind === 'transaction') {
+      // AGT-F130: kept per prepare, and persisted, so the time survives a restart before the threshold is met. A failed write is
+      // logged and does not change the answer: the signature is already on the network.
+      const s: IntakeSubmission = { prepareId: rec.prepareId, txHash: rec.txHash, keyHash: rec.keyHash, page: rec.page, delegators: [...rec.delegators], vote: rec.vote, submittedAt: sentAt };
+      submissions.set(s.prepareId, s);
+      await (d.state?.saveIntakeRecord('submission', s.prepareId, { ...s }) ?? Promise.resolve())
+        .catch((e) => d.logger.error({ prepareId: s.prepareId, txHash: s.txHash, err: (e as Error).message }, 'officer intake: could not persist the submission time; it is kept in memory only'));
+    }
     if (proposal) {
       proposal.status = 'submitted'; proposal.txHash = rec.txHash; delete proposal.pendingTxHash;
       await saveProposal(proposal).catch((e) => d.logger.error({ proposalId: proposal.id, err: (e as Error).message }, 'officer intake: could not record the submitted proposal'));
@@ -674,7 +710,7 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     }
     if (!proposal && status === 'landed' && d.onLanded) {
       const authority = rec.delegators.length ? rec.delegators[rec.delegators.length - 1]! : rec.page;
-      await d.onLanded({ txHash: rec.txHash, authority, page: rec.page, delegators: rec.delegators, keyHash: rec.keyHash, vote: rec.vote })
+      await d.onLanded({ txHash: rec.txHash, authority, page: rec.page, delegators: rec.delegators, keyHash: rec.keyHash, vote: rec.vote, submittedAt: sentAt, submissions: submissionsFor(rec.txHash) })
         .catch((e) => d.logger.error({ tx: rec.txHash, err: (e as Error).message }, 'could not record the landed officer signature on the request'));
     }
     return send(res, 200, { txHash: rec.txHash, status, page: rec.page, keyHash: rec.keyHash });
