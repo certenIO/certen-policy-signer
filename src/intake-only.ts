@@ -12,7 +12,7 @@ import { Logger } from './logger.js';
 import { RawAccumulateClient } from './accumulate/raw-client.js';
 import { readPage } from './ops/rotate.js';
 import { createOfficerIntake, OfficerIntake } from './officer/intake.js';
-import { advanceAwaitingHuman } from './officer/landed.js';
+import { officerLandedHandler } from './officer/landed.js';
 import { createRelayClientsHandler, RelayClientsHandler } from './relay-clients.js';
 import { createServer } from './server.js';
 import { MemoryStore, FileStore, Store } from './store/store.js';
@@ -44,10 +44,13 @@ export function buildOfficerIntake(cfg: Config, accumulate: RawAccumulateClient,
     decode: (body, principal) => decoders.decode(body as TxBody, { principal }),
     labels: cfg.decoders.labels,
     landedTimeoutMs: cfg.officer_intake.landed_timeout_ms,
-    // G-69: a landed personal signature ends a human-only seat's `awaiting_human` request.
     // G-69: a landed personal signature advances a human-only seat's request -- counted against the page's
     // thresholds from the chain, never ended on one signature alone.
-    onLanded: async (r) => { await advanceAwaitingHuman({ store, getTxSignatures: (h, p) => accumulate.getTxSignatures(h, p), readPage: (pg) => readPage(accumulate, pg), logger }, r.txHash, r.authority); },
+    // AGT-F130: and it advances a KEYED seat's request held on the personal path (the people's authority is a page of the
+    // seat's own book): once that authority's threshold is met on chain, the request ends with a receipt of the people's act,
+    // relayed by this signer, with the time this intake sent the threshold-completing signature. This builder is the
+    // intake of the FULL signer (src/index.ts) and of the intake-only process alike.
+    onLanded: officerLandedHandler({ store, getTxSignatures: (h, p) => accumulate.getTxSignatures(h, p), readPage: (pg) => readPage(accumulate, pg), logger }),
     // G-39: open prepares and proposals live in the store, so a restart keeps them (and their expiry).
     state: store,
     logger,

@@ -78,7 +78,8 @@ export interface Store {
   unlock(key: string): void;
 }
 
-export type IntakeRecordKind = 'prepare' | 'proposal';
+/** `submission` (AGT-F130): one officer signature the intake SENT to the network, with when -- the relay time a receipt states. */
+export type IntakeRecordKind = 'prepare' | 'proposal' | 'submission';
 
 /**
  * The record key of a HUMAN-ONLY seat's request for a transaction (review #1): `<txHash>@<page>`, page
@@ -95,7 +96,7 @@ export class MemoryStore implements Store {
   protected receiptLog: Receipt[] = [];
   protected receipts = new Map<string, Receipt>();
   protected policyRequests = new Map<string, PolicyRequest>();
-  protected intake = { prepare: new Map<string, Record<string, unknown>>(), proposal: new Map<string, Record<string, unknown>>() };
+  protected intake = { prepare: new Map<string, Record<string, unknown>>(), proposal: new Map<string, Record<string, unknown>>(), submission: new Map<string, Record<string, unknown>>() };
   private locks = new Set<string>();
 
   async get(key: string) { return this.reqs.get(key); }
@@ -198,7 +199,7 @@ export class FileStore extends MemoryStore {
         policyRequestsByKey?: Array<[string, PolicyRequest]>;
         /** A file written by a build that kept page-keyed requests as a list parallel to `policyRequests` (G-69, before the merge with DAX-4S). */
         policyRequestKeys?: string[];
-        intake?: { prepares?: Array<Record<string, unknown>>; proposals?: Array<Record<string, unknown>> };
+        intake?: { prepares?: Array<Record<string, unknown>>; proposals?: Array<Record<string, unknown>>; submissions?: Array<Record<string, unknown>> };
       };
       // A file written before work keys has no `workKey` on any record; `keyOf` files those under their
       // txHash, which is where they always were, so an upgrade neither re-votes nor loses a receipt.
@@ -209,6 +210,7 @@ export class FileStore extends MemoryStore {
       for (const [k, r] of raw.policyRequestsByKey ?? []) this.policyRequests.set(k, r);
       for (const r of raw.intake?.prepares ?? []) this.intake.prepare.set(String(r.prepareId), r);
       for (const r of raw.intake?.proposals ?? []) this.intake.proposal.set(String(r.id), r);
+      for (const r of raw.intake?.submissions ?? []) this.intake.submission.set(String(r.prepareId), r);
     } catch (e) {
       // A corrupt state file must not silently become an empty one: that would re-vote everything.
       throw new Error(`store: ${this.path} exists but is unreadable (${(e as Error).message}) — refusing to start with an empty history`);
@@ -239,7 +241,7 @@ export class FileStore extends MemoryStore {
       // path-keyed and page-keyed ones beside it, with their key, because the request itself does not carry it.
       policyRequests: [...this.policyRequests.entries()].filter(([k, r]) => k === r.txHash).map(([, r]) => r),
       policyRequestsByKey: [...this.policyRequests.entries()].filter(([k, r]) => k !== r.txHash),
-      intake: { prepares: [...this.intake.prepare.values()], proposals: [...this.intake.proposal.values()] },
+      intake: { prepares: [...this.intake.prepare.values()], proposals: [...this.intake.proposal.values()], submissions: [...this.intake.submission.values()] },
     });
     this.queue = this.queue.then(() => this.writeAtomic(snapshot)).catch(() => this.writeAtomic(snapshot));
     return this.queue;
