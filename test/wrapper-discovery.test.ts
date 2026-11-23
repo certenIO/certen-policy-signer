@@ -29,6 +29,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { memoryPauseStore } from '../src/binding/pause-store.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'ab'.repeat(32);
@@ -75,7 +76,7 @@ describe('wrapper discovery', () => {
     acc.approvesThrough(TX, ALICE, [W_ALICE, ORG]);
     const reg = new MemoryWrapperRegistry();
     await reg.upsert(entry('p'));
-    const o = new Orchestrator({
+    const o = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), TS_PAGE), policy: new MockPolicyClient({ decision: 'approve' }),
       store: new MemoryStore(), resolver: new Resolver(acc), logger: silent,
       wrapper: {
@@ -248,7 +249,7 @@ describe('push with routing hints', () => {
     // The orchestrator re-derives from the votes at the hinted book; see wrapper-path.test.ts "a wrong hint".
     const acc = new WrapperChain();
     acc.addPending(TX, { body: { type: 'sendTokens', to: [] }, principal: PRINCIPAL });
-    const o = new Orchestrator({
+    const o = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), TS_PAGE), policy: new MockPolicyClient({ decision: 'approve' }),
       store: new MemoryStore(), resolver: new Resolver(acc), logger: silent,
       wrapper: { ourBook: TS_BOOK, ourPage: TS_PAGE, isEnrolledWrapperPage: async () => true, wrapperBooks: async () => [], checkWrapper: async () => ({ ok: true }) },

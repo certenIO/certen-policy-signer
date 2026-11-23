@@ -25,6 +25,7 @@ import { Poller } from '../src/poller.js';
 import { advanceAwaitingHuman } from '../src/officer/landed.js';
 import type { PageState } from '../src/ops/rotate.js';
 import type { Decision } from '../src/types.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const SUMMIT_P1 = 'acc://summit-inspection-tcl1.acme/book/1';
@@ -151,7 +152,7 @@ function seat(o: {
   const store = o.store ?? new MemoryStore();
   // The wildcard keyring WOULD sign for any page. A human-only seat must not use it even so.
   const keyring = o.keyring === 'none' ? noKeyKeyring('human-only signer') : singleKeyring(new LocalSigner(new Uint8Array(32).fill(3)), SUMMIT_P1);
-  const orchestrator = new Orchestrator({
+  const orchestrator = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: acc, keyring, policy: o.policy, store, resolver: new Resolver(acc), logger: silent,
     humanOnlyPages: [SUMMIT_P1], ...(o.readPage ? { readPage: o.readPage } : {}),
     options: { submitRejectVote: o.submitRejectVote ?? true },
@@ -224,7 +225,7 @@ describe('orchestrator: a human-only seat never signs', () => {
     const acc = new MockAccumulateClient();
     acc.addPending(TX, { body: PAYMENT, principal: 'acc://fictional-payer-tcl1.acme/tokens' });
     const KEYED = 'acc://summit-inspection-tcl1.acme/book/2';
-    const o = new Orchestrator({
+    const o = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: new MapKeyring([{ page: KEYED, book: SUMMIT_BOOK, signer: new LocalSigner(new Uint8Array(32).fill(4)) }]),
       policy: new MockPolicyClient({ decision: 'approve' }), store: new MemoryStore(), resolver: new Resolver(acc), logger: silent, humanOnlyPages: [SUMMIT_P1],
     });
@@ -360,7 +361,7 @@ describe('one transaction, a keyed page and a human-only page in the same book (
     const acc = new MockAccumulateClient();
     acc.addPending(TX, { body: PAYMENT, principal: 'acc://fictional-payer-tcl1.acme/tokens' });
     const store = new MemoryStore();
-    const o = new Orchestrator({
+    const o = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: new MapKeyring([{ page: KEYED, book: SUMMIT_BOOK, signer: new LocalSigner(new Uint8Array(32).fill(6)) }]),
       policy: new MockPolicyClient({ decision: 'approve', reason: 'FICTIONAL rule passed' }), store, resolver: new Resolver(acc), logger: silent,
       humanOnlyPages: [SUMMIT_P1],
@@ -386,7 +387,7 @@ describe('one transaction, a keyed page and a human-only page in the same book (
     const path = join(mkdtempSync(join(tmpdir(), 'g69-two-')), 'state.json');
     const acc = new MockAccumulateClient();
     acc.addPending(TX, { body: PAYMENT, principal: 'acc://fictional-payer-tcl1.acme/tokens' });
-    const o = new Orchestrator({
+    const o = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: new MapKeyring([{ page: KEYED, book: SUMMIT_BOOK, signer: new LocalSigner(new Uint8Array(32).fill(6)) }]),
       policy: new MockPolicyClient({ decision: 'approve' }), store: new FileStore(path), resolver: new Resolver(acc), logger: silent, humanOnlyPages: [SUMMIT_P1],
     });

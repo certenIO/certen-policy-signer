@@ -27,6 +27,7 @@ import { Resolver } from '../src/resolver.js';
 import { applyKeyPageOp } from '../src/ops/keypage.js';
 import { SubmitOutcomeUnknownError, signAndSubmit } from '../src/ops/rotate.js';
 import { loadConfig } from '../src/config.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = '3c'.repeat(32);
@@ -132,7 +133,7 @@ describe('the machine vote: a submit with no answer is decided from the chain', 
       acc.addPending(TX, { body: { type: 'sendTokens', to: [{ url: 'acc://fictional-payee-tcl1.acme/tokens', amount: '1' }] }, principal: tx.account });
       acc.submitQueue = [{ ok: false, uncertain: true, error: 'timeout of 15000ms exceeded' }];
       (acc as unknown as { getTxSignatures: unknown }).getTxSignatures = async () => onChain();
-      return new Orchestrator({
+      return new Orchestrator({ pauses: NO_PAUSES,
         accumulate: acc, keyring: singleKeyring(SIGNER, PAGE), policy: new MockPolicyClient({ decision: 'approve' }), store: new MemoryStore(),
         resolver: new Resolver(acc), logger: silent, options: { submitOutcomeTimeoutMs: 40 },
       });

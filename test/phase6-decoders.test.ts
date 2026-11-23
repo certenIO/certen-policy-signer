@@ -18,6 +18,7 @@ import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
 import type { PolicyClient } from '../src/policy/policy.js';
 import type { LegCall, PolicyRequest } from '../src/types.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const FDBUSD = '0x2d9e724de974a81e97ee553b3482cafa6d5fe46b';
@@ -287,7 +288,7 @@ describe('the PolicyRequest and Receipt carry the Phase 6 fields', () => {
     const seen: PolicyRequest[] = [];
     const policy = { decide: async (r: PolicyRequest) => { seen.push(r); return { decision: 'deny', reason: 'FICTIONAL test' }; } } as unknown as PolicyClient;
     const store = new MemoryStore();
-    const orchestrator = new Orchestrator({
+    const orchestrator = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(7)), PAGE), policy, store,
       resolver: new Resolver(acc, buildRegistry(undefined, [], undefined, { certenIntent: decoder })),
       logger: silent, configVersion: VERSION, options: { submitRejectVote: false },

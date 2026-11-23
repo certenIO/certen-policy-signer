@@ -22,6 +22,7 @@ import { certenIntentDecoder } from '../src/decode/decoders/certen-intent.js';
 import { makeValueCeilingGuard } from '../src/guard.js';
 import { Metrics } from '../src/metrics.js';
 import { loadConfig } from '../src/config.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'ab'.repeat(32);
@@ -38,7 +39,7 @@ function denyPipeline(submitFails: boolean) {
     acc.submitQueue = Array.from({ length: 6 }, () => ({ ok: false, code: 'insufficientCredits', error: 'no credits' }));
   }
   const store = new MemoryStore();
-  const orch = new Orchestrator({
+  const orch = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9))),
     policy: new MockPolicyClient({ decision: 'deny', reason: 'risk' }),
     store, resolver: new Resolver(acc), logger: silent,
@@ -120,7 +121,7 @@ describe('a leg whose amount cannot be read is not a leg under the ceiling', () 
     acc.addPending(TX, { body: intent({ amountWei: '10', to: '0xa' }, { amountEth: '0.5' }) as any, principal: 'acc://a.acme/data' });
     const store = new MemoryStore();
     const policy = new MockPolicyClient({ decision: 'approve' });
-    const orch = new Orchestrator({
+    const orch = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9))),
       policy, store, resolver: new Resolver(acc), logger: silent,
       options: { guard },
@@ -163,7 +164,7 @@ describe('an unreachable node is not evidence that a transaction is gone', () =>
     });
     const store = new MemoryStore();
     const policy = new MockPolicyClient({ decision: 'approve' });
-    const orch = new Orchestrator({
+    const orch = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9))),
       policy, store, resolver: new Resolver(acc), logger: silent,
     });

@@ -12,6 +12,7 @@ import { memoryPauseStore, type PauseGate } from '../src/binding/pause-store.js'
 import { derivedSeat } from '../src/binding/seats.js';
 // @ts-expect-error — plain .mjs engine, no type declarations
 import { decideByParity } from '../scripts/parity-policy-engine.mjs';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 /**
  * End-to-end pipeline WITHOUT a live chain: real Resolver (CERTEN 4-blob decode) → real HttpPolicyClient
@@ -51,7 +52,7 @@ afterAll(() => engine.close());
 function pipeline(txHash: string, body: any, options?: OrchestratorOptions, pauses?: PauseGate) {
   const acc = new MockAccumulateClient();
   acc.addPending(txHash, { body, principal: 'acc://a.acme/data' });
-  const orch = new Orchestrator({
+  const orch = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))),
     policy: new HttpPolicyClient({ url: engineUrl, timeoutMs: 3000 }),
     store: new MemoryStore(), resolver: new Resolver(acc), logger: silent, options, ...(pauses ? { pauses } : {}),

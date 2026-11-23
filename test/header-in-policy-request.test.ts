@@ -20,6 +20,7 @@ import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
 import type { PolicyClient } from '../src/policy/policy.js';
 import type { Decision, PolicyRequest } from '../src/types.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'e4'.repeat(32);
@@ -47,7 +48,7 @@ function rig(rawTransaction: unknown, decide?: (r: PolicyRequest) => Decision, c
   const eng = engine(decide);
   const store = new MemoryStore();
   const c = clock ?? { t: NOW };
-  const orchestrator = new Orchestrator({
+  const orchestrator = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: acc,
     keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), PAGE),
     policy: eng.client,

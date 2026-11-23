@@ -26,6 +26,7 @@ import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
 import type { PolicyClient } from '../src/policy/policy.js';
 import type { Decision, PolicyRequest, Receipt } from '../src/types.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'a1'.repeat(32);
@@ -70,7 +71,7 @@ async function askAbout(subject?: unknown, answer: Decision = { decision: 'appro
   acc.addPending(TX, { body: intentBody(subject), principal: 'acc://bank.acme/data' });
   const engine = recordingEngine(answer);
   const store = new MemoryStore();
-  const orchestrator = new Orchestrator({
+  const orchestrator = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: acc,
     keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(3)), PAGE),
     policy: engine.client,
@@ -155,7 +156,7 @@ describe('an engine that requires a subject and does not get one', () => {
     const acc = new MockAccumulateClient();
     acc.addPending(TX, { body: intentBody(undefined), principal: 'acc://bank.acme/data' });
     const store = new MemoryStore();
-    const orchestrator = new Orchestrator({
+    const orchestrator = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc,
       keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(3)), PAGE),
       policy: { decide: async () => ({ decision: 'deny' as const, reason: 'no subject' }) } as unknown as PolicyClient,
@@ -176,7 +177,7 @@ describe('an engine that requires a subject and does not get one', () => {
     const acc = new MockAccumulateClient();
     acc.addPending(TX, { body: intentBody(undefined), principal: 'acc://bank.acme/data' });
     const store = new MemoryStore();
-    const orchestrator = new Orchestrator({
+    const orchestrator = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc,
       keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(3)), PAGE),
       policy: { decide: async () => { throw new Error('no subject on the request'); } } as unknown as PolicyClient,

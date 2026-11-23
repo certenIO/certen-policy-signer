@@ -40,6 +40,7 @@ import { loadConfig } from '../src/config.js';
 import { WrapperChain, submittedVote } from './support/wrapper-chain.js';
 import { MemoryWrapperRegistry } from '../src/registry/wrappers.js';
 import { PageState } from '../src/ops/rotate.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'ab'.repeat(32);
@@ -207,7 +208,7 @@ function wrapperSetup(enrolledPages: string[], decision: ConstructorParameters<t
   // Seats: the org page holds every enrolled wrapper as a delegate (enrollment.test.ts covers the others).
   const registry = new MemoryWrapperRegistry();
   const orgPage: PageState = { version: 1, threshold: 2, keyHashes: [], entries: enrolledPages.map((p) => ({ keyHash: null, delegate: p.replace(/\/\d+$/, '') })) };
-  const o = new Orchestrator({
+  const o = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: acc, keyring: singleKeyring(signer, TS_PAGE), policy, store, resolver: new Resolver(acc), logger: silent,
     wrapper: {
       ourBook: TS_BOOK, ourPage: TS_PAGE, isEnrolledWrapperPage: enrolled(...enrolledPages),
@@ -377,7 +378,7 @@ describe('wrapper mode in the orchestrator', () => {
     const acc = new WrapperChain();
     acc.addPending(TX, { body: { type: 'sendTokens', to: [{ url: 'acc://x.acme/tokens', amount: '5' }] }, principal: PRINCIPAL });
     const store = new MemoryStore();
-    const o = new Orchestrator({
+    const o = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9))), policy: new MockPolicyClient({ decision: 'approve' }),
       store, resolver: new Resolver(acc), logger: silent, options: { delegators: [W_ALICE] },
     });

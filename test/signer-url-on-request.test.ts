@@ -26,6 +26,7 @@ import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
 import type { PolicyClient } from '../src/policy/policy.js';
 import type { PolicyRequest } from '../src/types.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'f5'.repeat(32);
@@ -49,7 +50,7 @@ async function askAbout(page: string): Promise<PolicyRequest> {
   const acc = new MockAccumulateClient();
   acc.addPending(TX, { body: { type: 'sendTokens', to: [{ url: 'acc://alice.acme/tokens', amount: '5000' }] }, principal: 'acc://alice.acme/tokens' });
   const engine = recordingEngine();
-  const orchestrator = new Orchestrator({
+  const orchestrator = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: acc,
     keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(3)), page),
     policy: engine.client,

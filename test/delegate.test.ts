@@ -9,6 +9,7 @@ import { Resolver } from '../src/resolver.js';
 import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
 import { Orchestrator } from '../src/orchestrator.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'ab'.repeat(32);
@@ -41,7 +42,7 @@ describe('delegate signing', () => {
   it('orchestrator in delegate mode submits a delegated signature', async () => {
     const acc = new MockAccumulateClient();
     acc.addPending(TX, { body: { type: 'sendTokens', to: [{ url: 'acc://x.acme/tokens', amount: '1' }] }, principal: 'acc://alice.acme/tokens' });
-    const o = new Orchestrator({
+    const o = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(4))),
       policy: new MockPolicyClient({ decision: 'approve' }), store: new MemoryStore(),
       resolver: new Resolver(acc), logger: silent, options: { delegators: [USER_PAGE] },

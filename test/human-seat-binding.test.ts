@@ -24,6 +24,7 @@ import { createServer } from '../src/server.js';
 import { ADDR, APPROVER, H, KEY, POLICY, SEAT, intentBody, leg } from './support/binding-fixtures.js';
 import { NOW_S, SIGNER, TX, approveFor, requestHashOf, rig, silent, tmp } from './support/binding-rig.js';
 import type { PolicyRequest, Receipt, SigningRequest } from '../src/types.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const BASE = intentBody();
 const HID = humanRecordId(TX, SIGNER);
@@ -110,7 +111,7 @@ describe('a human-only seat that requires binding: the decision is bound before 
 describe('a human-only seat and the wrapper mode cannot be combined (N6)', () => {
   it('the orchestrator refuses to be built with both', () => {
     const acc = new MockAccumulateClient();
-    expect(() => new Orchestrator({
+    expect(() => new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))), policy: new MockPolicyClient({ decision: 'approve' }),
       store: new MemoryStore(), resolver: new Resolver(acc), logger: silent, humanOnlyPages: [SIGNER],
       wrapper: { ourBook: 'acc://o.acme/book', ourPage: SIGNER, isEnrolledWrapperPage: async () => false, wrapperBooks: async () => [] },

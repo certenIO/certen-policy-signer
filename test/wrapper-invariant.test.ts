@@ -22,6 +22,7 @@ import { Orchestrator } from '../src/orchestrator.js';
 import { Notifier, NotifyEvent } from '../src/notify.js';
 import { WrapperChain } from './support/wrapper-chain.js';
 import { MemoryWrapperRegistry } from '../src/registry/wrappers.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const B = 'acc://p.acme/id';
@@ -282,7 +283,7 @@ describe('the orchestrator checks the wrapper before asking the engine', () => {
     const r = reader(st);
     const reg = new MemoryWrapperRegistry();
     void reg.upsert({ wrapperBook: B, wrapperPage: B1, subjectId: 'alice', enrolledAt: 1, seats: [] });
-    const o = new Orchestrator({
+    const o = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), TS_PAGE), policy, store, resolver: new Resolver(acc), logger: silent, notifier,
       // G-65: an updateKeyPage on the wrapper is approved only after its operations are checked against the page as it reads now.
       readPage: (u) => r.readPage(u),
@@ -301,7 +302,7 @@ describe('the orchestrator checks the wrapper before asking the engine', () => {
     const acc = new WrapperChain();
     acc.addPending(TX, { body: { type: 'sendTokens', to: [] }, principal: 'acc://o.acme/tokens' });
     acc.approvesThrough(TX, 'acc://p.acme/book/1', [B1, ORG]);
-    const o = new Orchestrator({
+    const o = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), TS_PAGE), policy: new MockPolicyClient({ decision: 'approve' }),
       store: new MemoryStore(), resolver: new Resolver(acc), logger: silent,
       wrapper: { ourBook: T, ourPage: TS_PAGE, isEnrolledWrapperPage: async () => true, wrapperBooks: async () => [B] },

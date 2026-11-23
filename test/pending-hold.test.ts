@@ -24,6 +24,7 @@ import { singleKeyring } from '../src/signer/keyring.js';
 import { Orchestrator } from '../src/orchestrator.js';
 import { createServer } from '../src/server.js';
 import type { Decision } from '../src/types.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = '6a'.repeat(32);
@@ -42,7 +43,7 @@ function scripted(decisions: Decision[]): PolicyClient & { calls: number } {
 function pipeline(store: Store, policy: PolicyClient, clock: { t: number }) {
   const acc = new MockAccumulateClient();
   acc.addPending(TX, { body: { type: 'sendTokens', to: [{ url: 'acc://fictional-payee-tcl1.acme/tokens', amount: '5000' }] }, principal: 'acc://fictional-payer-tcl1.acme/tokens' });
-  const orchestrator = new Orchestrator({
+  const orchestrator = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(5)), PAGE), policy, store,
     resolver: new Resolver(acc), logger: silent, now: () => clock.t,
   });
