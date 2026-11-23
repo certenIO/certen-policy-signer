@@ -19,6 +19,7 @@ import { MemoryStore } from '../src/store/store.js';
 import { Resolver } from '../src/resolver.js';
 import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'cd'.repeat(32);
@@ -74,7 +75,7 @@ function pipeline(notifier = NULL_NOTIFIER, decision: 'approve' | 'deny' = 'appr
     principal: 'acc://alice.acme/tokens',
   });
   const store = new MemoryStore();
-  const orchestrator = new Orchestrator({
+  const orchestrator = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))),
     policy: new MockPolicyClient({ decision }), store, resolver: new Resolver(acc), logger: silent,
     notifier, orgId: 'demo-org',

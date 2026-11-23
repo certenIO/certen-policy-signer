@@ -13,6 +13,7 @@ import { MemoryStore } from '../src/store/store.js';
 import { Resolver } from '../src/resolver.js';
 import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'ab'.repeat(32);
@@ -116,7 +117,7 @@ describe('http server', () => {
       const store = new MemoryStore();
       const pause = memoryPauseStore();
       return createServer({
-        orchestrator: new Orchestrator({
+        orchestrator: new Orchestrator({ pauses: NO_PAUSES,
           accumulate: acc, keyring, policy: new MockPolicyClient({ decision: 'approve' }),
           store, resolver: new Resolver(acc), logger: silent,
         }),

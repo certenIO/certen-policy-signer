@@ -25,6 +25,7 @@ import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
 import { MemoryStore } from '../src/store/store.js';
 import { APPROVER, H, PRINCIPAL, POLICY, SEAT, intentBody, record } from './support/binding-fixtures.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const SIGNER = 'acc://o.acme/book/1';
@@ -67,7 +68,7 @@ function service(dir: string, bound: boolean) {
   const nowS = () => Math.floor(Date.now() / 1000);
   const acc = new MockAccumulateClient();
   acc.addPending(TX, { body: BODY, principal: `${PRINCIPAL}/tokens` });
-  const orch = new Orchestrator({
+  const orch = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))), store: new MemoryStore(), resolver: new Resolver(acc), logger: silent,
     policy: new HttpPolicyClient({ url, hmacSecret: SECRET, timeoutMs: 5000 }),
     seats: new Map([[SIGNER.toLowerCase(), { seat: SEAT, ...(bound ? { binding: { seat: SEAT, authorizedApprovers: [APPROVER], maxWindowSeconds: 7200, policyHash: POLICY, requireGrant: false } } : {}) }]]),

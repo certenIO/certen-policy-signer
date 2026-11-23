@@ -25,6 +25,7 @@ import { MockPolicyClient, type PolicyClient } from '../src/policy/policy.js';
 import { MemoryStore } from '../src/store/store.js';
 import { Resolver } from '../src/resolver.js';
 import { memoryPauseStore } from '../src/binding/pause-store.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const A = 'aa'.repeat(32);
@@ -300,7 +301,7 @@ describe('machine vote on a pending updateKeyPage', () => {
     const acc = new MockAccumulateClient();
     acc.addPending(TX, { body: { type: 'updateKeyPage', operation }, principal: PAGE });
     const store = new MemoryStore();
-    const orchestrator = new Orchestrator({
+    const orchestrator = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), PAGE),
       policy: o.policy ?? new MockPolicyClient({ decision: 'approve', reason: 'FICTIONAL rule: governance auto-approve' }),
       store, resolver: new Resolver(acc), logger: silent,
@@ -363,7 +364,7 @@ describe('machine vote on a pending updateKeyPage', () => {
     const acc = new MockAccumulateClient();
     acc.addPending(TX, { body: { type: 'sendTokens', to: [{ url: 'acc://fictional-payee-tcl1.acme/tokens', amount: '1' }] }, principal: 'acc://fictional-payer-tcl1.acme/tokens' });
     const read = vi.fn(async () => twoKeys);
-    const o = new Orchestrator({
+    const o = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), PAGE),
       policy: new MockPolicyClient({ decision: 'approve' }), store: new MemoryStore(), resolver: new Resolver(acc), logger: silent, readPage: read,
     });

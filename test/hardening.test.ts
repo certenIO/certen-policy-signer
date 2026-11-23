@@ -25,6 +25,7 @@ import { makeValueCeilingGuard } from '../src/guard.js';
 import { loadConfig } from '../src/config.js';
 import { logger } from '../src/logger.js';
 import { SigningRequest } from '../src/types.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = logger.child({ level: 'silent' });
 let tmp: string;
@@ -37,7 +38,7 @@ function startServer(opts: { adminApiKey?: string; poller?: { healthy(): boolean
   const signer = new LocalSigner(new Uint8Array(32).fill(9));
   const pause = memoryPauseStore([derivedSeat('acc://o.acme/book/1')]);
   const keyring = singleKeyring(signer);
-  const orchestrator = new Orchestrator({
+  const orchestrator = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: acc, keyring, policy: new MockPolicyClient({ decision: 'approve' }),
     store, resolver: new Resolver(acc), logger: silent,
   });
@@ -186,7 +187,7 @@ describe('SR4 value ceiling gates every leg', () => {
     const tx = 'cd'.repeat(32);
     acc.addPending(tx, { body: { type: 'sendTokens', to: [{ url: 'acc://x.acme/tokens', amount: '999999' }] }, principal: 'acc://x.acme/tokens' });
     const store = new MemoryStore();
-    const orch = new Orchestrator({
+    const orch = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(5))),
       policy: new MockPolicyClient({ decision: 'approve' }),   // the ENGINE says yes...
       store, resolver: new Resolver(acc), logger: silent,

@@ -91,10 +91,12 @@ export interface OrchestratorDeps {
   /** Per-page rule overrides, keyed by the page URL LOWERCASED. Absent pages use the defaults. */
   scopeRules?: Map<string, ScopeRules>;
   /**
-   * The persisted pause (SR8, DECISION.md section 6), read before EVERY signature, a reject vote included. Absent = nothing is
-   * paused (library and tests; index.ts always wires the persisted one). Replaces the in-memory `isPaused` boolean.
+   * The persisted pause (SR8, DECISION.md section 6), read before EVERY signature, a reject vote included. Replaces the in-memory
+   * `isPaused` boolean. REQUIRED (DAX-F148): an orchestrator without a pause gate would sign while its seat is paused, so a composition
+   * that forgets to wire it is refused at construction instead of failing open. A caller that really has no pause source passes a gate
+   * that says so explicitly (tests: test/support/no-pauses.ts).
    */
-  pauses?: PauseGate;
+  pauses: PauseGate;
   /** Seat ids and binding rules, keyed by the page URL LOWERCASED. A page without an entry has a derived seat and no binding. */
   seats?: Map<string, SeatRules>;
   /** The nonce store and the world a bound decision is checked against. Required by any seat that configures `binding`. */
@@ -194,6 +196,8 @@ export class Orchestrator {
   private readonly humanOnly: Set<string>;
 
   constructor(private readonly d: OrchestratorDeps) {
+    // DAX-F148: fail closed on a missing pause gate (a JavaScript caller, or a cast, can still omit it)
+    if (d.pauses === undefined || d.pauses === null || typeof d.pauses.check !== 'function') throw new Error('orchestrator: a pause gate is required (deps.pauses with check()); without one a paused seat would still sign');
     this.humanOnly = new Set((d.humanOnlyPages ?? []).map((p) => p.toLowerCase().replace(/\/+$/, '')));
     if (this.humanOnly.size > 0 && d.wrapper) throw new Error('orchestrator: human-only seats and wrapper mode cannot be combined (a wrapper vote travels a delegation path; a human-only page has none)');
     this.opt = {
@@ -260,7 +264,6 @@ export class Orchestrator {
    */
   private pausedFor(ctx: SignCtx, vote: 'approve' | 'reject'): { reason: string; scope?: string; id?: string } | undefined {
     const pauses = this.d.pauses;
-    if (pauses === undefined) return undefined;
     for (const subject of ctx.subjects.length > 0 ? ctx.subjects : [null]) {
       const v = pauses.check({ seat: ctx.seat, subject, vote });
       if (!v.ok) return v as { reason: string; scope?: string; id?: string };

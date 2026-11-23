@@ -17,6 +17,7 @@ import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
 import { logger } from '../src/logger.js';
 import { PolicyRequest, Decision } from '../src/types.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = logger.child({ level: 'silent' });
 
@@ -71,7 +72,7 @@ describe('"pending" withholds the signature without recording a failure', () => 
       principal: 'acc://x.acme/tokens',
       body: { type: 'sendTokens', to: [{ url: 'acc://x.acme/tokens', amount: '10' }] },
     });
-    const orch = new Orchestrator({
+    const orch = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc,
       keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(7)), PAGE),
       policy: new MockPolicyClient(decision),

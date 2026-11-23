@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { buildPreimage } from '../src/accumulate/signing.js';
 import { GatewayVoteBackend } from '../src/vote/adapters/certen-gateway.js';
 import { loadConfig } from '../src/config.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'ab'.repeat(32);            // 64 hex chars
@@ -32,7 +33,7 @@ function setup() {
 }
 
 function orch(d: ReturnType<typeof setup>, policy: PolicyClient, options?: OrchestratorOptions) {
-  return new Orchestrator({
+  return new Orchestrator({ pauses: NO_PAUSES,
     accumulate: d.acc, keyring: singleKeyring(d.signer), policy, store: d.store, resolver: d.resolver,
     logger: silent, options,
   });

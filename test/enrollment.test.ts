@@ -27,6 +27,7 @@ import { WrapperChain, submittedVote } from './support/wrapper-chain.js';
 import http from 'node:http';
 import { memoryPauseStore } from '../src/binding/pause-store.js';
 import { AddressInfo } from 'node:net';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'ab'.repeat(32);
@@ -74,7 +75,7 @@ function setup(opts: { status?: 'enrolling' | 'active'; registered?: boolean; de
   if (opts.registered !== false) void registry.upsert({ wrapperBook: B, wrapperPage: B1, subjectId: 'alice', enrolledAt: 0, seats: [], status: opts.status ?? 'enrolling' });
   const store = new MemoryStore();
   const policy = new MockPolicyClient({ decision: opts.decision ?? 'approve' });
-  const o = new Orchestrator({
+  const o = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(9)), TS_PAGE), policy, store, resolver: new Resolver(acc), logger: silent,
     // G-65: an updateKeyPage (the wrapper creation) is approved only after its operations are checked against the page as it reads now.
     readPage: (u) => w.reader.readPage(u),

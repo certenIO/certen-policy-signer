@@ -33,6 +33,7 @@ import { MockPolicyClient } from '../src/policy/policy.js';
 import { noKeyKeyring } from '../src/signer/keyring.js';
 import type { AccumulateClient } from '../src/accumulate/client.js';
 import { memoryPauseStore } from '../src/binding/pause-store.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const subtle = webcrypto.subtle;
@@ -779,7 +780,7 @@ describe('G-69: officer intake on a request stored by a human-only seat', () => 
   async function decide(decision: 'approve' | 'deny', body: unknown = { type: 'writeData', entry: { type: 'doubleHash', data: ['00'] } }, principal = PRINCIPAL) {
     chain.pending.set(HTX, { principal, body });
     const acc = orchChain();
-    const o = new Orchestrator({
+    const o = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: noKeyKeyring('human-only signer'), policy: new MockPolicyClient({ decision, reason: 'FICTIONAL seat rule' }),
       store, resolver: new Resolver(acc), logger: silent, humanOnlyPages: [HARBOR_P1], readPage: chain.readPage, options: { submitRejectVote: true },
     });
@@ -1062,7 +1063,7 @@ describe('G-69 review #2: a human-only page with an accept threshold of 2 needs 
       getTxSignatures: (h: string) => chain.getTxSignatures(h),
       listPendingForSigner: async () => [], listPendingViaSignatureChain: async () => [], submit: (env: unknown) => chain.submit(env),
     } as unknown as AccumulateClient;
-    const o = new Orchestrator({
+    const o = new Orchestrator({ pauses: NO_PAUSES,
       accumulate: acc, keyring: noKeyKeyring('human-only signer'), policy: new MockPolicyClient({ decision: 'approve' }),
       store, resolver: new Resolver(acc), logger: silent, humanOnlyPages: [BOARD_P1], readPage: chain.readPage,
     });

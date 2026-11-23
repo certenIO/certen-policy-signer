@@ -20,6 +20,7 @@ import { LocalSigner } from '../src/signer/signer.js';
 import { singleKeyring } from '../src/signer/keyring.js';
 import { makeValueCeilingGuard } from '../src/guard.js';
 import { loadConfig, effectiveScopeRules } from '../src/config.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const PAGE_A = 'acc://agent-a.acme/book/1';
@@ -32,7 +33,7 @@ function build(scopeRules: Map<string, ScopeRules>, defaults: {
   const acc = new MockAccumulateClient();
   const store = new MemoryStore();
   const defaultPolicy = defaults.policy ?? new MockPolicyClient({ decision: 'approve' });
-  const orchestrator = new Orchestrator({
+  const orchestrator = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(3))),
     policy: defaultPolicy, store, resolver: new Resolver(acc), logger: silent,
     scopeRules,

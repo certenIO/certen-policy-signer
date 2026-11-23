@@ -22,6 +22,7 @@ import { Resolver } from '../src/resolver.js';
 import { LocalSigner } from '../src/signer/signer.js';
 import { MapKeyring, bookOf, type SigningScope } from '../src/signer/keyring.js';
 import { Orchestrator } from '../src/orchestrator.js';
+import { NO_PAUSES } from './support/no-pauses.js';
 
 const silent = pino({ level: 'silent' });
 const TX = 'ab'.repeat(32);
@@ -51,7 +52,7 @@ async function run(seats: Record<string, LocalSigner>, refs: string[] | undefine
   if (refs) evidence['approverKeyRefs'] = refs;
   if (single) evidence['approverKeyRef'] = single;
 
-  const o = new Orchestrator({
+  const o = new Orchestrator({ pauses: NO_PAUSES,
     accumulate: d.acc, keyring: d.keyring, store: d.store, resolver: d.resolver, logger: silent,
     policy: new MockPolicyClient({ decision: 'approve', reason: 'ok', evidence }),
   });
