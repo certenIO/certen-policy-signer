@@ -28,8 +28,9 @@ export interface WorldFacts {
 export interface BindingWorld {
   establish(q: {
     grantorAdi: string;
-    /** the key book that must own the grantor's accounts */
-    grantorBook: string;
+    /** the key book that must own the grantor's accounts; null (DAX-F126 payer mode): the one book that holds <grantor>/certen-grants now, read
+     *  from the chain and judged by the core lineage reader exactly like a configured book (any other authority set is refused, GR-58) */
+    grantorBook: string | null;
     grantId: string;
     /** the intent's asserted subject, or null */
     asserted: { adi: string; assertedBy: string } | null;

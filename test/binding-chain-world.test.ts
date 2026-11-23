@@ -198,3 +198,28 @@ describe('the subject (the GRANTOR registry and the subject acceptance only)', (
     expect(await subject(scene({ registrations: [{ r: registration({ type: 'merchant' }), time: T_REG }] }))).toMatchObject({ ok: false, detail: expect.stringContaining('subject_type_mismatch') });
   });
 });
+
+describe('DAX-F126 payer mode: no configured grantor book, the one book that holds the grants account now', () => {
+  const askNoBook = (s: ReturnType<typeof scene>) => createChainWorld({ evaluation: () => s.cache.evaluation(), nowSeconds: () => NOW }).establish({ grantorAdi: GRANTOR, grantorBook: null, grantId: 'fic-agent-pay', asserted: { adi: SUBJECT, assertedBy: GRANTOR } });
+  it('reads the sole authority of <grantor>/certen-grants and verifies the head and subject exactly as with a configured book', async () => {
+    const s = scene();
+    const withBook = await s.ask();
+    const payerMode = await askNoBook(s);
+    expect(payerMode.head).toEqual(withBook.head);
+    expect(payerMode.subject).toEqual({ ok: true, value: { adi: SUBJECT, type: 'agent' } });
+  });
+  it('refuses a grants account with two authorities or none, by name, before any lineage is trusted', async () => {
+    const two = scene();
+    two.node.accounts.get(GRANTS)!.authorities.push(`${GRANTOR}/other-book`);
+    expect(await askNoBook(two)).toMatchObject({ head: { ok: false, detail: expect.stringMatching(/account_authority_invalid .* has 2 authorities/) } });
+    const none = scene();
+    none.node.accounts.get(GRANTS)!.authorities.length = 0;
+    expect(await askNoBook(none)).toMatchObject({ head: { ok: false, detail: expect.stringMatching(/has 0 authorities/) } });
+  });
+  it('a book that is not the grantor\'s own is refused by the core reader, as for a configured book', async () => {
+    const s = scene();
+    s.node.accounts.get(GRANTS)!.authorities.splice(0, 1, 'acc://someone-else.acme/book');
+    const r = await askNoBook(s);
+    expect(r.head.ok).toBe(false);
+  });
+});

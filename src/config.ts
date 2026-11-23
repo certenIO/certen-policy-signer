@@ -177,9 +177,12 @@ const BehaviorOverrideSchema = z.object({
  *   settlement_horizon_seconds  DE-88: the horizon of the leaf expiry bound, in seconds. At least the validator's one hour (3600, the default); a
  *                         smaller value refuses to start. A longer horizon only lengthens the hold a ledger keeps
  *   require_grant         a seat that requires a Grant refuses a transaction and a decision that name none
- *   grantor_adi           whose Grants the seat takes (required when a Grant is required; needed whenever a transaction names one)
+ *   grantor_adi           whose Grants the seat takes. ABSENT (DAX-F126): the grantor is the PAYER, the ADI of the transaction principal that
+ *                         Accumulate authenticated, as the Console decides for a seat without SEAT_GRANTOR_ADI (engine.ts grantorAdi = payerAdi):
+ *                         one seat can then decide for several client payers, each under its own Grants
  *   grantor_book          the key book that must own the grantor's accounts (certen-grants, certen-subjects): the account authority
- *                         rule's owner (READER-MODEL-V2); required with grantor_adi. The subject is resolved ONLY through the
+ *                         rule's owner (READER-MODEL-V2); given with grantor_adi. In payer mode it is the one book that holds
+ *                         <payer>/certen-grants now, and the core reader refuses any other authority set (GR-58). The subject is resolved ONLY through the
  *                         grantor's registry and the subject's own acceptance account, so there is no list of registries to name
  */
 const BindingSchema = z.object({
@@ -626,9 +629,8 @@ export function validateBindings(cfg: Pick<ParsedConfig, 'wallet' | 'binding' | 
     if (b.grantor_adi !== undefined && !isAdiUrl(b.grantor_adi)) throw new Error(`config: ${s.page}: binding.grantor_adi must be an acc:// ADI URL`);
     if ((b.grantor_adi === undefined) !== (b.grantor_book === undefined)) throw new Error(`config: ${s.page}: binding.grantor_adi and binding.grantor_book are given together (the grantor and the key book that owns its accounts)`);
     if (b.grantor_book !== undefined && (!isAccUrl(b.grantor_book) || b.grantor_adi === undefined || !isUnderAdi(b.grantor_book, b.grantor_adi) || b.grantor_book === b.grantor_adi)) throw new Error(`config: ${s.page}: binding.grantor_book must be a key book URL under the grantor ADI (acc://<grantor>/<book>)`);
-    if (b.require_grant && b.grantor_adi === undefined) {
-      throw new Error(`config: ${s.page}: binding.require_grant needs binding.grantor_adi and binding.grantor_book (whose Grants this seat takes)`);
-    }
+    // DAX-F126: require_grant without grantor_adi is PAYER mode (the grantor is the transaction's payer ADI), never "no grantor": every Grant is
+    // still read through the core lineage reader from <payer>/certen-grants and refused unless that account's sole authority is one book of the payer
     // DE-93: the pin is REQUIRED. The seat loads this hash and the pin step pins it; a seat with nothing to pin could never decide, and a seat that
     // records the hash without comparing it (the earlier behaviour) is the weaker answer the pin replaces.
     if (b.policy_hash === undefined) throw new Error(`config: ${s.page}: binding.policy_hash is required (DE-93): the seat loads it and the pin step (POST /v1/admin/pin) pins it; without it the seat can never decide`);

@@ -128,7 +128,10 @@ export async function verifyBinding(a: {
   // refuses a resolved subject that is not the Grant head's. An intent that names a subject keeps its own claim; one from the grantor's own
   // account that names none has none (subject_unproven, as before).
   const payerAdi = principal === null ? null : adiOfUrl(principal);
-  const claim = assertedSubject ?? (payerAdi !== null && rules.grantorAdi !== undefined && payerAdi !== rules.grantorAdi.toLowerCase() ? { adi: payerAdi, assertedBy: payerAdi } : null);
+  // DAX-F126: a seat with no configured grantor takes the PAYER's Grants (the Console's default, engine.ts grantorAdi = payerAdi)
+  const grantorAdi = rules.grantorAdi ?? payerAdi ?? undefined;
+  const grantorBook = rules.grantorAdi === undefined ? null : rules.grantorBook ?? null;
+  const claim = assertedSubject ?? (payerAdi !== null && grantorAdi !== undefined && payerAdi !== grantorAdi.toLowerCase() ? { adi: payerAdi, assertedBy: payerAdi } : null);
   // DE-76: a legCount other than 1 is refused by the core (multi_leg_unsupported) after the presented transaction is read, so a
   // multi-leg intent never reaches the world: the refusal is the first thing it gets
 
@@ -147,11 +150,11 @@ export async function verifyBinding(a: {
   let subject: ResolvedSubject | null = null;
   let subjectDetail: string | undefined;
   if (grantRef !== null) {
-    if (runtime.world === undefined || rules.grantorAdi === undefined || rules.grantorBook === undefined) {
-      headDetail = rules.grantorAdi === undefined || rules.grantorBook === undefined ? 'no_grantor_configured' : 'no_world_configured';
+    if (runtime.world === undefined || grantorAdi === undefined || (rules.grantorAdi !== undefined && grantorBook === null)) {
+      headDetail = grantorAdi === undefined ? 'no_grantor_resolved' : rules.grantorAdi !== undefined && grantorBook === null ? 'no_grantor_configured' : 'no_world_configured';
     } else {
       try {
-        const w = await runtime.world.establish({ grantorAdi: rules.grantorAdi, grantorBook: rules.grantorBook, grantId: grantRef.grantId, asserted: claim });
+        const w = await runtime.world.establish({ grantorAdi, grantorBook, grantId: grantRef.grantId, asserted: claim });
         facts = w.stats ?? null;
         if (w.head.ok) head = w.head.value;
         else headDetail = w.head.detail;

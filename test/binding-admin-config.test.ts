@@ -145,7 +145,9 @@ describe('config: binding and seats', () => {
     expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, policy_hash: "0xABC" }`))).toThrow();
     expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, polcy_hash: "x" }`))).toThrow(); // a typo stops the boot
     expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}", "${KEY('a')}"], max_window_seconds: 5400 }`))).toThrow(/twice/);
-    expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, require_grant: true }`))).toThrow(/grantor_adi/);
+    // DAX-F126: require_grant without grantor_adi is PAYER mode (the grantor is the payer ADI, as the Console decides), so it loads; it still needs its pin
+    expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, require_grant: true }`))).toThrow(/policy_hash is required/);
+    expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, policy_hash: "${H('policy-v1')}", require_grant: true }`))).not.toThrow();
     expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, require_grant: true, grantor_adi: "acc://g.acme" }`))).toThrow(/grantor_book/);
     expect(() => loadConfig(base('', ', seat: "Treasury"'))).toThrow(/seat:<name>/);
     expect(() => loadConfig(base(`binding: { authorized_approvers: ["${KEY('a')}"], max_window_seconds: 5400, policy_hash: "${H('policy-v1')}", require_grant: true, grantor_adi: "acc://g.acme", grantor_book: "acc://g.acme/book" }`))).not.toThrow();
