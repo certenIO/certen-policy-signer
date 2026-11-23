@@ -243,6 +243,21 @@ describe('the Grant and the subject join (DAX-4-A15, DE-06, DE-54, DE-61, DE-71,
     expect(world.calls).toEqual(['establish']); // one evaluation answers the head and the subject
     expect((await r.store.getReceipt(TX))?.binding?.grantHash).toBe(GRANT_HASH);
   });
+  it('DAX-F126: a Grant seat with NO configured grantor takes the payer\'s Grants (book read from the chain), as the Console does', async () => {
+    // two payers through the SAME seat: each is evaluated under its own Grants (the ADI of the transaction principal Accumulate authenticated)
+    for (const payer of ['acc://fic-client-one.acme', 'acc://fic-client-two.acme']) {
+      const world = fakeWorld();
+      const r = rig({ body, rules: { requireGrant: true }, world, reply: withGrant(), principal: `${payer}/data` });
+      expect((await r.handle()).status).toBe('signed');
+      expect(world.grantors).toEqual([{ grantorAdi: payer, grantorBook: null }]);
+    }
+  });
+  it('DAX-F126: a configured grantor still pins whose Grants the seat takes (unchanged)', async () => {
+    const world = fakeWorld();
+    const r = rig({ body, rules: grantRules, world, reply: withGrant() });
+    expect((await r.handle()).status).toBe('signed');
+    expect(world.grantors).toEqual([{ grantorAdi: GRANTOR, grantorBook: GRANTOR_BOOK }]);
+  });
   it('another subject than the Grant names: grant_subject_mismatch', async () => {
     const r = rig({ body, rules: grantRules, world: fakeWorld({ resolved: { adi: 'acc://agent-two.fic-grantor.acme', type: 'agent' } }), reply: withGrant() });
     expect((await r.handle()).lastError).toBe('binding: grant_subject_mismatch');

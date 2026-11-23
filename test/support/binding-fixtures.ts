@@ -147,6 +147,8 @@ export interface FakeWorld extends BindingWorld {
   registered?: string[];
   /** the claims the world was asked to resolve */
   claims: Array<{ adi: string; assertedBy: string } | null>;
+  /** DAX-F126: whose Grants each evaluation read (grantorBook null = payer mode, the book read from the chain) */
+  grantors: Array<{ grantorAdi: string; grantorBook: string | null }>;
 }
 export function fakeWorld(over: Partial<Pick<FakeWorld, 'head' | 'resolved' | 'registered'>> = {}): FakeWorld {
   const w: FakeWorld = {
@@ -154,10 +156,12 @@ export function fakeWorld(over: Partial<Pick<FakeWorld, 'head' | 'resolved' | 'r
     resolved: over.resolved === undefined ? { ...SUBJECT } : over.resolved,
     calls: [],
     claims: [],
+    grantors: [],
     ...(over.registered ? { registered: over.registered } : {}),
     async establish(q) {
       w.calls.push('establish');
       w.claims.push(q.asserted);
+      w.grantors.push({ grantorAdi: q.grantorAdi, grantorBook: q.grantorBook });
       if (w.head === null) return { head: { ok: false, detail: 'unreadable' }, subject: null };
       const head = { ok: true as const, value: { ...w.head, grant: { fake: true } } };
       if (q.asserted === null) return { head, subject: null };

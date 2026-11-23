@@ -48,8 +48,18 @@ export function createChainWorld(o: ChainWorldOptions): BindingWorld {
       const now = o.nowSeconds();
       const done = (head: WorldAnswer<GrantHead>, subject: Awaited<ReturnType<BindingWorld['establish']>>['subject'] = null) => ({ head, subject, stats: view.stats() });
 
+      // DAX-F126 payer mode: the owner book is the one book that holds the grants account now (as the Console reads it); the core refuses any
+      // authority set that is not exactly one book of the grantor, so nothing is taken on trust here
+      let ownerBook = grantorBook;
+      if (ownerBook === null) {
+        let auths: string[] | null;
+        try { auths = await reader.authorities(`${grantorAdi}/certen-grants`); } catch (e) { return done({ ok: false, detail: `lineage:account_authority_unreadable ${(e as Error).message}` }); }
+        if (auths === null) return done({ ok: false, detail: `lineage:account_authority_unreadable ${grantorAdi}/certen-grants` });
+        if (auths.length !== 1) return done({ ok: false, detail: `lineage:account_authority_invalid ${grantorAdi}/certen-grants has ${auths.length} authorities` });
+        ownerBook = auths[0]!;
+      }
       // pass 1: the lineage, to learn the Grant's subject; pass 2: again with the subject's books as the forbidden books
-      const lineageArgs = { grantorAdi, grantorBook, grantId, now };
+      const lineageArgs = { grantorAdi, grantorBook: ownerBook, grantId, now };
       const first = await readGrantLineage(reader, lineageArgs);
       if (!first.ok) return done({ ok: false, detail: `lineage:${why(first)}` });
       const grantsAccount = `${grantorAdi}/certen-grants`;
