@@ -7,7 +7,11 @@
  *   GET /relay/data/:account        -> { entries: [{ txId, time?, elements: [hex] }] }      chain order; `time` = chain time, Unix
  *                                                                                           seconds, omitted when the node record
  *                                                                                           carries none (never invented)
- *   GET /relay/authorities/:account -> { authorities: [url] }                                the authority key books NOW
+ *   GET /relay/authorities/:account -> { authorities: [url] }                                the ENABLED authority key books NOW (a
+ *                                                                                           `disabled: true` authority is dropped by the
+ *                                                                                           node source); DAX-F131: also for the
+ *                                                                                           principal account of a transaction, whose
+ *                                                                                           enabled authorities the chain makes sign
  *   GET /relay/history/:account     -> { types: [string], incomplete: boolean }              the account's own main chain from its
  *                                                                                           creation; never an answer when the chain
  *                                                                                           could not be read back
@@ -22,8 +26,11 @@
  *                                                                                           the Console cache keys its facts on, like this one
  *
  * `:account` is the acc:// URL, percent-encoded as ONE path segment. Not a generic chain proxy: `data`, `history` and `chainlen` answer only
- * for the four CERTEN data accounts (certen-grants, certen-subjects, certen-acceptances, certen-mandates); `authorities` for those and for an ADI
- * root; `keybook` for a key book URL. Anything else is 400. A fact the node could not give is 502 `unreadable`: never an empty
+ * for the four CERTEN data accounts (certen-grants, certen-subjects, certen-acceptances, certen-mandates); `authorities` for those, for an ADI
+ * root and (DAX-F131, DECISION.md DE-110) for any other account that is not a key page: the Console's quorum reads the authority set of a
+ * transaction's PRINCIPAL ACCOUNT (a payer data or token account) to know which required books Accumulate will make sign before execution.
+ * That is one account query of public chain state, through the same read cache; `data`, `history` and `chainlen` stay CERTEN-only.
+ * `keybook` for a key book URL. Anything else is 400. A fact the node could not give is 502 `unreadable`: never an empty
  * answer, never an allow. Every response carries `x-reader-queries`, `x-reader-cache-hits`, `x-reader-cache-misses` and
  * `x-reader-max-fact-age-ms` so a caller can measure what its read cost the node.
  */
@@ -62,7 +69,8 @@ export async function relayAccountRoute(reader: CountedReader, route: AccountRou
   if (route === 'data' || route === 'history' || route === 'chainlen') {
     if (!DATA_ACCOUNT.test(account)) return refuse(400, 'account must be a certen-grants, certen-subjects, certen-acceptances or certen-mandates data account');
   } else if (route === 'authorities') {
-    if (!DATA_ACCOUNT.test(account) && !isAdiUrl(account)) return refuse(400, 'account must be a CERTEN data account or an ADI');
+    // DAX-F131: a CERTEN data account, an ADI root, or a transaction's principal account; never a key page (a page has no authority set of its own)
+    if (!DATA_ACCOUNT.test(account) && !isAdiUrl(account) && (!BOOK.test(account) || /\/\d+$/.test(account))) return refuse(400, 'account must be an account URL (a CERTEN data account, an ADI or a principal account), not a key page');
   } else if (!BOOK.test(account) || /\/\d+$/.test(account)) {
     return refuse(400, 'book must be a key book URL (acc://<adi>/<book>), not a page');
   }
