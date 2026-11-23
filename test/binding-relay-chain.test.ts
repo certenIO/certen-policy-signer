@@ -92,6 +92,18 @@ describe('the chain relay routes (GET only, strictly validated)', () => {
     expect((await call(`/relay/chainlen/${enc(GRANTS)}`)).json).toEqual({ length: 4 });
   });
 
+  it('DAX-F131: the authority set of a transaction principal account (a payer data account) is served, the ENABLED authorities only', async () => {
+    const { call, node } = await start();
+    const PAYER = 'acc://harbor-mfg.acme/data';
+    const acct = node.dataAccount(PAYER, ['acc://harbor-mfg.acme/book', 'acc://fdb-compliance.acme/book', 'acc://fdb-old.acme/book', 'acc://fdb-risk.acme/book']);
+    acct.disabled = ['acc://fdb-old.acme/book']; // listed by the node with disabled: true
+    const r = await call(`/relay/authorities/${enc(PAYER)}`);
+    expect(r.status).toBe(200);
+    expect(r.json).toEqual({ authorities: ['acc://harbor-mfg.acme/book', 'acc://fdb-compliance.acme/book', 'acc://fdb-risk.acme/book'] });
+    expect((await call(`/relay/data/${enc(PAYER)}`)).status).toBe(400); // still not a generic chain reader: only the authority set
+    expect((await call(`/relay/history/${enc(PAYER)}`)).status).toBe(400);
+  });
+
   it("AGT-2: the principal's certen-mandates account is served like the other CERTEN data accounts (data, history, authorities, chainlen)", async () => {
     const { call, node } = await start();
     const MANDATES = `${GRANTOR}/certen-mandates`;
@@ -134,7 +146,8 @@ describe('the chain relay routes (GET only, strictly validated)', () => {
     const before = node.calls.length;
     expect((await call(`/relay/data/${enc(`${GRANTOR}/some-other-data-account`)}`)).status).toBe(400); // not a generic chain reader
     expect((await call(`/relay/history/${enc('acc://agent-one.fic-grantor.acme')}`)).status).toBe(400);
-    expect((await call(`/relay/authorities/${enc(`${GRANTOR}/some-other-data-account`)}`)).status).toBe(400);
+    expect((await call(`/relay/authorities/${enc(`${GRANTOR}/book/1`)}`)).status).toBe(400); // a key page has no authority set (DAX-F131 opened only accounts)
+    expect((await call(`/relay/chainlen/${enc(`${GRANTOR}/some-other-data-account`)}`)).status).toBe(400);
     expect((await call(`/relay/data/${enc('acc://FIC-GRANTOR.acme/certen-grants')}`)).status).toBe(400);
     expect((await call(`/relay/data/${enc('not a url')}`)).status).toBe(400);
     expect((await call(`/relay/data/${enc('acc://x.acme/../certen-grants')}`)).status).toBe(400);

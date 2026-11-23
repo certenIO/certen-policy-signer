@@ -25,6 +25,8 @@ export interface FakeRecord {
 export interface FakeAccount {
   type: string;
   authorities: string[];
+  /** DAX-F131: authorities the node lists with disabled: true */
+  disabled?: string[];
   /** the account's own main chain, from the creation */
   chain: FakeRecord[];
   entries: FakeEntry[];
@@ -167,7 +169,7 @@ export class FakeNode {
           }),
         };
       }
-      return { recordType: 'account', account: { type: a.type, authorities: a.authorities.map((url) => ({ url })), ...(a.pageCount === undefined ? {} : { pageCount: a.pageCount }), ...(a.keys === undefined ? {} : { keys: a.seats ?? a.keys.map((publicKeyHash) => ({ publicKeyHash })), acceptThreshold: a.acceptThreshold }) } };
+      return { recordType: 'account', account: { type: a.type, authorities: a.authorities.map((url) => (a.disabled?.includes(url) ? { url, disabled: true } : { url })), ...(a.pageCount === undefined ? {} : { pageCount: a.pageCount }), ...(a.keys === undefined ? {} : { keys: a.seats ?? a.keys.map((publicKeyHash) => ({ publicKeyHash })), acceptThreshold: a.acceptThreshold }) } };
     } finally {
       this.active--;
     }
