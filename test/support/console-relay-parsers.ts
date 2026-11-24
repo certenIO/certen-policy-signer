@@ -1,6 +1,7 @@
 /**
- * THE CONSOLE'S STRICT PARSERS, COPIED AS FIXTURES (no import across repos). Source: src/relay/routes.ts of branch pl/dax-f167-reject-threshold of the
- * Console (certen-approval-console) at commit 7514a0a212e399f3b913da0ef9ff8e97a975e9c0; sha256 of that file with LF line endings 270894ceccf0ac6a59c8ae99dd9f27633b60e9cc8c7d23d6d9693cddee5de71a (DAX-F167a: the per-page rejectThreshold; DAX-F167c: the per-page responseThreshold and entries).
+ * THE CONSOLE'S STRICT PARSERS, COPIED AS FIXTURES (no import across repos). Source: src/relay/routes.ts of branch pl/dax-f170-chain-parity of the
+ * Console (certen-approval-console) at commit e72b27e555a5d381da4b0b224a1d65857a5e5bf8; sha256 of that file with LF line endings 164bb891fe55f060b9c7b3f874f1f89c8ef2bc516c8d82706f58f0622822dd71 (DAX-F167a: the per-page rejectThreshold; DAX-F167c: the per-page responseThreshold and entries;
+ * DAX-F170: every page member REQUIRED incl. `version`, an emptied later page (D9), and `delegateBooks`, the delegation closure; parseKeybook now answers { pages, delegateBooks }).
  * Everything from `type Obj` to `parseKeybook` below is that file's text, unchanged; only the import line differs (the signer's own copy of the core).
  * When the Console changes a route shape this file is re-copied and test/binding-console-contract.test.ts says what the signer must now answer.
  *
@@ -55,10 +56,19 @@ export function parseChainLength(v: unknown): number | null {
 /** one key entry of a page as the relay reads it (DAX-F167c): its key hash, its delegate, or both (null where it holds none) */
 export interface KeybookEntry { keyHash: string | null; delegate: string | null }
 /**
- * rejectThreshold: the page's stored reject threshold (0 = the page sets none), or null when the relay did not carry it (DAX-F167: never read as "none");
- * responseThreshold: its stored response threshold (0 = none), and entries: its key entries in chain order, each null when the relay did not carry it (DAX-F167c)
+ * rejectThreshold: the page's stored reject threshold (0 = the page sets none); responseThreshold: its stored response threshold (0 = none); entries:
+ * its key entries in chain order (DAX-F167c); version (DAX-F170 D2): the page's stored version, 1 or more. All REQUIRED since DAX-F170: an answer of
+ * an older relay that lacks any of them is unreadable (authority_unreadable by name, never a guess). A page AFTER the first may be emptied (D9):
+ * no entries, threshold, rejectThreshold and responseThreshold all 0.
  */
-export interface KeybookPage { url: string; keyHashes: string[]; delegates: string[]; threshold: number; rejectThreshold: number | null; responseThreshold: number | null; entries: KeybookEntry[] | null }
+export interface KeybookPage { url: string; version: number; keyHashes: string[]; delegates: string[]; threshold: number; rejectThreshold: number; responseThreshold: number; entries: KeybookEntry[] }
+/**
+ * DAX-F170 (signer pl/dax-f170-relay-versions, checkins/F170-relay.md section 1): the whole keybook answer: the book's pages and `delegateBooks`, the
+ * transitive closure of the books named as a delegate by any entry, each book once, keyed exactly as the entry names it, its pages read by the same
+ * rules (at most 64 books; always present, {} when no page has a delegate).
+ */
+export interface KeybookRead { pages: KeybookPage[]; delegateBooks: Record<string, KeybookPage[]> }
+const MAX_DELEGATE_BOOKS = 64;
 
 /** the entries member (DAX-F167c): closed { keyHash?, delegate? } with at least one; their key hashes and delegates, in order, exactly the page's lists. null otherwise */
 function parseEntries(v: unknown, keyHashes: string[], delegates: string[]): KeybookEntry[] | null {
@@ -76,23 +86,40 @@ function parseEntries(v: unknown, keyHashes: string[], delegates: string[]): Key
   return out;
 }
 
-export function parseKeybook(v: unknown): KeybookPage[] | null {
-  if (!isObj(v) || !only(v, ['pages']) || !Array.isArray(v['pages'])) return null;
+/** one book's pages: each closed and strict; the first never emptied; an emptied later page carries every threshold 0 (D9); null otherwise */
+function parsePages(v: unknown): KeybookPage[] | null {
+  if (!Array.isArray(v)) return null;
   const out: KeybookPage[] = [];
-  for (const p of v['pages'] as unknown[]) {
-    if (!isObj(p) || !only(p, ['url', 'keyHashes', 'delegates', 'threshold'], ['rejectThreshold', 'responseThreshold', 'entries']) || typeof p['url'] !== 'string' || !Array.isArray(p['keyHashes']) || !Array.isArray(p['delegates'])) return null;
-    if (typeof p['threshold'] !== 'number' || !Number.isSafeInteger(p['threshold']) || p['threshold'] < 1) return null;
-    if ('rejectThreshold' in p && (typeof p['rejectThreshold'] !== 'number' || !Number.isSafeInteger(p['rejectThreshold']) || p['rejectThreshold'] < 0)) return null;
-    if ('responseThreshold' in p && (typeof p['responseThreshold'] !== 'number' || !Number.isSafeInteger(p['responseThreshold']) || p['responseThreshold'] < 0)) return null;
+  for (const [i, p] of (v as unknown[]).entries()) {
+    if (!isObj(p) || !only(p, ['url', 'version', 'keyHashes', 'delegates', 'threshold', 'rejectThreshold', 'responseThreshold', 'entries']) || typeof p['url'] !== 'string' || !Array.isArray(p['keyHashes']) || !Array.isArray(p['delegates'])) return null;
+    if (!isTime(p['version']) || p['version'] < 1 || !isTime(p['threshold']) || !isTime(p['rejectThreshold']) || !isTime(p['responseThreshold'])) return null;
     if (!(p['keyHashes'] as unknown[]).every((h) => typeof h === 'string' && HEX64.test(h)) || !(p['delegates'] as unknown[]).every((d) => typeof d === 'string')) return null;
-    let entries: KeybookEntry[] | null = null;
-    if ('entries' in p) {
-      entries = parseEntries(p['entries'], p['keyHashes'] as string[], p['delegates'] as string[]);
-      if (entries === null) return null;
-    }
-    out.push({ url: p['url'], keyHashes: p['keyHashes'] as string[], delegates: p['delegates'] as string[], threshold: p['threshold'], rejectThreshold: 'rejectThreshold' in p ? (p['rejectThreshold'] as number) : null, responseThreshold: 'responseThreshold' in p ? (p['responseThreshold'] as number) : null, entries });
+    const entries = parseEntries(p['entries'], p['keyHashes'] as string[], p['delegates'] as string[]);
+    if (entries === null) return null;
+    const emptied = entries.length === 0;
+    // D9: an emptied page is a later page with every threshold 0; a page with entries has an acceptance threshold of 1 or more
+    if (emptied ? i === 0 || p['threshold'] !== 0 || p['rejectThreshold'] !== 0 || p['responseThreshold'] !== 0 : p['threshold'] < 1) return null;
+    out.push({ url: p['url'], version: p['version'], keyHashes: p['keyHashes'] as string[], delegates: p['delegates'] as string[], threshold: p['threshold'], rejectThreshold: p['rejectThreshold'], responseThreshold: p['responseThreshold'], entries });
   }
   return out;
+}
+
+/** the keybook answer (DAX-F170): exactly `{ pages, delegateBooks }`, read strictly as a whole; an older relay's answer (no versions, no delegateBooks) is null */
+export function parseKeybook(v: unknown): KeybookRead | null {
+  if (!isObj(v) || !only(v, ['pages', 'delegateBooks']) || !isObj(v['delegateBooks'])) return null;
+  const pages = parsePages(v['pages']);
+  if (pages === null) return null;
+  const names = Object.keys(v['delegateBooks']);
+  if (names.length > MAX_DELEGATE_BOOKS) return null;
+  const delegateBooks: Record<string, KeybookPage[]> = {};
+  for (const name of names) {
+    const b = (v['delegateBooks'] as Obj)[name];
+    if (name === '' || !isObj(b) || !only(b, ['pages'])) return null;
+    const dp = parsePages(b['pages']);
+    if (dp === null || dp.length === 0) return null;
+    delegateBooks[name] = dp;
+  }
+  return { pages, delegateBooks };
 }
 
 /** NOT the Console's text (see the header): GET /relay/chainlen/:account -> { length: number } */
