@@ -407,7 +407,8 @@ export interface PolicyExecution {
 /** The request of DECISION.md section 2, as the signer binds it (see `PolicyRequest.binding`). */
 export interface PolicyBinding {
   chainId: number;
-  kind: 'erc20.transfer' | 'erc20.approve' | 'native.transfer' | 'raw';
+  /** holder.status: a token's setHolderStatus at a holder-registry token (beneficiary the holder, amount the status code; DAX-F176, DE-114) */
+  kind: 'erc20.transfer' | 'erc20.approve' | 'native.transfer' | 'raw' | 'holder.status';
   source: string;
   target: string;
   beneficiary: string;
