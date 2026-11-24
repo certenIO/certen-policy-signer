@@ -167,11 +167,11 @@ export class GatewayVoteBackend implements VoteBackend {
     // Nor can it sign through a delegation path: its preimage is for a direct signature on its page.
     if (castOpts.delegators?.length) {
       this.logger.error({ tx: tx.txHash, via: 'gateway' }, 'a delegated vote was asked of the gateway, which cannot build one — refusing to sign');
-      return { ok: false, error: 'gateway backend cannot sign through a delegation path' };
+      return { ok: false, error: 'gateway backend cannot sign through a delegation path', cast: 'none' };
     }
     if (castOpts.memo || castOpts.data) {
       this.logger.error({ tx: tx.txHash, via: 'gateway' }, 'the decision supplied signature data the gateway cannot carry — refusing to sign');
-      return { ok: false, error: 'gateway backend cannot carry signature memo/data' };
+      return { ok: false, error: 'gateway backend cannot carry signature memo/data', cast: 'none' };
     }
     const signer = this.keyring.forPage(tx.signerUrl, castOpts.keyRef);
     if (castOpts.keyRef) {
@@ -185,7 +185,7 @@ export class GatewayVoteBackend implements VoteBackend {
       try {
         sd = await this.gw.requestSigningData(tx.txHash, vote, publicKey);
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: (e as Error).message, ...(attempt === 0 ? { cast: 'none' as const } : {}) };
       }
 
       // G-47: the gateway's signing data is a claim, checked against what WE decided, and then not used:
@@ -193,16 +193,16 @@ export class GatewayVoteBackend implements VoteBackend {
       const got = sd.transactionHash.replace(/^0x/, '').toLowerCase();
       if (got !== tx.txHash.toLowerCase()) {
         this.logger.error({ tx: tx.txHash, gatewayTx: got || '(none)' }, 'gateway signing data names a DIFFERENT (or no) transaction — refusing to sign');
-        return { ok: false, error: 'gateway signing data transaction mismatch' };
+        return { ok: false, error: 'gateway signing data transaction mismatch', ...(attempt === 0 ? { cast: 'none' as const } : {}) };
       }
       const page = (u: string) => u.toLowerCase().replace(/\/+$/, '');
       if (!sd.signerUrl || page(sd.signerUrl) !== page(tx.signerUrl)) {
         this.logger.error({ tx: tx.txHash, page: tx.signerUrl, gatewayPage: sd.signerUrl || '(none)' }, 'gateway signing data is for a DIFFERENT (or no) signer page — refusing to sign');
-        return { ok: false, error: 'gateway signing data signer mismatch' };
+        return { ok: false, error: 'gateway signing data signer mismatch', ...(attempt === 0 ? { cast: 'none' as const } : {}) };
       }
       if (!Number.isSafeInteger(sd.signerVersion) || sd.signerVersion < 1 || !Number.isSafeInteger(sd.timestamp) || sd.timestamp <= 0) {
         this.logger.error({ tx: tx.txHash, signerVersion: sd.signerVersion, timestamp: sd.timestamp }, 'gateway signing data has an unusable signer version or timestamp — refusing to sign');
-        return { ok: false, error: 'gateway signing data metadata invalid' };
+        return { ok: false, error: 'gateway signing data metadata invalid', ...(attempt === 0 ? { cast: 'none' as const } : {}) };
       }
       const pre = buildPreimage(hexToBytes(tx.txHash), {
         publicKey, signatureType: signer.signatureType, signerUrl: tx.signerUrl,
@@ -211,7 +211,7 @@ export class GatewayVoteBackend implements VoteBackend {
       const ours = bytesToHex(pre.dataForSignature);
       if (ours !== sd.dataForSignature.toLowerCase()) {
         this.logger.error({ tx: tx.txHash, ours, gateway: sd.dataForSignature }, 'gateway preimage differs from the one we built for this transaction, key, page and vote — refusing to sign');
-        return { ok: false, error: 'gateway signing data preimage mismatch' };
+        return { ok: false, error: 'gateway signing data preimage mismatch', ...(attempt === 0 ? { cast: 'none' as const } : {}) };
       }
 
       // Same rule as the direct backend: a key source that cannot sign produces no signature, and the vote
@@ -222,7 +222,7 @@ export class GatewayVoteBackend implements VoteBackend {
       } catch (e) {
         const msg = (e as Error).message;
         this.logger.error({ tx: tx.txHash, page: tx.signerUrl, err: msg, via: 'gateway' }, 'signing failed; vote withheld');
-        return { ok: false, error: `signing failed: ${msg}` };
+        return { ok: false, error: `signing failed: ${msg}`, ...(attempt === 0 ? { cast: 'none' as const } : {}) };
       }
       let res: { ok: boolean; status?: string; error?: string };
       try {

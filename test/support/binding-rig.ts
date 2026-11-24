@@ -63,6 +63,10 @@ export interface RigOpts {
   stalePin?: string;
   /** the transaction header deadline (`header.expire.atTime`), RFC 3339 */
   header?: string;
+  /** DAX-F191: further orchestrator options (merged over the rig defaults) */
+  options?: Partial<NonNullable<ConstructorParameters<typeof Orchestrator>[0]["options"]>>;
+  /** DAX-F191: the pause gate the orchestrator reads (default: the rig PauseStore) */
+  pauseGate?: ConstructorParameters<typeof Orchestrator>[0]["pauses"];
   /** AGT-F58: the transaction principal (default `${PRINCIPAL}/tokens`) */
   principal?: string;
 }
@@ -93,11 +97,11 @@ export function rig(o: RigOpts) {
   const refusals = new RefusalReceipts(journal, () => NOW_S);
   const orch = new Orchestrator({
     accumulate: acc, keyring: o.keyring ?? singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))), policy, store, resolver: new Resolver(acc), logger: silent,
-    now: () => NOW_S * 1000, pauses, ...(o.humanOnly ? { humanOnlyPages: [page] } : {}),
+    now: () => NOW_S * 1000, pauses: o.pauseGate ?? pauses, ...(o.humanOnly ? { humanOnlyPages: [page] } : {}),
     ...(o.votes ? { votes: o.votes } : {}),
     seats: new Map([[page.toLowerCase(), { seat, ...(o.rules === null ? {} : { binding: { ...RULES, seat, ...(o.rules ?? {}) } }) }]]),
     binding: { nonces, pins, refusals, ...(o.world ? { world: o.world } : {}), nowSeconds: () => NOW_S },
-    options: { submitRejectVote: o.submitRejectVote ?? false },
+    options: { submitRejectVote: o.submitRejectVote ?? false, ...(o.options ?? {}) },
   });
   const handle = () => orch.handle({ txHash: tx, signerUrl: page });
   return { dir, journal, nonces, pins, refusals, pauses, acc, store, policy, orch, handle, tx };

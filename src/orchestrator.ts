@@ -1,5 +1,5 @@
 /** The pipeline: trigger → resolve → decide → sign → submit, with idempotency + retries. */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { AccumulateClient } from './accumulate/client.js';
 import { sha256Hex } from './accumulate/signing.js';
 import { Keyring } from './signer/keyring.js';
@@ -865,6 +865,8 @@ export class Orchestrator {
         // G-69: a human-only seat holds no key; the reject the engine asked for is a person's to cast.
         if (this.isHumanOnly(tx.signerUrl)) return this.awaitHuman(tx, 'reject', decision, bindingInfo);
         const res = await this.signAndSubmit(tx, 'reject', undefined, signatureEvidence(decision.evidence), sign);
+        // DAX-F191: a reject vote that was not cast gives the bound decision back for the retry (releaseIfNotCast says exactly when)
+        if (!res.ok) await this.releaseIfNotCast(tx, bound, res);
         if (!res.ok && res.error === PAUSED_AT_CAST) return this.withholdPaused(key, ref.txHash, decision.decision, PAUSED_AT_CAST);
         if (!res.ok) {
           logger.error({ tx: ref.txHash, err: res.error }, 'reject vote submission failed');
@@ -944,6 +946,8 @@ export class Orchestrator {
     // signature on chain is the person's rather than the organisation's cast in their name. Absent,
     // the organisation signs as itself, exactly as before.
     const res = await this.castForApprovers(tx, 'approve', approverKeyRefs(decision.evidence), evidence, sign);
+    // DAX-F191: an approve vote that was not cast gives the bound decision back for the retry (releaseIfNotCast says exactly when)
+    if (!res.ok) await this.releaseIfNotCast(tx, bound, res);
     if (!res.ok && res.error === PAUSED_AT_CAST) return this.withholdPaused(key, ref.txHash, decision.decision, PAUSED_AT_CAST);
     if (res.ok) {
       await this.saveReceipt({
@@ -1104,6 +1108,62 @@ export class Orchestrator {
   }
 
   /**
+   * DAX-F191. The single-use guarantee of a bound decision is for a vote that was SUBMITTED. The decision was consumed before the cast
+   * (DE-02, DE-03: two presentations at once cannot both pass); when the cast then failed, the decision is given back for a retry with the
+   * same bytes and nonce, within its own window (the binding judges that again on the retry), exactly when the vote cannot have landed:
+   *
+   *   - nothing left this process (`res.cast === 'none'`: no key for the ref, the key source refused, a pause at the cast): released, `not_signed`;
+   *   - a signature was or may have been sent (a refused or unanswered submit): the chain is read, as the submit path already reads it
+   *     (submit-outcome.ts), for a signature on the transaction by ANY key this signer holds on the page, any vote, any path. None there, the
+   *     chain having answered: released, `absent`. One there (the vote landed), the chain unreadable, or no chain reader at all: the
+   *     decision STAYS consumed, and the log says why.
+   *
+   * The release is one journal entry (NonceStore.release, `recheck.result` `decision_released`) that is also the failure record (the error,
+   * the transaction, what the chain said), durable before this returns, and an audit line names it. A journal that cannot be written leaves
+   * the decision consumed (the safe side) and says so. A crash before the release leaves it consumed, as DE-03 states.
+   */
+  private async releaseIfNotCast(tx: ResolvedTx, bound: BoundDecision | undefined, res: VoteResult): Promise<void> {
+    if (bound === undefined || res.ok || this.d.binding === undefined) return;
+    const { logger } = this.d;
+    let chain: 'not_signed' | 'absent';
+    if (res.cast === 'none') chain = 'not_signed';
+    else {
+      const seen = await this.ownSignatureOnChain(tx);
+      if (seen !== 'absent') {
+        logger.warn({ tx: tx.txHash, nonce: bound.nonce, requestHash: bound.requestHash, onChain: seen, err: res.error },
+          seen === 'landed'
+            ? 'decision stays consumed: a signature of this signer is on the transaction (the vote landed)'
+            : 'decision stays consumed: the vote may have landed and the chain cannot tell');
+        return;
+      }
+      chain = 'absent';
+    }
+    try {
+      const done = await this.d.binding.nonces.release({ nonce: bound.nonce, requestHash: bound.requestHash, txHash: tx.txHash, error: res.error ?? 'vote not cast', chain, seat: bound.seat });
+      if (done) logger.warn({ tx: tx.txHash, nonce: bound.nonce, requestHash: bound.requestHash, seat: bound.seat, chain, err: res.error }, 'decision released for a retry: the vote was not cast (journal recheck.result decision_released)');
+    } catch (e) {
+      if (!(e instanceof JournalError)) throw e;
+      logger.error({ tx: tx.txHash, nonce: bound.nonce, journal: `${e.reason}${e.detail ? ' ' + e.detail : ''}` }, 'the decision release could not be written to the journal; the decision stays consumed');
+    }
+  }
+
+  /** DAX-F191: is a signature by any key this signer holds on the transaction's page on the transaction? `unknown` unless the chain answered. */
+  private async ownSignatureOnChain(tx: ResolvedTx): Promise<'landed' | 'absent' | 'unknown'> {
+    const read = this.d.accumulate.getTxSignatures?.bind(this.d.accumulate);
+    if (!read) return 'unknown';
+    let keys: string[];
+    try {
+      const scope = this.d.keyring.scopeFor(tx.signerUrl);
+      keys = await Promise.all([scope.signer, ...Object.values(scope.keys ?? {})].map(async (k) => createHash('sha256').update(await k.publicKey()).digest('hex')));
+    } catch {
+      return 'unknown';
+    }
+    const sigs = await read(tx.txHash, tx.account).catch(() => undefined);
+    if (!sigs || sigs.unavailable) return 'unknown';
+    return sigs.signatures.some((x) => keys.includes(x.publicKeyHash.toLowerCase())) ? 'landed' : 'absent';
+  }
+
+  /**
    * Cast the vote through whichever backend is configured — DIRECT (we submit the envelope to Accumulate)
    * or GATEWAY (the Certen api-gateway hands us the bytes; we sign; we hand the signature back). The
    * decision above this line is identical either way: the policy engine gates both.
@@ -1111,9 +1171,9 @@ export class Orchestrator {
   private async signAndSubmit(tx: ResolvedTx, vote: 'approve' | 'reject', keyRef: string | undefined, evidence: SignatureEvidence, sign: SignCtx): Promise<VoteResult> {
     // G-69 defence in depth: nothing above reaches here for a human-only seat, and if anything ever did,
     // the answer is no signature -- never a key found for the page by some other route.
-    if (this.isHumanOnly(tx.signerUrl)) return { ok: false, error: 'human-only scope: this signer holds no key for this page' };
+    if (this.isHumanOnly(tx.signerUrl)) return { ok: false, error: 'human-only scope: this signer holds no key for this page', cast: 'none' };
     // The pause is read again at the moment of signing: a pause set while the world was being read still applies.
-    if (this.pausedFor(sign, vote)) return { ok: false, error: PAUSED_AT_CAST };
+    if (this.pausedFor(sign, vote)) return { ok: false, error: PAUSED_AT_CAST, cast: 'none' };
     await this.d.store.update(this.rid(tx), { status: 'signing', signerVersion: tx.signerVersion });
     return this.votes.cast(tx, vote, { ...(keyRef === undefined ? {} : { keyRef }), ...evidence, ...pathOf(tx) });
   }
@@ -1144,7 +1204,7 @@ export class Orchestrator {
     evidence: SignatureEvidence,
     sign: SignCtx,
   ): Promise<VoteResult> {
-    if (this.isHumanOnly(tx.signerUrl)) return { ok: false, error: 'human-only scope: this signer holds no key for this page' };
+    if (this.isHumanOnly(tx.signerUrl)) return { ok: false, error: 'human-only scope: this signer holds no key for this page', cast: 'none' };
     // Nobody named: one vote, the organisation's own key, exactly as before T29.
     if (refs.length === 0) return this.signAndSubmit(tx, vote, undefined, evidence, sign);
 
@@ -1156,6 +1216,8 @@ export class Orchestrator {
     await this.d.store.update(this.rid(tx), { status: 'signing', signerVersion: tx.signerVersion });
     let first: VoteResult | undefined;
     let firstError: string | undefined;
+    // DAX-F191: true while no ref has sent a signature (each failure so far signed nothing), so a total failure can say so
+    let noneSent = true;
 
     for (const ref of refs) {
       // Before EACH signature the pause is read again: one decision may cast several keys, and a pause set between two of them
@@ -1165,13 +1227,25 @@ export class Orchestrator {
         break;
       }
       let res: VoteResult;
+      // A ref this wallet holds no key for is refused here, before anything is built or signed, rather than substituting the
+      // organisation's key. That is the T29 refusal working; it is not a reason to abandon the approvers it CAN sign for. Resolved
+      // first so that refusal is KNOWN to have signed nothing (DAX-F191); a throw from inside the cast says nothing of the sort.
+      let held = true;
       try {
-        res = await this.votes.cast(tx, vote, { keyRef: ref, ...evidence, ...pathOf(tx) });
+        this.d.keyring.forPage(tx.signerUrl, ref);
       } catch (e) {
-        // A ref this wallet holds no key for throws rather than substituting the organisation's key.
-        // That is the T29 refusal working; it is not a reason to abandon the approvers it CAN sign for.
-        res = { ok: false, error: (e as Error).message };
+        held = false;
+        res = { ok: false, error: (e as Error).message, cast: 'none' };
       }
+      if (held) {
+        try {
+          res = await this.votes.cast(tx, vote, { keyRef: ref, ...evidence, ...pathOf(tx) });
+        } catch (e) {
+          res = { ok: false, error: (e as Error).message };
+        }
+      }
+      res = res!;
+      if (!res.ok && res.cast !== 'none') noneSent = false;
       if (res.ok) {
         this.d.logger.info({ tx: tx.txHash, keyRef: ref }, 'signed as the named approver');
         first ??= res;
@@ -1182,7 +1256,7 @@ export class Orchestrator {
     }
 
     if (first) return first;
-    return { ok: false, ...(firstError ? { error: firstError } : {}) };
+    return { ok: false, ...(firstError ? { error: firstError } : {}), ...(noneSent ? { cast: 'none' as const } : {}) };
   }
 }
 
