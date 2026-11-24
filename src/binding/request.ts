@@ -9,7 +9,7 @@
  * What a request can be, and what it cannot (a refusal is a named `presented_malformed` detail, never a guess):
  *   - ONE leg. A multi-leg intent is several executions under one operation and cannot be bound by a one-leg request hash: the
  *     presented legCount is derived from the legs and the core refuses a legCount other than 1 as `multi_leg_unsupported` (DE-76).
- *   - kind `native.transfer` (empty calldata), `erc20.transfer` or `erc20.approve` (the calldata decoded EXACTLY by the core decoder, DE-91:
+ *   - kind `native.transfer` (empty calldata), `erc20.transfer`, `erc20.approve` or `holder.status` (a token's setHolderStatus, DAX-F176, DE-114) (the calldata decoded EXACTLY by the core decoder, DE-91:
  *     the selector, whole-word arguments, an address padded with twelve zero bytes, nothing after the arguments, no native value on a token
  *     call), or `raw` (below). The calldata TEXT is read as the core reads it: `0x` and LOWER-case hex of whole bytes. Upper-case digits, a
  *     missing prefix, an odd number of digits and a size above the limit are refused (`presented_malformed`, the decoder reason as the detail):
@@ -256,7 +256,10 @@ function mapLeg(leg: unknown, txHash: string, operationId: string, allowRaw: boo
   // chain's native currency): the STRUCTURE is decoded exactly and raw base units and addresses are bound. Everything else is undecoded.
   // The called address is also flagged reference-capable (DAXL4-F14, DE-107): the signer binds the STRUCTURE of a transferWithReference as an erc20.transfer (the ten members); the Console's own registry flag decides
   // whether that payment is understood and may be approved, and a token that registry does not flag is decode_required there.
-  const registry = { schema: 'certen.tokenreg/v1', tokens: [{ chainId, address: 'native', symbol: 'NATIVE', decimals: 0 }, { chainId, address: target, symbol: 'TOKEN', decimals: 0, paymentReference: true }] };
+  // ... and flagged as a holder registry (DAX-F176, DE-114): the signer binds the STRUCTURE of a setHolderStatus as the request kind holder.status (the holder, the
+  // token, the status code), so a declared registration is bound as a declared payment is; the Console's own registry flag decides whether it is understood and
+  // may be approved, and its policy decides it against the seat's declaration (registrationDeclared)
+  const registry = { schema: 'certen.tokenreg/v1', tokens: [{ chainId, address: 'native', symbol: 'NATIVE', decimals: 0 }, { chainId, address: target, symbol: 'TOKEN', decimals: 0, paymentReference: true, holderRegistry: true }] };
   const decoded = decode({ chainId, source, target, value: value ?? '0', calldata }, registry, { allowRaw });
   if (decoded.status === 'undecoded') {
     if (TEXT_REASONS.has(decoded.reason)) return fail(decoded.reason);

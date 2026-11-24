@@ -18,9 +18,10 @@
 import { fromHex, isPlainObject } from './bytes.js';
 import { keccak256Hex } from './calldata-keccak.js';
 import { authenticateExecution, parseWireBinding } from './decision-wire.js';
-import { ACTION_KINDS } from './grant-profile.js';
+import { REQUEST_KINDS } from './grant-profile.js';
 
-const TYPED_KINDS = ACTION_KINDS.filter((k) => k !== 'raw');
+// the typed REQUEST kinds a decoder may answer: the three of the Grant and holder.status (DE-114)
+const TYPED_KINDS = REQUEST_KINDS.filter((k) => k !== 'raw');
 
 export type MapOutcomeResult =
   | { ok: true; bound: true; kind: string }

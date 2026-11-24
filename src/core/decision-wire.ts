@@ -26,7 +26,7 @@
 import { HASH_RE, fromHex, hasLoneSurrogate, isAmount } from './bytes.js';
 import { MAX_CALLDATA_BYTES } from './calldata.js';
 import { normalizeAddress, singleCommitment } from './calldata-keccak.js';
-import { ACTION_KINDS } from './grant-profile.js';
+import { REQUEST_KINDS } from './grant-profile.js';
 import { hashRequest } from './hashes.js';
 import { dataObject, isPositiveInt, isTime } from './decision-identity.js';
 
@@ -99,7 +99,7 @@ export function parseWireBinding(input: unknown): WireBindingResult {
   if (!isHash(o['validatorOperationId'])) return refuse('binding_field_invalid', 'validatorOperationId');
   if (!isPositiveInt(o['legCount'])) return refuse('binding_field_invalid', 'legCount');
   if (!isPositiveInt(o['chainId'])) return refuse('binding_field_invalid', 'chainId');
-  if (typeof o['kind'] !== 'string' || !(ACTION_KINDS as readonly string[]).includes(o['kind'])) return refuse('binding_field_invalid', 'kind');
+  if (typeof o['kind'] !== 'string' || !(REQUEST_KINDS as readonly string[]).includes(o['kind'])) return refuse('binding_field_invalid', 'kind');
   // every address is read once, in lower case or the checksum case, and is the lower-case form from here on: the hash, the commitment and every comparison are over it
   const addr: Record<'source' | 'target' | 'beneficiary' | 'asset', string> = { source: '', target: '', beneficiary: '', asset: '' };
   for (const m of ['source', 'target', 'beneficiary'] as const) {
