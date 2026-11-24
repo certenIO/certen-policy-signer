@@ -1,6 +1,6 @@
 /**
- * THE CONSOLE'S STRICT PARSERS, COPIED AS FIXTURES (no import across repos). Source: src/relay/routes.ts of branch pl/dax-4c-decision-binding of the
- * Console (transaction-controls) at commit f50d5b31c81a73038f7d2b69bd7c1b44980ec7cb; sha256 of that file with LF line endings 074ad9076e8acafe02eae52b22d917ac8f6fae730b63e9f9d7c2c850b771a0ba.
+ * THE CONSOLE'S STRICT PARSERS, COPIED AS FIXTURES (no import across repos). Source: src/relay/routes.ts of branch pl/dax-f167-reject-threshold of the
+ * Console (certen-approval-console) at commit 3ad93ab4afac1a39e1feb16c6d05b31a3c17470c; sha256 of that file with LF line endings aed2fef4cc13eae2046d28e9f08bb1aba35f5cdfac23c87ada76cd7043138d17 (DAX-F167a: the per-page rejectThreshold).
  * Everything from `type Obj` to `parseKeybook` below is that file's text, unchanged; only the import line differs (the signer's own copy of the core).
  * When the Console changes a route shape this file is re-copied and test/binding-console-contract.test.ts says what the signer must now answer.
  *
@@ -11,7 +11,8 @@ import type { AccountHistory, DataEntry } from '../../src/core/reader.js';
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => v !== null && typeof v === 'object' && !Array.isArray(v);
-const only = (o: Obj, keys: readonly string[]): boolean => Object.keys(o).every((k) => keys.includes(k)) && keys.every((k) => k in o);
+/** exactly the required keys, plus any of the optional ones */
+const only = (o: Obj, keys: readonly string[], optional: readonly string[] = []): boolean => Object.keys(o).every((k) => keys.includes(k) || optional.includes(k)) && keys.every((k) => k in o);
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX = /^(?:[0-9a-f]{2})*$/;
 const isTime = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
@@ -44,16 +45,25 @@ export function parseHistory(v: unknown): AccountHistory | null {
   return { types: types as string[], incomplete: v['incomplete'] };
 }
 
-export interface KeybookPage { url: string; keyHashes: string[]; delegates: string[]; threshold: number }
+/** `{ length }` with a non-negative safe integer and nothing else; anything else is unreadable (the cache then falls back to the TTL alone). */
+export function parseChainLength(v: unknown): number | null {
+  if (!isObj(v) || !only(v, ['length'])) return null;
+  const n = v['length'];
+  return typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : null;
+}
+
+/** rejectThreshold: the page's stored reject threshold (0 = the page sets none), or null when the relay did not carry it (DAX-F167: never read as "none") */
+export interface KeybookPage { url: string; keyHashes: string[]; delegates: string[]; threshold: number; rejectThreshold: number | null }
 
 export function parseKeybook(v: unknown): KeybookPage[] | null {
   if (!isObj(v) || !only(v, ['pages']) || !Array.isArray(v['pages'])) return null;
   const out: KeybookPage[] = [];
   for (const p of v['pages'] as unknown[]) {
-    if (!isObj(p) || !only(p, ['url', 'keyHashes', 'delegates', 'threshold']) || typeof p['url'] !== 'string' || !Array.isArray(p['keyHashes']) || !Array.isArray(p['delegates'])) return null;
+    if (!isObj(p) || !only(p, ['url', 'keyHashes', 'delegates', 'threshold'], ['rejectThreshold']) || typeof p['url'] !== 'string' || !Array.isArray(p['keyHashes']) || !Array.isArray(p['delegates'])) return null;
     if (typeof p['threshold'] !== 'number' || !Number.isSafeInteger(p['threshold']) || p['threshold'] < 1) return null;
+    if ('rejectThreshold' in p && (typeof p['rejectThreshold'] !== 'number' || !Number.isSafeInteger(p['rejectThreshold']) || p['rejectThreshold'] < 0)) return null;
     if (!(p['keyHashes'] as unknown[]).every((h) => typeof h === 'string' && HEX64.test(h)) || !(p['delegates'] as unknown[]).every((d) => typeof d === 'string')) return null;
-    out.push({ url: p['url'], keyHashes: p['keyHashes'] as string[], delegates: p['delegates'] as string[], threshold: p['threshold'] });
+    out.push({ url: p['url'], keyHashes: p['keyHashes'] as string[], delegates: p['delegates'] as string[], threshold: p['threshold'], rejectThreshold: 'rejectThreshold' in p ? (p['rejectThreshold'] as number) : null });
   }
   return out;
 }
