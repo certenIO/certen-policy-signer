@@ -29,6 +29,9 @@ export type KeyPageOp =
   | { op: 'add-key'; keyHash: string }
   | { op: 'remove-key'; keyHash: string }
   | { op: 'set-threshold'; threshold: number }
+  // DAX-F178: the page's REJECT threshold (Accumulate setRejectThreshold). Unset, a page rejects at its accept threshold; a page whose accept threshold counts a
+  // machine initiation key that never refuses (the large payer: machine + two officers) states it, so the officers alone can still refuse.
+  | { op: 'set-reject-threshold'; threshold: number }
   // A SEAT on this page, held by somebody else's key book. Runbook F Phase F3: a roster names an
   // employee's own book as a delegate, so revoking authority removes one entry and retires no
   // identity, and the two things that change at different rates -- who holds a role, and what the
@@ -190,6 +193,19 @@ export async function applyKeyPageOp(d: KeyPageDeps, req: KeyPageOp, timeoutMs =
         const tx = await submit({
           type: 'updateKeyPage', operation: [{ type: 'setThreshold', threshold: t }],
         }, 'updateKeyPage/setThreshold');
+        if (before.threshold > 1) return awaiting(req.op, tx);
+        const after = await confirmPage(accumulate, page, { minVersion: before.version + 1 }, logger, timeoutMs);
+        return { ok: true, op: req.op, submitted: [tx], before, after };
+      }
+
+      case 'set-reject-threshold': {
+        const t = Number(req.threshold);
+        if (!Number.isInteger(t) || t < 1) throw new Error('reject threshold must be a positive integer');
+        if (t > before.entries.length) throw new Error(`reject threshold ${t} exceeds the ${before.entries.length} entr(ies) on the page — it could never be met`);
+        await enforce({ op: 'set-reject-threshold', threshold: t });
+        const tx = await submit({
+          type: 'updateKeyPage', operation: [{ type: 'setRejectThreshold', threshold: t }],
+        }, 'updateKeyPage/setRejectThreshold');
         if (before.threshold > 1) return awaiting(req.op, tx);
         const after = await confirmPage(accumulate, page, { minVersion: before.version + 1 }, logger, timeoutMs);
         return { ok: true, op: req.op, submitted: [tx], before, after };
