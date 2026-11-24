@@ -58,7 +58,13 @@ export interface NodeSource {
  * DAX-F167a: `rejectThreshold` is the page's STORED reject threshold, 0 when the page sets none (Accumulate then rejects at the accept threshold:
  * SignerWillVote, internal/core/execute/v2/block/transaction.go). The quorum needs it to know when a page's refusals deny (core DE-84).
  */
-export interface RosterPage extends KeyPageInfo { delegates: string[]; rejectThreshold: number }
+/** DAX-F167c: one key entry of a page in chain order: its key hash, its delegate book, or both (null where it holds none) */
+export interface RosterEntry { keyHash: string | null; delegate: string | null }
+/**
+ * rejectThreshold and responseThreshold: as stored (0 = the page sets none); entries: the page's key entries in chain order (Accumulate counts a page per
+ * entry: SignerWillVote over the page's signature set, one entry per key entry and delegation path), so an entry that holds a key AND a delegate is one
+ */
+export interface RosterPage extends KeyPageInfo { delegates: string[]; rejectThreshold: number; responseThreshold: number; entries: RosterEntry[] }
 
 const PAGE = 100;
 const MAX_RECORDS = 100_000;
@@ -191,10 +197,16 @@ export function createNodeSource(query: ChainQuery): NodeSource {
         const rawReject = p.account.rejectThreshold;
         const rejectThreshold = rawReject === undefined || rawReject === null ? 0 : Number(rawReject);
         if (!Number.isSafeInteger(rejectThreshold) || rejectThreshold < 0 || rejectThreshold > keys.length) return null;
+        // DAX-F167c: the response threshold as stored, read exactly as the reject threshold (absent = 0, the page sets none; Accumulate caps it at the
+        // entries): SignerWillVote decides nothing on a page before its votes reach it
+        const rawResponse = p.account.responseThreshold;
+        const responseThreshold = rawResponse === undefined || rawResponse === null ? 0 : Number(rawResponse);
+        if (!Number.isSafeInteger(responseThreshold) || responseThreshold < 0 || responseThreshold > keys.length) return null;
         // every seat is read exactly: a seat with a key hash that is not 64 hex, a delegate that is not text, or neither a key nor a delegate
         // makes the book unreadable. A roster that silently lost a seat would be SHORTER than the chain's, and shorter is never safe to answer.
         const keyHashes: string[] = [];
         const delegates: string[] = [];
+        const entries: RosterEntry[] = [];
         for (const k of keys) {
           const h = k?.publicKeyHash;
           const d = k?.delegate;
@@ -209,8 +221,12 @@ export function createNodeSource(query: ChainQuery): NodeSource {
             if (typeof d !== 'string') return null;
             delegates.push(d);
           }
+          entries.push({ keyHash: hasKey ? keyHashes[keyHashes.length - 1]! : null, delegate: hasDelegate ? delegates[delegates.length - 1]! : null });
         }
-        pages.push({ url, keyHashes, delegates, threshold, rejectThreshold });
+        // DAX-F167c: a key hash or a delegate twice on one page is not a page the chain builds (UpdateKeyPage refuses a duplicate entry) and only one of
+        // the two could ever be voted on (EntryByKeyHash / EntryByDelegate find one): the book is unreadable, never a guessed count
+        if (new Set(keyHashes).size !== keyHashes.length || new Set(delegates).size !== delegates.length) return null;
+        pages.push({ url, keyHashes, delegates, threshold, rejectThreshold, responseThreshold, entries });
       }
       return pages;
     },

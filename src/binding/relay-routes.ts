@@ -15,7 +15,8 @@
  *   GET /relay/history/:account     -> { types: [string], incomplete: boolean }              the account's own main chain from its
  *                                                                                           creation; never an answer when the chain
  *                                                                                           could not be read back
- *   GET /relay/keybook/:book        -> { pages: [{ url, keyHashes: [64 hex], delegates: [url], threshold }] }
+ *   GET /relay/keybook/:book        -> { pages: [{ url, keyHashes: [64 hex], delegates: [url], threshold, rejectThreshold, responseThreshold, entries: [{ keyHash?, delegate? }] }] }
+ *                                      (DAX-F167a/F167c: the stored reject and response thresholds, 0 = the page sets none; the key entries in chain order)
  *                                                                                           the ROSTER of the Console's quorum (the current
  *                                                                                           members of a required book): a key seat is its
  *                                                                                           key hash, a delegate seat stands as its book url.
@@ -98,5 +99,5 @@ export async function relayAccountRoute(reader: CountedReader, route: AccountRou
   }
   const p = reader.keyBookPages === undefined ? null : await reader.keyBookPages(account);
   const headers = headersOf(reader);
-  return p === null ? { status: 502, body: { error: 'unreadable' }, headers } : { status: 200, headers, body: { pages: p.map((x) => ({ url: x.url, keyHashes: x.keyHashes, delegates: x.delegates, threshold: x.threshold, rejectThreshold: x.rejectThreshold })) } };
+  return p === null ? { status: 502, body: { error: 'unreadable' }, headers } : { status: 200, headers, body: { pages: p.map((x) => ({ url: x.url, keyHashes: x.keyHashes, delegates: x.delegates, threshold: x.threshold, rejectThreshold: x.rejectThreshold, responseThreshold: x.responseThreshold, entries: x.entries.map((e) => ({ ...(e.keyHash === null ? {} : { keyHash: e.keyHash }), ...(e.delegate === null ? {} : { delegate: e.delegate }) })) })) } };
 }

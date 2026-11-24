@@ -38,6 +38,8 @@ export interface FakeAccount {
   acceptThreshold?: number;
   /** DAX-F167a: the page's stored reject threshold; absent = the node omits it (the page sets none) */
   rejectThreshold?: number;
+  /** DAX-F167c: the page's stored response threshold; absent = the node omits it (the page sets none) */
+  responseThreshold?: number;
 }
 
 const FIRST_BLOCK = 16_000_000;
@@ -80,9 +82,9 @@ export class FakeNode {
   }
 
   /** a key book with pages (the quorum roster read; never an online verdict). `delegates` are delegate seats (book urls); `seats` replaces both with raw seats */
-  book(url: string, pages: Array<{ keyHashes: string[]; threshold: number; rejectThreshold?: number; delegates?: string[]; seats?: Array<Record<string, unknown>> }>): void {
+  book(url: string, pages: Array<{ keyHashes: string[]; threshold: number; rejectThreshold?: number; responseThreshold?: number; delegates?: string[]; seats?: Array<Record<string, unknown>> }>): void {
     this.accounts.set(url, { type: 'keyBook', authorities: [], chain: [{ type: 'createKeyBook' }], entries: [], pageCount: pages.length });
-    pages.forEach((p, i) => this.accounts.set(`${url}/${i + 1}`, { type: 'keyPage', authorities: [], chain: [{ type: 'createKeyPage' }], entries: [], keys: p.keyHashes, acceptThreshold: p.threshold, ...(p.rejectThreshold === undefined ? {} : { rejectThreshold: p.rejectThreshold }), seats: p.seats ?? [...p.keyHashes.map((publicKeyHash) => ({ publicKeyHash })), ...(p.delegates ?? []).map((delegate) => ({ delegate }))] }));
+    pages.forEach((p, i) => this.accounts.set(`${url}/${i + 1}`, { type: 'keyPage', authorities: [], chain: [{ type: 'createKeyPage' }], entries: [], keys: p.keyHashes, acceptThreshold: p.threshold, ...(p.rejectThreshold === undefined ? {} : { rejectThreshold: p.rejectThreshold }), ...(p.responseThreshold === undefined ? {} : { responseThreshold: p.responseThreshold }), seats: p.seats ?? [...p.keyHashes.map((publicKeyHash) => ({ publicKeyHash })), ...(p.delegates ?? []).map((delegate) => ({ delegate }))] }));
   }
 
   private newBlock(time: number | undefined): number {
@@ -171,7 +173,7 @@ export class FakeNode {
           }),
         };
       }
-      return { recordType: 'account', account: { type: a.type, authorities: a.authorities.map((url) => (a.disabled?.includes(url) ? { url, disabled: true } : { url })), ...(a.pageCount === undefined ? {} : { pageCount: a.pageCount }), ...(a.keys === undefined ? {} : { keys: a.seats ?? a.keys.map((publicKeyHash) => ({ publicKeyHash })), acceptThreshold: a.acceptThreshold, ...(a.rejectThreshold === undefined ? {} : { rejectThreshold: a.rejectThreshold }) }) } };
+      return { recordType: 'account', account: { type: a.type, authorities: a.authorities.map((url) => (a.disabled?.includes(url) ? { url, disabled: true } : { url })), ...(a.pageCount === undefined ? {} : { pageCount: a.pageCount }), ...(a.keys === undefined ? {} : { keys: a.seats ?? a.keys.map((publicKeyHash) => ({ publicKeyHash })), acceptThreshold: a.acceptThreshold, ...(a.rejectThreshold === undefined ? {} : { rejectThreshold: a.rejectThreshold }), ...(a.responseThreshold === undefined ? {} : { responseThreshold: a.responseThreshold }) }) } };
     } finally {
       this.active--;
     }

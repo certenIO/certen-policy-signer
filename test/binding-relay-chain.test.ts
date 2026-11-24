@@ -32,7 +32,7 @@ async function start() {
   node.write(GRANTS, [new Uint8Array([1, 2, 3]), new Uint8Array([0xab])], 1_800_000_000);
   node.write(GRANTS, [new Uint8Array([9])], null); // an entry whose record carries no executing block: no chain time to ask for
   node.identity('acc://agent-one.fic-grantor.acme', ['acc://agent-one.fic-grantor.acme/book']);
-  node.book(`${GRANTOR}/book`, [{ keyHashes: ['aa'.repeat(32)], threshold: 1 }, { keyHashes: ['bb'.repeat(32), 'cc'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 1 }]);
+  node.book(`${GRANTOR}/book`, [{ keyHashes: ['aa'.repeat(32)], threshold: 1 }, { keyHashes: ['bb'.repeat(32), 'cc'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 1, responseThreshold: 2 }]);
   const cache = new ReadCache(node.query);
   const base = await serve(createRelayClientsHandler({
     ...baseDeps, clients: [{ name: 'console', key: KEY, scopes: ['chain'] }, { name: 'proof-only', key: NOKEY, scopes: ['proof'] }], chainReader: () => cache.evaluation(),
@@ -73,8 +73,8 @@ describe('the chain relay routes (GET only, strictly validated)', () => {
     const { call } = await start();
     expect((await call(`/relay/keybook/${enc(`${GRANTOR}/book`)}`)).json).toEqual({
       pages: [
-        { url: `${GRANTOR}/book/1`, keyHashes: ['aa'.repeat(32)], delegates: [], threshold: 1, rejectThreshold: 0 },
-        { url: `${GRANTOR}/book/2`, keyHashes: ['bb'.repeat(32), 'cc'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 1 },
+        { url: `${GRANTOR}/book/1`, keyHashes: ['aa'.repeat(32)], delegates: [], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'aa'.repeat(32) }] },
+        { url: `${GRANTOR}/book/2`, keyHashes: ['bb'.repeat(32), 'cc'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 1, responseThreshold: 2, entries: [{ keyHash: 'bb'.repeat(32) }, { keyHash: 'cc'.repeat(32) }, { delegate: 'acc://fic-risk.acme/risk' }] },
       ],
     });
     expect((await call(`/relay/keybook/${enc(`${GRANTOR}/book/1`)}`)).status).toBe(400);

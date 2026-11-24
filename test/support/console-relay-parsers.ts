@@ -1,6 +1,6 @@
 /**
  * THE CONSOLE'S STRICT PARSERS, COPIED AS FIXTURES (no import across repos). Source: src/relay/routes.ts of branch pl/dax-f167-reject-threshold of the
- * Console (certen-approval-console) at commit 3ad93ab4afac1a39e1feb16c6d05b31a3c17470c; sha256 of that file with LF line endings aed2fef4cc13eae2046d28e9f08bb1aba35f5cdfac23c87ada76cd7043138d17 (DAX-F167a: the per-page rejectThreshold).
+ * Console (certen-approval-console) at commit 7514a0a212e399f3b913da0ef9ff8e97a975e9c0; sha256 of that file with LF line endings 270894ceccf0ac6a59c8ae99dd9f27633b60e9cc8c7d23d6d9693cddee5de71a (DAX-F167a: the per-page rejectThreshold; DAX-F167c: the per-page responseThreshold and entries).
  * Everything from `type Obj` to `parseKeybook` below is that file's text, unchanged; only the import line differs (the signer's own copy of the core).
  * When the Console changes a route shape this file is re-copied and test/binding-console-contract.test.ts says what the signer must now answer.
  *
@@ -52,18 +52,45 @@ export function parseChainLength(v: unknown): number | null {
   return typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : null;
 }
 
-/** rejectThreshold: the page's stored reject threshold (0 = the page sets none), or null when the relay did not carry it (DAX-F167: never read as "none") */
-export interface KeybookPage { url: string; keyHashes: string[]; delegates: string[]; threshold: number; rejectThreshold: number | null }
+/** one key entry of a page as the relay reads it (DAX-F167c): its key hash, its delegate, or both (null where it holds none) */
+export interface KeybookEntry { keyHash: string | null; delegate: string | null }
+/**
+ * rejectThreshold: the page's stored reject threshold (0 = the page sets none), or null when the relay did not carry it (DAX-F167: never read as "none");
+ * responseThreshold: its stored response threshold (0 = none), and entries: its key entries in chain order, each null when the relay did not carry it (DAX-F167c)
+ */
+export interface KeybookPage { url: string; keyHashes: string[]; delegates: string[]; threshold: number; rejectThreshold: number | null; responseThreshold: number | null; entries: KeybookEntry[] | null }
+
+/** the entries member (DAX-F167c): closed { keyHash?, delegate? } with at least one; their key hashes and delegates, in order, exactly the page's lists. null otherwise */
+function parseEntries(v: unknown, keyHashes: string[], delegates: string[]): KeybookEntry[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: KeybookEntry[] = [];
+  for (const e of v as unknown[]) {
+    if (!isObj(e) || !only(e, [], ['keyHash', 'delegate']) || Object.keys(e).length === 0) return null;
+    if ('keyHash' in e && (typeof e['keyHash'] !== 'string' || !HEX64.test(e['keyHash']))) return null;
+    if ('delegate' in e && typeof e['delegate'] !== 'string') return null;
+    out.push({ keyHash: 'keyHash' in e ? (e['keyHash'] as string) : null, delegate: 'delegate' in e ? (e['delegate'] as string) : null });
+  }
+  const ks = out.flatMap((e) => (e.keyHash === null ? [] : [e.keyHash]));
+  const ds = out.flatMap((e) => (e.delegate === null ? [] : [e.delegate]));
+  if (ks.length !== keyHashes.length || ks.some((k, i) => k !== keyHashes[i]) || ds.length !== delegates.length || ds.some((d, i) => d !== delegates[i])) return null;
+  return out;
+}
 
 export function parseKeybook(v: unknown): KeybookPage[] | null {
   if (!isObj(v) || !only(v, ['pages']) || !Array.isArray(v['pages'])) return null;
   const out: KeybookPage[] = [];
   for (const p of v['pages'] as unknown[]) {
-    if (!isObj(p) || !only(p, ['url', 'keyHashes', 'delegates', 'threshold'], ['rejectThreshold']) || typeof p['url'] !== 'string' || !Array.isArray(p['keyHashes']) || !Array.isArray(p['delegates'])) return null;
+    if (!isObj(p) || !only(p, ['url', 'keyHashes', 'delegates', 'threshold'], ['rejectThreshold', 'responseThreshold', 'entries']) || typeof p['url'] !== 'string' || !Array.isArray(p['keyHashes']) || !Array.isArray(p['delegates'])) return null;
     if (typeof p['threshold'] !== 'number' || !Number.isSafeInteger(p['threshold']) || p['threshold'] < 1) return null;
     if ('rejectThreshold' in p && (typeof p['rejectThreshold'] !== 'number' || !Number.isSafeInteger(p['rejectThreshold']) || p['rejectThreshold'] < 0)) return null;
+    if ('responseThreshold' in p && (typeof p['responseThreshold'] !== 'number' || !Number.isSafeInteger(p['responseThreshold']) || p['responseThreshold'] < 0)) return null;
     if (!(p['keyHashes'] as unknown[]).every((h) => typeof h === 'string' && HEX64.test(h)) || !(p['delegates'] as unknown[]).every((d) => typeof d === 'string')) return null;
-    out.push({ url: p['url'], keyHashes: p['keyHashes'] as string[], delegates: p['delegates'] as string[], threshold: p['threshold'], rejectThreshold: 'rejectThreshold' in p ? (p['rejectThreshold'] as number) : null });
+    let entries: KeybookEntry[] | null = null;
+    if ('entries' in p) {
+      entries = parseEntries(p['entries'], p['keyHashes'] as string[], p['delegates'] as string[]);
+      if (entries === null) return null;
+    }
+    out.push({ url: p['url'], keyHashes: p['keyHashes'] as string[], delegates: p['delegates'] as string[], threshold: p['threshold'], rejectThreshold: 'rejectThreshold' in p ? (p['rejectThreshold'] as number) : null, responseThreshold: 'responseThreshold' in p ? (p['responseThreshold'] as number) : null, entries });
   }
   return out;
 }
