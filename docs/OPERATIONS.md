@@ -481,6 +481,7 @@ and cached ≤ 30 s). Any failure is `401 {"error":"officer_auth_failed"}`.
 | `POST /relay/officer-signature/prepare` `{ref, page, delegators?, vote, principal?}` | officer | `{prepareId, txHash, sigMdHash, signerVersion, timestamp, principal, display, summaryHash, expiresAt}` |
 | `POST /relay/officer-signature` `{prepareId, signature}` | the signature | `{txHash, status: landed\|submitted, page, keyHash}` |
 | `POST /relay/governance/proposal` `{page, operations, proposer}` | relay client `governance` + `x-governance-key` | `{proposalId, display, summaryHash}` |
+| `POST /relay/governance/proposal/withdraw` `{proposalId, by, note}` (DAX-F188) | relay client `governance` + `x-governance-key` | `{proposalId, status: withdrawn, withdrawnBy, withdrawnAt, note, droppedPrepares, already}`; only a `proposed` proposal (no signature sent) is withdrawn, its open prepares are dropped and a later prepare answers 409 `proposal already withdrawn`; `submitting\|submitted\|landed` answers 409 `proposal already <status>`; unknown or expired 404 |
 
 `ref` is a 64-hex transaction hash or `proposal:<id>`. `delegators` are key page URLs in wrapping order:
 `delegators[0]` lists the signing page's book as a delegate, and the last is the outermost authority. The

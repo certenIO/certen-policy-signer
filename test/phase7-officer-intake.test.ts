@@ -226,7 +226,7 @@ beforeEach(async () => {
       return r;
     },
     recordAwaiting: async ({ txHash, page, op }) => store.savePolicyRequest(awaitingGovernanceRequest(txHash, page, op)),
-    propose: intake.propose, logger: silent,
+    propose: intake.propose, withdrawProposal: intake.withdraw, logger: silent,
   });
   server = createServer({ relayClients, officerIntake: intake.handle, orchestrator: {} as any, store, keyring: {} as any, accumulate: {} as any, pause: memoryPauseStore(), logger: silent });
   port = await listen(server);
@@ -1275,5 +1275,114 @@ describe('AGT-F42: ed25519 officer keys', () => {
     expect(outer.signature.type).toBe('ed25519');
     expect(accEdVerifies(outer.signature, [ISSUANCE_P1])).toBe(true);
     expect(accEdVerifies(outer.signature)).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* DAX-F188: an issued but unsigned proposal can be withdrawn          */
+/* ------------------------------------------------------------------ */
+
+describe('DAX-F188: withdrawing a governance proposal that no signature has landed on', () => {
+  const GOV = { ...C, 'x-governance-key': GOV_KEY };
+  const WITHDRAW = '/relay/governance/proposal/withdraw';
+  const propose = async () => (await call(port, 'POST', '/relay/governance/proposal', GOV, { page: HARBOR_P1, operations: [{ type: 'remove-key', keyHash: 'bb'.repeat(32) }], proposer: 'ada (FICTIONAL)' })).json.proposalId as string;
+  const withdraw = (body: unknown, h: Record<string, string> = GOV) => call(port, 'POST', WITHDRAW, h, body);
+  const NOTE = 'FICTIONAL: the first officer was refused; proposal 10 carries the change';
+
+  it('needs the governance scope and the governance key; validates the body; an unknown proposal is 404', async () => {
+    const id = await propose();
+    expect((await withdraw({ proposalId: id, by: 'ines (FICTIONAL)', note: NOTE }, C)).status).toBe(401);
+    expect((await withdraw({ proposalId: id, by: 'ines (FICTIONAL)', note: NOTE }, { 'x-relay-client': 'harbor-console', 'x-api-key': 'wrong', 'x-governance-key': GOV_KEY })).status).toBe(401);
+    expect((await withdraw({ proposalId: 'nope', by: 'ines', note: NOTE })).status).toBe(400);
+    expect((await withdraw({ proposalId: id, note: NOTE })).status).toBe(400);
+    expect((await withdraw({ proposalId: id, by: 'ines' })).status).toBe(400);
+    expect((await withdraw({ proposalId: id, by: 'ines', note: 'short' })).status).toBe(400);
+    const unknown = await withdraw({ proposalId: 'proposal:00000000-0000-4000-8000-000000000000', by: 'ines', note: NOTE });
+    expect(unknown).toEqual({ status: 404, json: { error: 'proposal not found or expired' } });
+    expect(intake.proposals().map((p) => p.status)).toEqual(['proposed']);
+  });
+
+  it('a proposed proposal becomes withdrawn; its open prepares are dropped; a later prepare is 409 proposal already withdrawn; nothing is submitted', async () => {
+    const id = await propose();
+    const open = await prepare(alice, { ref: id, page: HARBOR_P1, vote: 'approve' });
+    expect(open.status).toBe(200);
+
+    const w = await withdraw({ proposalId: id, by: 'ines (FICTIONAL)', note: NOTE });
+    expect(w.status).toBe(200);
+    expect(w.json).toMatchObject({ proposalId: id, status: 'withdrawn', withdrawnBy: 'ines (FICTIONAL)', note: NOTE, droppedPrepares: 1, already: false });
+    expect(Number.isNaN(Date.parse(w.json.withdrawnAt))).toBe(false);
+    expect(intake.proposals()[0]).toMatchObject({ status: 'withdrawn', withdrawnBy: 'ines (FICTIONAL)', withdrawNote: NOTE });
+
+    // the prepare handed out before the withdrawal is gone: its signature finds nothing to submit
+    const late = await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: open.json.prepareId, signature: await signPrepared(alice, open.json) });
+    expect(late).toEqual({ status: 404, json: { error: 'prepare not found or expired' } });
+    // a new prepare is refused by name
+    expect(await prepare(bob, { ref: id, page: HARBOR_P1, vote: 'approve' })).toEqual({ status: 409, json: { error: 'proposal already withdrawn' } });
+    expect(chain.submitted).toHaveLength(0);
+    // the officer view shows it
+    const path = `/relay/officer/pending/${id}`;
+    expect((await call(port, 'GET', path, { 'x-officer-auth': await authHeader(alice, 'GET', path) })).json).toMatchObject({ status: 'withdrawn' });
+
+    // a repeat answers the same withdrawal, marked already, and changes nothing
+    const again = await withdraw({ proposalId: id, by: 'someone else', note: 'FICTIONAL second withdrawal attempt' });
+    expect(again.status).toBe(200);
+    expect(again.json).toMatchObject({ proposalId: id, status: 'withdrawn', withdrawnBy: 'ines (FICTIONAL)', note: NOTE, already: true, droppedPrepares: 0 });
+  });
+
+  it('a proposal whose signature landed, or was submitted, refuses the withdrawal by name and stays as it is', async () => {
+    const landedId = await propose();
+    const p1 = await prepare(alice, { ref: landedId, page: HARBOR_P1, vote: 'approve' });
+    expect((await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: p1.json.prepareId, signature: await signPrepared(alice, p1.json) })).json.status).toBe('landed');
+    expect(await withdraw({ proposalId: landedId, by: 'ines', note: NOTE })).toEqual({ status: 409, json: { error: 'proposal already landed', status: 'landed' } });
+
+    chain.land = false;
+    const subId = await propose();
+    const p2 = await prepare(alice, { ref: subId, page: HARBOR_P1, vote: 'approve' });
+    expect((await call(port, 'POST', '/relay/officer-signature', {}, { prepareId: p2.json.prepareId, signature: await signPrepared(alice, p2.json) })).json.status).toBe('submitted');
+    expect(await withdraw({ proposalId: subId, by: 'ines', note: NOTE })).toEqual({ status: 409, json: { error: 'proposal already submitted', status: 'submitted' } });
+    expect(intake.proposals().map((p) => p.status).sort()).toEqual(['landed', 'submitted']);
+  });
+
+  it('writes an audit log line naming the proposal, who and why', async () => {
+    const lines: any[] = [];
+    const logger = pino({ level: 'info' }, { write: (s: string) => { lines.push(JSON.parse(s)); } });
+    const it2 = createOfficerIntake({ humanPages: [HARBOR_P1], chain, readPage: chain.readPage, getPolicyRequest: (h) => store.getPolicyRequest(h), landedTimeoutMs: 150, pollIntervalMs: 10, logger });
+    const c = await it2.propose(HARBOR_P1, [{ op: 'remove-key', keyHash: 'bb'.repeat(32) }], 'ada (FICTIONAL)');
+    const id = (c.body as { proposalId: string }).proposalId;
+    expect((await it2.withdraw(id, 'ines (FICTIONAL)', NOTE)).status).toBe(200);
+    const audit = lines.find((l) => l.audit === 'governance_proposal_withdrawn');
+    expect(audit).toMatchObject({ proposalId: id.replace(/^proposal:/, ''), page: HARBOR_P1, by: 'ines (FICTIONAL)', note: NOTE, droppedPrepares: 0 });
+    expect((await it2.withdraw(id.replace(/^proposal:/, ''), 'x', NOTE)).status).toBe(200);   // the bare id is accepted too
+  });
+
+  it('the withdrawal is persisted: after a restart the proposal is still withdrawn and cannot be prepared', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'f188-')), 'state.json');
+    const boot = async () => {
+      const st = new FileStore(path);
+      const it2 = createOfficerIntake({ humanPages: [HARBOR_P1], chain, readPage: chain.readPage, getPolicyRequest: (h) => store.getPolicyRequest(h), landedTimeoutMs: 150, pollIntervalMs: 10, logger: silent, state: st });
+      await it2.restore();
+      return it2;
+    };
+    const a = await boot();
+    const id = ((await a.propose(HARBOR_P1, [{ op: 'remove-key', keyHash: 'bb'.repeat(32) }], 'ada (FICTIONAL)')).body as { proposalId: string }).proposalId;
+    expect((await a.withdraw(id, 'ines (FICTIONAL)', NOTE)).status).toBe(200);
+    const b = await boot();
+    expect(b.proposals()).toHaveLength(1);
+    expect(b.proposals()[0]).toMatchObject({ status: 'withdrawn', withdrawnBy: 'ines (FICTIONAL)', withdrawNote: NOTE });
+    expect((await b.withdraw(id, 'x', NOTE)).body).toMatchObject({ already: true });
+  });
+
+  it('a proposal left submitting with an unreadable chain refuses the withdrawal by name (it may be on chain)', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'f188s-')), 'state.json');
+    const st = new FileStore(path);
+    const it1 = createOfficerIntake({ humanPages: [HARBOR_P1], chain, readPage: chain.readPage, getPolicyRequest: (h) => store.getPolicyRequest(h), landedTimeoutMs: 150, pollIntervalMs: 10, logger: silent, state: st });
+    const id = ((await it1.propose(HARBOR_P1, [{ op: 'remove-key', keyHash: 'bb'.repeat(32) }], 'ada (FICTIONAL)')).body as { proposalId: string }).proposalId;
+    const rec = (await st.listIntakeRecords('proposal'))[0]!;
+    await st.saveIntakeRecord('proposal', String(rec.id), { ...rec, status: 'submitting', pendingTxHash: 'ab'.repeat(32), submittedVia: { page: HARBOR_P1, delegators: [] } });
+    const unreadable: IntakeChain = { getPendingTx: async () => ({ found: false, unavailable: true }), getSignerInfo: chain.getSignerInfo.bind(chain), submit: chain.submit.bind(chain) };
+    const it2 = createOfficerIntake({ humanPages: [HARBOR_P1], chain: unreadable, readPage: chain.readPage, getPolicyRequest: (h) => store.getPolicyRequest(h), landedTimeoutMs: 150, pollIntervalMs: 10, logger: silent, state: new FileStore(path) });
+    await it2.restore();
+    expect(await it2.withdraw(id, 'ines', NOTE)).toEqual({ status: 409, body: { error: 'proposal already submitting', status: 'submitting' } });
+    expect(it2.proposals()[0]!.status).toBe('submitting');
   });
 });

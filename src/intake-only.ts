@@ -92,6 +92,7 @@ export async function startIntakeOnly(cfg: Config, logger: Logger, opts: { accum
       pages: () => [],                 // no page is held: POST /relay/governance refuses every page
       readPage: (page) => readPage(accumulate, page),
       propose: (page, ops, proposer) => intake.propose(page, ops, proposer),
+      withdrawProposal: (id, by, note) => intake.withdraw(id, by, note),
       timeoutMs: cfg.relay.timeout_ms,
       logger,
     });

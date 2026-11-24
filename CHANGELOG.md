@@ -11,6 +11,10 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ## Unreleased
 
+### Added (DAX-F188)
+
+- `POST /relay/governance/proposal/withdraw` `{proposalId, by, note}` (scope `governance` + `x-governance-key`): an officer-intake proposal that no signature was sent for becomes `withdrawn`, persisted with who, when and why, with an audit line `governance_proposal_withdrawn`; its open prepares are dropped and any later prepare answers 409 `proposal already withdrawn`. A proposal that is `submitting`, `submitted` or `landed` refuses the withdrawal by name (409). The answer shape is `ProposalWithdrawal` in `src/types.ts`. Before, an issued officer link stayed signable for the proposal's 24 hours with no way to take it back.
+
 ### Fixed (DAX-F100)
 
 - A transaction whose chain status is final-failed (an authority rejected it, or it ran and failed) is now `gone` for voting: the resolver ends the request as `expired` with the hold kept as history (`pendingFinal.outcome` `gone:failed`), the signature-chain listing drops it, and the policy engine is never asked about it again. Before, a held (`pending`) request on such a transaction was re-asked on every poll for the life of the signer (the idle lab: 686 policy round trips per 5 minutes from 12 dead requests). No signature that could still count is withheld: a transaction in a final-failed state takes no further votes.
