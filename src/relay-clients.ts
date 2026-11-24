@@ -88,7 +88,7 @@ function sendRefusal(res: http.ServerResponse, refusal: KeyPageRefusal, txids: s
 
 /** the chain routes: the account is ONE percent-encoded path segment (no raw slash) */
 const CHAIN_ROUTE = new RegExp('^/relay/(data|authorities|history|keybook|chainlen)/([^/]+)$');
-const GOV_TYPES = new Set(['add-key', 'remove-key', 'set-threshold', 'add-delegate', 'remove-delegate']);
+const GOV_TYPES = new Set(['add-key', 'remove-key', 'set-threshold', 'set-reject-threshold', 'add-delegate', 'remove-delegate']);
 const MAX_GOV_OPS = 10;
 const sameUrl = (a: string, b: string) => a.toLowerCase().replace(/\/+$/, '') === b.toLowerCase().replace(/\/+$/, '');
 const accUrlOk = (u: unknown): u is string => typeof u === 'string' && ACC_URL.test(u) && !DOT_SEGMENT.test(u.slice(6));
@@ -106,6 +106,10 @@ export function toKeyPageOp(o: unknown): KeyPageOp | string {
       return { op: type, keyHash: r.keyHash.replace(/^0x/, '').toLowerCase() };
     case 'set-threshold':
       if (typeof r.threshold !== 'number' || !Number.isInteger(r.threshold) || r.threshold < 1 || r.threshold > 1000) return 'set-threshold: threshold must be a positive integer';
+      return { op: type, threshold: r.threshold };
+    case 'set-reject-threshold':
+      // DAX-F178: the page's reject threshold; the guard refuses one above the entries the page will hold
+      if (typeof r.threshold !== 'number' || !Number.isInteger(r.threshold) || r.threshold < 1 || r.threshold > 1000) return 'set-reject-threshold: threshold must be a positive integer';
       return { op: type, threshold: r.threshold };
     default:
       if (!accUrlOk(r.delegate)) return `${type}: delegate must be an acc:// key book URL`;
