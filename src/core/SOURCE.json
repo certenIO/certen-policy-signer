@@ -1,5 +1,5 @@
 {
-  "commit": "3cbf3145f5a43873a928ee729bf7d5a0c22563cc",
+  "commit": "291bcaf4af2996091bcb56098517fb8ce4d95b69",
   "dir": "packages/core/src",
   "files": {
     "bytes.ts": "a6e87147398be7fab345727dbef4f4cb1b953972dff446ccbe14d3caef61d7d7",
@@ -19,7 +19,7 @@
     "reader.ts": "2a20cd99bc07d7d75b272205b3ab9d56c4f3bc21bb53b17f2b6b546f2be91012",
     "log.ts": "179e635814c1b168f9b7813b72b164f80c8613cf4fb848bb709db14aa72c1d70",
     "decision-identity.ts": "477872451e1cc69d979494ed67e4a69797273a6115c94eec9d8fe3e151001cdf",
-    "decision-binding.ts": "789b6dee77203400ebe5551bafdc4c4b23267b01bc9e793d23eadc7ee175587a",
+    "decision-binding.ts": "d2f391b15b9248579c24c447bfcc81acb1472c64232f9237c0d50d1254f677e1",
     "pause.ts": "bffc72ef89f350da78e66e387fd50ff4eed123ae7065a9b98e74ee6fe6bc5035",
     "calldata-keccak.ts": "e3c6468bc4c8a6f0e18b1f857f5c62703e910a0fd6cf274631363913f903c00a",
     "calldata-registry.ts": "bd00144d68d8a806eaa212479d25ec00463999daa53acebbf869fa55c60c1dd9",

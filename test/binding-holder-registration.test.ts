@@ -39,3 +39,21 @@ describe('DAX-F176 the declared holder registration is bound at a seat without a
     expect(build('0x72370318' + shs(HOLDER, 1).slice(10))).toEqual({ ok: false, detail: 'selector_unknown', reason: 'binding_absent' });
   });
 });
+
+// lead decision 2026-11-24 (DAX-F176): require_grant governs only the request kinds a Grant can name; holder.status is never one
+import { bindDecision } from '../src/core/decision-binding.js';
+describe('DAX-F176 a seat that requires a Grant binds a registration that names none, and still refuses a transfer that names none', () => {
+  const SEAT = 'seat:bank-compliance';
+  const POL = '0x' + 'ab'.repeat(32);
+  const APPROVER = 'adi:acc://maya-lindqvist-tcl98.acme/book';
+  const state = { requireGrant: true, grantHeadHash: null, grantHeadSubject: null, expectedPolicyHash: POL, authorizedApprovers: [APPROVER], consumed: [], maxWindowSeconds: 86400 };
+  const now = 1_795_430_000;
+  const decide = (request: Record<string, string | number>) => ({ schema: 'certen.decision/v1', decision: 'approve', requestHash: hashRequest(request), grantHash: null, policyHash: POL, seat: SEAT, approver: APPROVER, nonce: '0x' + '5a'.repeat(32), issuedAt: now - 10, expiresAt: now + 600, reason: 'Declared registration of the large payer (FICTIONAL).' });
+  it('binds the holder.status request; refuses a transfer of the same seat without a Grant as grant_required', () => {
+    const r = build(shs(HOLDER, 1));
+    if (!r.ok) throw new Error('not bound');
+    expect(bindDecision({ state, now, decision: decide(r.value.request), presented: { request: r.value.request, legCount: 1, grantRefHash: null, seat: SEAT, subject: null } } as never)).toMatchObject({ ok: true });
+    const transfer = { ...r.value.request, kind: 'erc20.transfer', amount: '1000' };
+    expect(bindDecision({ state, now, decision: decide(transfer), presented: { request: transfer, legCount: 1, grantRefHash: null, seat: SEAT, subject: null } } as never)).toMatchObject({ ok: false, reason: 'grant_required' });
+  });
+});

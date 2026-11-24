@@ -31,7 +31,7 @@
  * derive legCount from the transaction's legs and always supply it.
  */
 import { CoreError, hasLoneSurrogate } from './bytes.js';
-import { SUBJECT_TYPES, isAdiUrl, type SubjectType } from './grant-profile.js';
+import { ACTION_KINDS, SUBJECT_TYPES, isAdiUrl, type SubjectType } from './grant-profile.js';
 import { hashDecision, hashRequest } from './hashes.js';
 import { closedObject, dataArray, dataObject, isHash, isIdentity, isSeatId, isTime } from './decision-identity.js';
 
@@ -233,7 +233,9 @@ export function bindDecision(input: BindInput): BindResult {
   if (decision.requestHash !== presented.requestHash) return refuse('request_mismatch');
 
   // 6. the Grant: required, then the same one named by decision and transaction, then the head, then the subject join
-  if (state.requireGrant && (decision.grantHash === null || presented.grantRefHash === null)) return refuse('grant_required');
+  // require_grant governs only the request kinds a Grant can name (DE-114, lead decision of 2026-11-24, DAX-F176): holder.status is never a Grant action, so a
+  // registration is judged by the seat's rules, its declared registration and human review; every Grant-nameable kind without a Grant stays grant_required
+  if (state.requireGrant && (ACTION_KINDS as readonly string[]).includes(presented.kind) && (decision.grantHash === null || presented.grantRefHash === null)) return refuse('grant_required');
   if (decision.grantHash !== presented.grantRefHash) return refuse('grant_hash_mismatch');
   const named = decision.grantHash;
   if (named !== null) {
