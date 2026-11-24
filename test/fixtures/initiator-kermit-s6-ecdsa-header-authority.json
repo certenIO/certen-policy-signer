@@ -1,0 +1,840 @@
+{
+ "schema": "tcl.accumulate-records/v1",
+ "source": {
+  "endpoint": "https://kermit.accumulatenetwork.io/v3",
+  "api": "v3",
+  "queriedAt": "2026-10-02T08:34:23.884Z"
+ },
+ "txid": "acc://b61ad3dcd595236d249db736770bd212f7f3cfc630cd8c89266fcc069ade7973@spk-6-cust-tcl1.acme/data",
+ "status": "delivered",
+ "transaction": {
+  "header": {
+   "principal": "acc://spk-6-cust-tcl1.acme/data",
+   "initiator": "f9c2d323da7dbdf9b09c39bfec8e1fb6c65c6108e1638108b032d888e290e185",
+   "memo": "TCL_SPIKE_S6",
+   "authorities": [
+    "acc://spk-6-tcl1.acme/book"
+   ]
+  },
+  "body": {
+   "type": "writeData",
+   "entry": {
+    "type": "doubleHash",
+    "data": [
+     "7b226b696e64223a2254434c5f5350494b45222c227370696b65223a225336222c226c6162656c223a22622d6865616465722d617574686f72697479222c226174223a22323032362d30392d31345430323a33373a34312e3636335a227d"
+    ]
+   }
+  }
+ },
+ "txReceipt": {
+  "account": "acc://spk-6-cust-tcl1.acme/data",
+  "chain": "main",
+  "index": 1,
+  "entry": "b61ad3dcd595236d249db736770bd212f7f3cfc630cd8c89266fcc069ade7973",
+  "receipt": {
+   "start": "b61ad3dcd595236d249db736770bd212f7f3cfc630cd8c89266fcc069ade7973",
+   "end": "b61ad3dcd595236d249db736770bd212f7f3cfc630cd8c89266fcc069ade7973",
+   "anchor": "9182bd436ed3292db43d0d1152e7bec29cf365e36955067e221e19c14c48d3ff",
+   "entries": [
+    {
+     "hash": "61e3ac00715ebc6a0e29bfd13005c7ffd266bb3b0aab42d3781134f60c638b8c"
+    },
+    {
+     "hash": "407287b45f47e8f3f93cbdfff35ede6399613c5a3d6c3f487b85bcb9f0c7c5fd"
+    },
+    {
+     "hash": "93d81fa027446c291cf5cb8bb51c964b74a2fbd5d02c2aabe17fd27c782839db"
+    },
+    {
+     "hash": "334a613824958e59fbb0ca2c76106410f2d68ae9b414ad0379c7cdd2fe3b5e8a"
+    },
+    {
+     "hash": "325f2a5fdc83f31ef1cb3d0c823b0ad3a46f4bc75f69fdd616a2fb6f5bfcde74"
+    },
+    {
+     "hash": "2ac32f9f79f93196638539c4c7cc036b656c40ddb6880b20fda3f6274202d848"
+    },
+    {
+     "hash": "f09a7a75d1e5ab79cc5e471f0493718d2505928060fcf41f096f2135274f9138"
+    },
+    {
+     "right": true,
+     "hash": "a0c02a1e4d3e140439f6bb3c67b74562b69574a15c9935498c3e44cc0d4b1d32"
+    },
+    {
+     "hash": "e840a9c37062950e032c69f8066b4f269066fdcca02e322db857e26f5857f4f3"
+    },
+    {
+     "hash": "4336124aeec4c172442d6cf017b539b01076ee184e8e896bec0b6ae1c1e854de"
+    },
+    {
+     "hash": "39966cf1633ad5f9be94ab42ee7bf57de4be7cf6291a09bdb40b66c8b6378769"
+    },
+    {
+     "hash": "cec3ba1ff0c168ba464bf2d5d412683ae776c2518053663f966c11333aa0a85a"
+    },
+    {
+     "hash": "cf0ced352ff2d26d2a477a789bda79c23c0fa17156ef4817ada77aa4792e7af9"
+    },
+    {
+     "hash": "68cff8bced077e84932c5e24193cd6eafe918c08f421350919ffd242a5c66d24"
+    },
+    {
+     "hash": "c4e865b7f0af6138860f0538a0f289d3886a27923b2c268664ce87b2fc1ba542"
+    }
+   ],
+   "localBlock": 11846432,
+   "localBlockTime": "2026-09-14T02:37:52Z",
+   "majorBlock": 451
+  }
+ },
+ "signatures": [
+  {
+   "messageId": "acc://4610e4736a7a6ca67ec635a451c57cf5287c6bd9cdb2e7e6cb44632b7cbc4aba@spk-6-cust-tcl1.acme/book/1",
+   "signature": {
+    "type": "ed25519",
+    "publicKey": "370a27a3884ec54e7fe625612003edbfec8e75ada0c7afd2237aa356e9b97c3e",
+    "signature": "906fa8fa76dd0dfb06a58dcb9b3b508ba4488ec98d9e974ad38b709bba043711ed65d637c3efd390c0b98a36eea2117fae677f68952d88f7e4b7f875dd43a404",
+    "signer": "acc://spk-6-cust-tcl1.acme/book/1",
+    "signerVersion": 1,
+    "timestamp": 1789353462827000,
+    "transactionHash": "b61ad3dcd595236d249db736770bd212f7f3cfc630cd8c89266fcc069ade7973"
+   },
+   "receipt": {
+    "account": "acc://spk-6-cust-tcl1.acme/book/1",
+    "chain": "signature",
+    "index": 1,
+    "entry": "4610e4736a7a6ca67ec635a451c57cf5287c6bd9cdb2e7e6cb44632b7cbc4aba",
+    "receipt": {
+     "start": "4610e4736a7a6ca67ec635a451c57cf5287c6bd9cdb2e7e6cb44632b7cbc4aba",
+     "end": "4610e4736a7a6ca67ec635a451c57cf5287c6bd9cdb2e7e6cb44632b7cbc4aba",
+     "anchor": "6eb42b8f3b41fcdbb55af2124aecd3443ce52727b4fa2c2b21cc34bb60f88fa2",
+     "entries": [
+      {
+       "hash": "ef646160fac0d38f93ca7f73c5fa33f7d8b19f5c6e1c7a1f5bbf37345c45c2a0"
+      },
+      {
+       "right": true,
+       "hash": "eff1aaae91941879b5a59067a89bdeec7a7a07e4f864f9638bfe09df31f8b6a6"
+      },
+      {
+       "hash": "c7fcabfbbb939df06334996cd6b7373d9ca7afce7ba543fe32719e9e7491e05d"
+      },
+      {
+       "hash": "4417e996552b34301a275e6bb65cff499376b3465ba0fcce582a1d7623233271"
+      },
+      {
+       "hash": "34dd8154737d2728cbf1bcfe7ab21fbc92e41131d7cd831159e040f23a492cd6"
+      },
+      {
+       "hash": "25213c478ed6265b704d81962ba771399221d91810ffce0b9719f18f102044ee"
+      },
+      {
+       "right": true,
+       "hash": "818e73d5d3d30b20c8a7211b764c58120726b72026823c08967b56a8e3fa444a"
+      },
+      {
+       "hash": "e840a9c37062950e032c69f8066b4f269066fdcca02e322db857e26f5857f4f3"
+      },
+      {
+       "hash": "4336124aeec4c172442d6cf017b539b01076ee184e8e896bec0b6ae1c1e854de"
+      },
+      {
+       "hash": "39966cf1633ad5f9be94ab42ee7bf57de4be7cf6291a09bdb40b66c8b6378769"
+      },
+      {
+       "hash": "cec3ba1ff0c168ba464bf2d5d412683ae776c2518053663f966c11333aa0a85a"
+      },
+      {
+       "hash": "cf0ced352ff2d26d2a477a789bda79c23c0fa17156ef4817ada77aa4792e7af9"
+      },
+      {
+       "hash": "68cff8bced077e84932c5e24193cd6eafe918c08f421350919ffd242a5c66d24"
+      },
+      {
+       "hash": "c4e865b7f0af6138860f0538a0f289d3886a27923b2c268664ce87b2fc1ba542"
+      }
+     ],
+     "localBlock": 11846421,
+     "localBlockTime": "2026-09-14T02:37:41Z",
+     "majorBlock": 451
+    }
+   }
+  },
+  {
+   "messageId": "acc://71bb2db3d14eadb39d3e045797abf6d412fb81efee067d0bc7bffa7135be59f6@spk-6-tcl1.acme/book/2",
+   "signature": {
+    "type": "ecdsaSha256",
+    "publicKey": "3059301306072a8648ce3d020106082a8648ce3d03010703420004c64cb007873330a073c17c151a37c0363a44ca288f75ee35f371063c6f8cadf9f6742b92cf76f2a72e9ca992eea4acf51ed4c73562434ccc6a772e614443acc4",
+    "signature": "3045022100a6f79dec234d2eb48d3774b469aa30f1d24b131483e1f76e26ccad2f150adaef0220431a5e9439b2a73b003adc78990e01f1a8558e0d72cd6c7e6185faaec9fe9bb7",
+    "signer": "acc://spk-6-tcl1.acme/book/2",
+    "signerVersion": 1,
+    "timestamp": 1789353467695000,
+    "transactionHash": "b61ad3dcd595236d249db736770bd212f7f3cfc630cd8c89266fcc069ade7973"
+   },
+   "receipt": {
+    "account": "acc://spk-6-tcl1.acme/book/2",
+    "chain": "signature",
+    "index": 1,
+    "entry": "71bb2db3d14eadb39d3e045797abf6d412fb81efee067d0bc7bffa7135be59f6",
+    "receipt": {
+     "start": "71bb2db3d14eadb39d3e045797abf6d412fb81efee067d0bc7bffa7135be59f6",
+     "end": "71bb2db3d14eadb39d3e045797abf6d412fb81efee067d0bc7bffa7135be59f6",
+     "anchor": "4fb96741e4d67907ed9459110d8beaeb1423c5ecfec7a13d9fa3d47e90052d14",
+     "entries": [
+      {
+       "hash": "fd8a101e911b740a3cc71c54ef73887d503657a36d1ee660061b0c7ab4f717de"
+      },
+      {
+       "hash": "ef94649dd4f80651446ffc41c28e859c470a0da93103bc5ff2f5f5790ce87407"
+      },
+      {
+       "hash": "4e332cb1223d51d3a22cc16dff2870bcbd488af224e26d75f6ddac484b499e34"
+      },
+      {
+       "right": true,
+       "hash": "46c31d2f1014407c1ce14033a85cbd49337ed433bf896b945858e401dc18ed45"
+      },
+      {
+       "hash": "c281774d019ca0482e4fe0aafdf2fbd793c377dade4c12def479524ad5393491"
+      },
+      {
+       "hash": "5c6655f82b51bc0d9c0a7591d09265517d99c83158b80afd2ab33cea4ffef4a7"
+      },
+      {
+       "hash": "f2a8028cb5fbeb81c7236d27d18be6853b09e405fe4202410f3a9f88394c1d36"
+      },
+      {
+       "hash": "1ae0338e846e21842fde4698e2a90ea63a20965625c7b1ef79a54d102470aa14"
+      },
+      {
+       "hash": "a2f2465ef4a9e70ce8589c6b56e57fe055efede0969c0cd389e54ab8c5d7bfb1"
+      },
+      {
+       "hash": "0e94550d8e04c0971ef83fd14e20346cbb103207b79e9a11b945dfc91b675d42"
+      },
+      {
+       "hash": "6c5ba0fe583d193cd3de9f3308cab9b5c95309314be747fe7d976b6c9f533a9b"
+      },
+      {
+       "hash": "cd420df1756c0d82d6bc1b8ea3b2513dde4b9a02310025c7cc6a832f3ed5c98e"
+      },
+      {
+       "hash": "b573806c23afaf4bad087132b8584dfd113d988cc9f73fac6234e4a182bab216"
+      },
+      {
+       "hash": "104b8edd002ca642b4cefab6506c19da3f3cafab4f6599470bdee45c4ccaac6d"
+      }
+     ],
+     "localBlock": 11846294,
+     "localBlockTime": "2026-09-14T02:37:46Z",
+     "majorBlock": 451
+    }
+   }
+  }
+ ],
+ "accounts": [
+  {
+   "url": "acc://spk-6-cust-tcl1.acme",
+   "account": {
+    "type": "identity",
+    "url": "acc://spk-6-cust-tcl1.acme",
+    "authorities": [
+     {
+      "url": "acc://spk-6-cust-tcl1.acme/book"
+     }
+    ]
+   },
+   "receipt": {
+    "start": "22bd83868935497137091d161e1aed9792752261d18caf95316fb532802e72fc",
+    "endIndex": 3,
+    "anchor": "89a334daa523e5d262edea9ea6596c5e3c88b780e16bc833bbf20bbd90dbd240",
+    "entries": [
+     {
+      "right": true,
+      "hash": "331ae6ff868957eb44b6e51a32376a6567b3a35273e1354c8db847ad2bf38f4d"
+     },
+     {
+      "right": true,
+      "hash": "b231934a9ae938592bc7fd055d6bb654c8ab74350360c988d6c5a314f4c0d1a1"
+     },
+     {
+      "hash": "2403ffd38eb9034ec204ea0b6a413673e3826d156a9fa81bedd4ec2217f05ceb"
+     },
+     {
+      "hash": "5be343827622aba5b1850c562cd0a619964d97a14f4b9e20c46ad2d354a13e7a"
+     },
+     {
+      "right": true,
+      "hash": "0990c2bd75b46135073dd8787089323dec68e0e831451a03a25048fcea804f81"
+     },
+     {
+      "hash": "b42e4746a3996f8ce0b67e6c52a9b0e9fceb39f8d02b0a069c1eb1da317a9b19"
+     },
+     {
+      "hash": "09edb8ed9785bd91ed03847f8688314918f1d51de1eba6ee9809941b2f1f1766"
+     },
+     {
+      "right": true,
+      "hash": "e1998bc636c18c6ea4addaf076969ffac6f02ca92876d3dd55c150c618d48424"
+     },
+     {
+      "hash": "cec4131502029f543d7393c623c132f91d0309f370312c6a1829c9d3b7acd3d6"
+     },
+     {
+      "hash": "e4fb07b3d3b1a7294af897e5c69e1844a6be374c3013cd9180e09f9e09b1b3ea"
+     },
+     {
+      "right": true,
+      "hash": "f93c3ebb99a98ba8d5466133263b2cf80adf7eafc2258e9541ac35def0ff8384"
+     },
+     {
+      "hash": "0a351d5ab6d07096dcbf8ef8ba8f4eb941d1c42f6173ada4cdf243404651a5e5"
+     },
+     {
+      "right": true,
+      "hash": "9448a979dbc7f12a163889d47d22d844b450b4ebfaac688e66507597ac3bd08b"
+     },
+     {
+      "hash": "36c40f6afb1a11d1e8c0953638b0f6f1ca774ab033b0e73ed43df8260ef93252"
+     },
+     {
+      "hash": "0c831071e7dd2c727203de428a8d9370cd96267d983985b0f734cc19aab189ab"
+     },
+     {
+      "right": true,
+      "hash": "09dba09faddfe54262d344d19123ff93d5e5d7378b10430d1a4ccc75209f4015"
+     }
+    ],
+    "localBlock": 13370217,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN1"
+   }
+  },
+  {
+   "url": "acc://spk-6-cust-tcl1.acme/book",
+   "account": {
+    "type": "keyBook",
+    "url": "acc://spk-6-cust-tcl1.acme/book",
+    "authorities": [
+     {
+      "url": "acc://spk-6-cust-tcl1.acme/book"
+     }
+    ],
+    "pageCount": 1
+   },
+   "receipt": {
+    "start": "b57ab6956f348b65d4b714a8e310c320d63fe679bfcac805ffeb98900ea13e50",
+    "endIndex": 3,
+    "anchor": "89a334daa523e5d262edea9ea6596c5e3c88b780e16bc833bbf20bbd90dbd240",
+    "entries": [
+     {
+      "right": true,
+      "hash": "97f6042a8028ed0d3727812ee35b5ce1e3dcd99c74aa22daacff20a55da5d584"
+     },
+     {
+      "right": true,
+      "hash": "a04fc4d6fccf6b2bc9616a964948f85a626df851a783d3c780df802d56d19cb5"
+     },
+     {
+      "right": true,
+      "hash": "f81040fdf941b66aadb949cfe3678b37acf10d8b6bd832f5d2d558cfd72f5255"
+     },
+     {
+      "hash": "295ec8bcf7f79cdeb7ad6f2ada41f8b41d2d21a0265c5c71707d5b968861d18e"
+     },
+     {
+      "hash": "b79f1f23179837e8cce9819f5d7df971221f2507e8d82f8c71a0c446813487ef"
+     },
+     {
+      "right": true,
+      "hash": "1202207d04f35fc972d17a73e584ddd8c000be7af8259d862ecb922bc4fe3f7a"
+     },
+     {
+      "hash": "30a89af26b5273895e7b646282bd3f0344c8eecfd0e6cc12c210c503147bf752"
+     },
+     {
+      "hash": "cca966718e5c01ee7495cb02b98a876a630edec8a9aeed5b0597c128988d6af4"
+     },
+     {
+      "right": true,
+      "hash": "ae561cd301e44e035bd1611c48c551bb4986cf1e755fc83f496d0c4f10bada8a"
+     },
+     {
+      "right": true,
+      "hash": "c3343dd0423097f4494b7bdffcd0086306095dde4a4f5af8408fc14db0f3eaf5"
+     },
+     {
+      "right": true,
+      "hash": "8f08e6c42d45a36434125e5b6d8972c14eec80e107024f9496fa3fb57167f804"
+     },
+     {
+      "right": true,
+      "hash": "0e1cec8db109976b76762b1112450cec2dbc6a824be6811b1009a87377750932"
+     },
+     {
+      "right": true,
+      "hash": "3a8e0888c9f0eb973238dfe487f65b4f8875585669c74c66882896cccb5553f4"
+     },
+     {
+      "hash": "d43df33a4d32a626f77645a103688515043adaf9959429aa34dc451962ff3368"
+     },
+     {
+      "right": true,
+      "hash": "abf638b59606fa0c93919932ab762831b6102caf5e836df47eb7fc03b6a460b2"
+     },
+     {
+      "hash": "33004cf410d1a365dfe3d0091872507cab0871d1604e9dff92caa8f71d31912e"
+     },
+     {
+      "hash": "c596a07026f923c78393372257804544cf943e977999073e5fe43928ac5f63f3"
+     }
+    ],
+    "localBlock": 13370217,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN1"
+   }
+  },
+  {
+   "url": "acc://spk-6-cust-tcl1.acme/book/1",
+   "account": {
+    "type": "keyPage",
+    "keyBook": "acc://spk-6-cust-tcl1.acme/book",
+    "url": "acc://spk-6-cust-tcl1.acme/book/1",
+    "creditBalance": 1997490,
+    "acceptThreshold": 1,
+    "threshold": 1,
+    "version": 1,
+    "keys": [
+     {
+      "publicKeyHash": "1688b0b20ca3766a358bfde25bc2eadcb73bf363f1c6f24e977742b5d3edad1b",
+      "publicKey": "1688b0b20ca3766a358bfde25bc2eadcb73bf363f1c6f24e977742b5d3edad1b",
+      "lastUsedOn": 1789353462827000
+     }
+    ]
+   },
+   "receipt": {
+    "start": "18e15be3ce955bfd9ed493be0c361a1f0073fa14564711b0da6be7bd27749163",
+    "endIndex": 3,
+    "anchor": "89a334daa523e5d262edea9ea6596c5e3c88b780e16bc833bbf20bbd90dbd240",
+    "entries": [
+     {
+      "right": true,
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "right": true,
+      "hash": "707cc947bd5bbb589ae52c09e9273141ddbd180229d76ad0a4a0cba4f770593a"
+     },
+     {
+      "hash": "8584c62fa8b07cb4a6d9403f7294d273129ed44f34b4fe05ea6d7d9c980d39e9"
+     },
+     {
+      "right": true,
+      "hash": "786c76699d26532660cb8cdee8abf03bff2bfd67bcf09c598cd52e54b631c387"
+     },
+     {
+      "right": true,
+      "hash": "0dd53a264b45e415ced243155820527ddbb090c091b00d801f2801232fa9cd30"
+     },
+     {
+      "hash": "5be76ef542e431da847a98566b5ff4478e3efc3fdf3b0024611cf43d5a6ececf"
+     },
+     {
+      "hash": "ee856221dce52fc610e28d3dd9616e4cbb2bb214c6df32d09062e06447b81837"
+     },
+     {
+      "right": true,
+      "hash": "2c8ad415918802afb2296efcac68a8e5f463b573b7ac2580e11179ecbce24499"
+     },
+     {
+      "right": true,
+      "hash": "414020b476e4d104c7f5bfff4340db14a45dbfa978c33378e54e542479a55dae"
+     },
+     {
+      "hash": "c1d71e6971cd06b0093bb987c7da14824236586a78717895ffd631fc55785e19"
+     },
+     {
+      "hash": "3e3738dd9764aa196420cb37aac50c8f487eadfbfd73f78fc1dc4655a80741ee"
+     },
+     {
+      "hash": "1fb1f5ee6e5e11ddd2ddaa015d6b6b1cb2c4f82a8ef224754cff21c58d686771"
+     },
+     {
+      "hash": "e928e3be980df21190034ddc887c67a1b780dd523112e0ecc01bead719af9473"
+     },
+     {
+      "right": true,
+      "hash": "d27bcc7a6793312b9333ee964039afa1ef66f969da37ecded25befd891569cae"
+     },
+     {
+      "right": true,
+      "hash": "db3e0f80f86ea898172d15b00bad4055f069c4c6884fd752398335abf05383ce"
+     },
+     {
+      "right": true,
+      "hash": "70aa2e02156144fa2c812246f1f0a81441c8abeabba69a3467ee061854706315"
+     },
+     {
+      "right": true,
+      "hash": "1fcdf51f84e995d513173193f84c70c1da0a906f5a89844f8adf0edb278a9f75"
+     },
+     {
+      "hash": "c596a07026f923c78393372257804544cf943e977999073e5fe43928ac5f63f3"
+     }
+    ],
+    "localBlock": 13370217,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN1"
+   }
+  },
+  {
+   "url": "acc://spk-6-cust-tcl1.acme/data",
+   "account": {
+    "type": "dataAccount",
+    "url": "acc://spk-6-cust-tcl1.acme/data"
+   },
+   "receipt": {
+    "start": "9ce34ff156f9093c53582b28f6c0db78faa8790cc61fb4f92c9b8f377d07f0fc",
+    "endIndex": 3,
+    "anchor": "89a334daa523e5d262edea9ea6596c5e3c88b780e16bc833bbf20bbd90dbd240",
+    "entries": [
+     {
+      "right": true,
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "right": true,
+      "hash": "f48b9aecba6b95fda19557d18fff9e05ea4315582d85c10506ae6042bea5fc51"
+     },
+     {
+      "right": true,
+      "hash": "ce1b8b50b4825f18fde68a9d22f57d6280c9559ba6854ceef4782f30f6034e6e"
+     },
+     {
+      "hash": "3fdd1041673bc7a8eba68eb1ddbb25115a725fe693e639cd9fee9ee89fa7fd12"
+     },
+     {
+      "right": true,
+      "hash": "58ad0870d2802aa4df23e67bfbfaf9d76c15257132b2ac75381f6349ad1f6215"
+     },
+     {
+      "right": true,
+      "hash": "25f4debd544abd25d9de666551c5c4503b6a97cdd80f801c836618bb0a5b00c3"
+     },
+     {
+      "right": true,
+      "hash": "bbbc17de82c3a66e7f89ca0ccb914f2d4ca816756fa563b5f42140e70c972ed5"
+     },
+     {
+      "hash": "2f8f1f865520868f3c2f1d58e14898ff45d66bfac2e50ee39951e237d7e20a00"
+     },
+     {
+      "right": true,
+      "hash": "71771fa9379a8898fd8f2e9c7a79c6224c0cb7424b4e133b4265e16d4a5631d1"
+     },
+     {
+      "right": true,
+      "hash": "16e409724a6750c25c54daa503feda540f7347c141a402f18216beee6945fc40"
+     },
+     {
+      "right": true,
+      "hash": "819eeb47701b797bb8471b9e2f7a33491a59f69a14443c52d8a49b31155e93ff"
+     },
+     {
+      "right": true,
+      "hash": "4d944f640d4df34d337509d57ba7957366280261474366f9724e3e44b74d956e"
+     },
+     {
+      "right": true,
+      "hash": "a01468d422276ded92aeae7107b73dbefe05137a510b9f777b4f461e8beba41e"
+     },
+     {
+      "right": true,
+      "hash": "47f64ad609ff7168b6a6b6d8edd8dfbb98a5b2f10e916c226d433c9a84c40ea8"
+     },
+     {
+      "right": true,
+      "hash": "b1378721f4a9550021c4b977156b6c22e674c543d7296c939028bbbd99204135"
+     },
+     {
+      "hash": "6d248744cdc64afab4290fdc6d60c463361b3be5a34ef378667a4ed7fbf51c24"
+     },
+     {
+      "hash": "36c40f6afb1a11d1e8c0953638b0f6f1ca774ab033b0e73ed43df8260ef93252"
+     },
+     {
+      "hash": "0c831071e7dd2c727203de428a8d9370cd96267d983985b0f734cc19aab189ab"
+     },
+     {
+      "right": true,
+      "hash": "09dba09faddfe54262d344d19123ff93d5e5d7378b10430d1a4ccc75209f4015"
+     }
+    ],
+    "localBlock": 13370217,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN1"
+   }
+  },
+  {
+   "url": "acc://spk-6-tcl1.acme/book",
+   "account": {
+    "type": "keyBook",
+    "url": "acc://spk-6-tcl1.acme/book",
+    "authorities": [
+     {
+      "url": "acc://spk-6-tcl1.acme/book"
+     }
+    ],
+    "pageCount": 2
+   },
+   "receipt": {
+    "start": "2d22e05e7a35af0566bed4ac9fe95ae6f3a0eb9e659d531affcb54f453b31275",
+    "endIndex": 3,
+    "anchor": "9235b8824bf83ae058a24586f7221306bcba085c0005d8ab463b33afc0ffa992",
+    "entries": [
+     {
+      "right": true,
+      "hash": "6c2d74f57267383c56d7d2862e9c43348b1a459dcb66cd28134fa85c25afde69"
+     },
+     {
+      "right": true,
+      "hash": "75ba02d8f7e741f31df4e30f5c77f62c4ab3262859085cfc050b9e91f45f1051"
+     },
+     {
+      "hash": "1d6ff70d2d838eb11457b172bcdd02027ac72d8c0293ca8a176307be0affb337"
+     },
+     {
+      "hash": "4512b18f9d03813df7fba14d91e44208777476c081279a80a890d9842a319c00"
+     },
+     {
+      "right": true,
+      "hash": "c7ccc7e512a348f21103433917e5cfba02466b87b63d0343511a673dd36c4ded"
+     },
+     {
+      "right": true,
+      "hash": "e02c5c8ba9bf2dcee60053f2e6590a6591c1d6ff608fc612ec2cdc8bd660f0f1"
+     },
+     {
+      "right": true,
+      "hash": "27300ef2d48c5c83a6194aea87e7f7a5d9f8036147944f4e8f437e8b10a29f85"
+     },
+     {
+      "hash": "80aada23072180d4eeb4d0ce6ab14b7bb5ede805166969db1adbc3fcc2f84a39"
+     },
+     {
+      "right": true,
+      "hash": "d14ea74c78470d4147fa6ff588dfe5cbf907bfd910408418d01aa460f376c770"
+     },
+     {
+      "hash": "3b3c8fa235c59701c932c03bbdbff2f7d4b9c6363b720f18e76961053b539857"
+     },
+     {
+      "hash": "98b13a2527bb09c0fe0dc5bfae06554e05f79cbc23b88d867bd3dad0ee56495f"
+     },
+     {
+      "hash": "08343622b346dc32fa254d72cbcc92f9c02f9110f8a50fa6526a10fe3b34dd54"
+     },
+     {
+      "hash": "f0d1895cbf26e68b5d454783ccb5f58e872b27a83374bdac036e52bc5f22d625"
+     },
+     {
+      "hash": "bb3f97fc4db561c158202ca07b11b39dbd4d9c67770ff3dcce4aa9135e60df5d"
+     },
+     {
+      "hash": "81a9897d23376e01f51c4e66e3e77fe95cc29a745c6d1b67fa2d99be5b1df8e3"
+     },
+     {
+      "hash": "771260bc51faa1054df2b717f70bfe3b3ca808c793cada5e8dfa469516d4de74"
+     },
+     {
+      "hash": "57f5aaa39f56063d1ad86961888c45749cba0fcedb3735f55cb791145828d901"
+     },
+     {
+      "right": true,
+      "hash": "b879c6ca2025a838db0bf20408f479c82f782ba8767726bc45063bcf57f56566"
+     }
+    ],
+    "localBlock": 13371088,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN3"
+   }
+  },
+  {
+   "url": "acc://spk-6-tcl1.acme/book/1",
+   "account": {
+    "type": "keyPage",
+    "keyBook": "acc://spk-6-tcl1.acme/book",
+    "url": "acc://spk-6-tcl1.acme/book/1",
+    "creditBalance": 1987500,
+    "acceptThreshold": 1,
+    "threshold": 1,
+    "version": 1,
+    "keys": [
+     {
+      "publicKeyHash": "bd49806512e6c65096c9b9ab249f2457b897e3d41f5add910282bf566a93bd81",
+      "publicKey": "bd49806512e6c65096c9b9ab249f2457b897e3d41f5add910282bf566a93bd81",
+      "lastUsedOn": 1789353421539000
+     }
+    ]
+   },
+   "receipt": {
+    "start": "6d6a3ac3aa6477a8af0b46f0889657b1d70b8ae31667d988f4c05d35094c83eb",
+    "endIndex": 3,
+    "anchor": "9235b8824bf83ae058a24586f7221306bcba085c0005d8ab463b33afc0ffa992",
+    "entries": [
+     {
+      "right": true,
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "right": true,
+      "hash": "021b0bb98ce2230fb0b363b6c3b60c1dccb7722046ec2bf1701231cf5b45b357"
+     },
+     {
+      "right": true,
+      "hash": "bb03164153efdbe4b56dc8631ef5b022fd40c2286e9d99260fe03f6c1a3a43c2"
+     },
+     {
+      "hash": "a4ca927f74dd9fcb67064e88e5b68cea2978debe0e42d06cb5e8657141dfbf5e"
+     },
+     {
+      "hash": "1f54d6cae45c8d9d9c5b561cfa8aeb717f04f08e944905e09b22008a7f218206"
+     },
+     {
+      "hash": "2a9f280553253aca47ca72790b586fbf21fefd3878594088885a591bcfa36d8f"
+     },
+     {
+      "right": true,
+      "hash": "f5d20060c03216de690bfe7aca9068ab51069a00e3c7863da5f67dab476d3761"
+     },
+     {
+      "hash": "1cfe9d2cfdc3c002dfc7ba5df4d93e7d5c05c97a9b381a036fd5427ad560e596"
+     },
+     {
+      "hash": "852f4473b11981ab9fae7cdeb1a93a2f99fc70684c79dd443540520f6757664a"
+     },
+     {
+      "right": true,
+      "hash": "e536db394ad0b2ce2e57ecd39d2fe9dc1103debdde748066ff4ec24e16543222"
+     },
+     {
+      "hash": "139ab3434877e2b76439284cae944e4ecaa03ca387be62301e65c7cdce5e80bf"
+     },
+     {
+      "right": true,
+      "hash": "63a5049427b258fc85018709d3bbe5a7e85629ad616dbc6d2f37fbc46180c882"
+     },
+     {
+      "hash": "ad33e6ab19ac060e98ad416f0caa88223472942552374838e9f5e46eb43cdbaa"
+     },
+     {
+      "hash": "f26bbd051b0622d59043b56c1a8711be707130a44436aae67435b0ca259b9b37"
+     },
+     {
+      "right": true,
+      "hash": "0a0d675e2a1e5715edd4455f6f73a5774ec57ec6a3695f291d43b9915e505aab"
+     },
+     {
+      "hash": "6dcead5665a0fd830f2be0176a925fc65dd9c1d0aac991afea4a602da101c80b"
+     },
+     {
+      "right": true,
+      "hash": "c8d195e3a6d20f5ac6503e973e7770d1924b7b9367399fa1737a239b30ca4362"
+     },
+     {
+      "right": true,
+      "hash": "b879c6ca2025a838db0bf20408f479c82f782ba8767726bc45063bcf57f56566"
+     }
+    ],
+    "localBlock": 13371088,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN3"
+   }
+  },
+  {
+   "url": "acc://spk-6-tcl1.acme/book/2",
+   "account": {
+    "type": "keyPage",
+    "keyBook": "acc://spk-6-tcl1.acme/book",
+    "url": "acc://spk-6-tcl1.acme/book/2",
+    "creditBalance": 999989,
+    "acceptThreshold": 1,
+    "threshold": 1,
+    "version": 1,
+    "keys": [
+     {
+      "publicKeyHash": "34d41ca2dea23ae369154482e67502376208e79526228783c1d5ab0989a26407",
+      "publicKey": "34d41ca2dea23ae369154482e67502376208e79526228783c1d5ab0989a26407",
+      "lastUsedOn": 1789353467695000
+     }
+    ]
+   },
+   "receipt": {
+    "start": "0817775c56dd8331453a78cb102c72646fa987b1a620c5a1093affa929d20486",
+    "endIndex": 3,
+    "anchor": "9235b8824bf83ae058a24586f7221306bcba085c0005d8ab463b33afc0ffa992",
+    "entries": [
+     {
+      "right": true,
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "right": true,
+      "hash": "dda1a3c5ff599d09092a10b10166180ae4e6b06407a80e216fbd42fd33ce44d3"
+     },
+     {
+      "right": true,
+      "hash": "50533ffb9c915c04b1937443abb5c6f34abd8aa29c63e4a6d98abe32c2410acb"
+     },
+     {
+      "hash": "69a112cdf122563dfd700209c404cb1b95e18a99a7587ccebcf78f853c91b4e7"
+     },
+     {
+      "right": true,
+      "hash": "c24b6ed10a43ac96281acf9b40e43ecc06d730c7a1f33bac6c456da9323caaec"
+     },
+     {
+      "hash": "85e8b118a678da8ddd3d364e8f3d223e639f496a3673f3df56d76c6fce5f901b"
+     },
+     {
+      "hash": "0bf63c734dd88c26e53625c917246c9e25895da9020fa1062eca2ea82afbed16"
+     },
+     {
+      "hash": "234a80fde18f8844885ee458088f6f19f540b364c6ca92344ed7e1538f5a1ce0"
+     },
+     {
+      "hash": "748d1870028b4a433ab63b371ea483e43f3d5bf97ddb5d213adb0b9fc868811a"
+     },
+     {
+      "hash": "7ad148e04a51f505948a5d6e91c880e0c3a9165b2a81fa3f3b94b9d7272aa999"
+     },
+     {
+      "right": true,
+      "hash": "edaac58d39a670658c045fa04c5edab7cb1a4b3882a481c1a0f4b4895aa98718"
+     },
+     {
+      "right": true,
+      "hash": "09df875d06b9465ce6acfd11035f549775db5df1c7f79fec92ef9450f2d130dd"
+     },
+     {
+      "hash": "c8bbdc13ac16e3753a0695ec54b989ed15c59db3eccbf53e9e88aa05503fc8ac"
+     },
+     {
+      "hash": "0f893d0f0080b46cd2a5fd8e8988bef3165bd0a6c6fcb4fa8ccc560e772981b9"
+     },
+     {
+      "right": true,
+      "hash": "71ec19f009605081492f9bb3111888731bf164f9260f3e28b6faac3516d63916"
+     },
+     {
+      "hash": "9f710ff4ac37cbb3006665a19327238f940756574eb338967fe584d5f3d2b831"
+     }
+    ],
+    "localBlock": 13371088,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN3"
+   }
+  }
+ ]
+}

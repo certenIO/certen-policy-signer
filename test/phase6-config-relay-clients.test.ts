@@ -286,8 +286,9 @@ describe('relay clients: routes', () => {
     expect(r.status).toBe(200);
     expect(r.json).toMatchObject({ txid: TX_RECORD.id, status: 'pending', bodyType: 'writeData', header: { principal: TX_PRINCIPAL, authorities: ['acc://fictional-bank.acme/book', 'acc://fictional-corporate.acme/book'] } });
     expect(r.json.signatures).toEqual([
-      { signer: 'acc://fictional-corporate.acme/book/1', book: 'acc://fictional-corporate.acme/book', vote: 'accept', keyHash: expect.stringMatching(/^[0-9a-f]{64}$/), delegators: [] },
-      { signer: 'acc://fictional-approver-ada.acme/book/1', book: 'acc://fictional-approver-ada.acme/book', vote: 'reject', keyHash: expect.stringMatching(/^[0-9a-f]{64}$/), delegators: ['acc://fictional-corporate.acme/book/1'] },
+      // DAX-F177 (b): the signer version each keyed signature names travels with it
+      { signer: 'acc://fictional-corporate.acme/book/1', book: 'acc://fictional-corporate.acme/book', vote: 'accept', keyHash: expect.stringMatching(/^[0-9a-f]{64}$/), delegators: [], signerVersion: expect.any(Number) },
+      { signer: 'acc://fictional-approver-ada.acme/book/1', book: 'acc://fictional-approver-ada.acme/book', vote: 'reject', keyHash: expect.stringMatching(/^[0-9a-f]{64}$/), delegators: ['acc://fictional-corporate.acme/book/1'], signerVersion: expect.any(Number) },
       { signer: 'acc://fictional-bank.acme/book/1', book: 'acc://fictional-bank.acme/book', vote: 'abstain', delegators: [] },
     ]);
     expect(upstreamCalls).toEqual([`acc acc://${HASH}@fictional-supplier-payments.acme/data`]);

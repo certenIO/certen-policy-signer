@@ -15,7 +15,7 @@ import type { PauseOp, PauseOutcome } from './binding/pause-store.js';
 import type { PauseState } from './core/pause.js';
 import http from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { normalizeTxRecord } from './accumulate/raw-client.js';
+import { normalizeTxRecord, relaySignatureView } from './accumulate/raw-client.js';
 import { extractAcceptance } from './decode/facts.js';
 import { ACC_URL, DOT_SEGMENT, HEX64, UUID, accError, makeUpstream, readCapped, send } from './relay.js';
 import type { KeyPageOp, KeyPageResult } from './ops/keypage.js';
@@ -221,9 +221,8 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
         header: n.header,
         bodyType: typeof body?.type === 'string' ? body.type : '',
         ...(acceptance ? { acceptance } : {}),
-        signatures: n.signatures.map((s) => ({
-          signer: s.signer, book: s.book, vote: s.vote, ...(s.keyHash ? { keyHash: s.keyHash } : {}), delegators: s.delegators,
-        })),
+        // DAX-F177 (b): each signature also carries its signer version and, for the initiating one, initiator: true (raw-client.ts relaySignatureView)
+        signatures: n.signatures.map(relaySignatureView),
       });
     }
     // GET /relay/tx/:hash/receipt

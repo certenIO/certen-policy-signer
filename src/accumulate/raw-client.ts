@@ -9,6 +9,7 @@ import { AccumulateClient, AuthorityVote, AuthorityVotes, ChainSignature, Pendin
 import { Logger } from '../logger.js';
 import { extractTxHeader } from './header.js';
 import { toHopOrder } from './signing.js';
+import { core as sdkCore, encode as sdkEncode, sha256 as sdkSha256 } from './sdk.js';
 
 /**
  * Every signature message in a v3 transaction record, however deeply the node nests them.
@@ -397,6 +398,30 @@ export interface RelaySignature {
   keyHash?: string;
   delegators: string[];
   timestamp?: number | string;
+  /** DAX-F177 (b): the signer version the signature names (keyed signatures). */
+  signerVersion?: number;
+  /** DAX-F177 (b): true exactly for the signature whose OUTERMOST metadata hash is the transaction's header.initiator (the initiating signature). */
+  initiator?: true;
+}
+
+/**
+ * DAX-F177 (b): SHA-256 of the encoded signature METADATA, the hash Accumulate records as `header.initiator` for the initiating signature: the signature as recorded
+ * (a delegated wrapper and its delegators included) with the innermost signature bytes and transaction hash left out, encoded as the protocol encodes it.
+ */
+export function signatureMetadataHash(sig: Record<string, unknown>): string {
+  const md: any = JSON.parse(JSON.stringify(sig));
+  let s = md;
+  for (let i = 0; i < 8 && s?.type === 'delegated'; i++) s = s.signature;
+  if (s && typeof s === 'object') { delete s.signature; delete s.transactionHash; }
+  return Buffer.from(sdkSha256(sdkEncode(sdkCore.Signature.fromObject(md)))).toString('hex');
+}
+
+/** DAX-F177 (b): one signature as the relay serves it: the members it always served, plus `signerVersion` and `initiator` when they are known. */
+export function relaySignatureView(s: RelaySignature): { signer: string; book: string; vote: string; keyHash?: string; delegators: string[]; signerVersion?: number; initiator?: true } {
+  return {
+    signer: s.signer, book: s.book, vote: s.vote, ...(s.keyHash ? { keyHash: s.keyHash } : {}), delegators: s.delegators,
+    ...(s.signerVersion !== undefined ? { signerVersion: s.signerVersion } : {}), ...(s.initiator ? { initiator: true as const } : {}),
+  };
 }
 
 export interface RelayTxRecord {
@@ -405,7 +430,7 @@ export interface RelayTxRecord {
   status: string;
   statusNo: number | null;
   principal: string;
-  header: { principal: string; authorities: string[]; expireAtTime?: string | number; memo?: string };
+  header: { principal: string; authorities: string[]; expireAtTime?: string | number; memo?: string; /** DAX-F177 (b): the initiating signature's metadata hash, hex */ initiator?: string };
   body: unknown;
   signatures: RelaySignature[];
 }
@@ -452,6 +477,7 @@ export function normalizeTxRecord(rec: any): RelayTxRecord {
   const atTime = h.expire && typeof h.expire === 'object' ? h.expire.atTime : undefined;
   if (typeof atTime === 'string' || typeof atTime === 'number') header.expireAtTime = atTime;
   if (typeof h.memo === 'string' && h.memo !== '') header.memo = h.memo;
+  if (typeof h.initiator === 'string' && /^[0-9a-fA-F]{64}$/.test(h.initiator)) header.initiator = h.initiator.toLowerCase();
 
   const messages: Record<string, unknown>[] = [];
   collectSignatureMessages(rec?.signatures ?? [], messages);
@@ -483,6 +509,13 @@ export function normalizeTxRecord(rec: any): RelayTxRecord {
     if (!entry) continue;
     const ts = inner['timestamp'];
     if (typeof ts === 'number' || (typeof ts === 'string' && ts !== '')) entry.timestamp = ts;
+    // DAX-F177 (b): the signer version a keyed signature names, and whether it is THE initiating signature (its outermost metadata hash is header.initiator)
+    if (entry.keyHash && Number.isSafeInteger(Number(inner['signerVersion']))) entry.signerVersion = Number(inner['signerVersion']);
+    if (entry.keyHash && header.initiator) {
+      let mdHash: string | null = null;
+      try { mdHash = signatureMetadataHash(raw as Record<string, unknown>); } catch { mdHash = null; }
+      if (mdHash === header.initiator) entry.initiator = true;
+    }
 
     // The same signature can appear under the signer's set and the principal's set; report it once.
     const key = JSON.stringify(entry);

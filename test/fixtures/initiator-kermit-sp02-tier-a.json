@@ -1,0 +1,1377 @@
+{
+ "schema": "tcl.accumulate-records/v1",
+ "source": {
+  "endpoint": "https://kermit.accumulatenetwork.io/v3",
+  "api": "v3",
+  "queriedAt": "2026-10-02T08:34:20.233Z"
+ },
+ "txid": "acc://abc50d1544231032d1bfa1d5b3b36ae0dcf7be1494f9aedf6d02ea92d6b887c0@harbor-mfg-tcl1.acme/data",
+ "status": "delivered",
+ "transaction": {
+  "header": {
+   "principal": "acc://harbor-mfg-tcl1.acme/data",
+   "initiator": "f40ac41ccd00c6471c36fc594be0730f6a028e10554c774107db66fa9373e394",
+   "memo": "CERTEN_INTENT"
+  },
+  "body": {
+   "type": "writeData",
+   "entry": {
+    "type": "doubleHash",
+    "data": [
+     "7b226b696e64223a2243455254454e5f494e54454e54222c2276657273696f6e223a22322e30222c2270726f6f665f636c617373223a226f6e5f64656d616e64222c22696e74656e7454797065223a2273696e676c655f6c65675f63726f73735f636861696e5f7472616e73666572222c226465736372697074696f6e223a224d756c74692d6c6567207472616e7366657220776974682031206c656773222c226f7267616e697a6174696f6e416469223a226163633a2f2f686172626f722d6d66672d74636c312e61636d65222c22696e69746961746f72223a7b22616469223a226163633a2f2f686172626f722d6d66672d74636c312e61636d65222c226279223a226163633a2f2f686172626f722d6d66672d74636c312e61636d65222c22726f6c65223a226f7267616e697a6174696f6e5f6f70657261746f72227d2c227072696f72697479223a2268696768222c227269736b5f6c6576656c223a226d656469756d222c22636f6d706c69616e63655f7265717569726564223a66616c73652c226c65675f636f756e74223a312c22657865637574696f6e5f6d6f6465223a2273657175656e7469616c222c22696e74656e745f6964223a2264666236633837382d313662662d346632352d386638302d353934373832623466323836222c22637265617465645f6279223a226163633a2f2f686172626f722d6d66672d74636c312e61636d65222c22637265617465645f6174223a22323032362d30392d32305432313a35323a33322e3633305a222c22696e74656e745f636c617373223a2266696e616e6369616c5f7472616e73666572222c22726567756c61746f72795f6a7572697364696374696f6e223a22676c6f62616c222c2274616773223a5b226d756c74692d6c6567222c2273657175656e7469616c225d7d",
+     "7b2270726f746f636f6c223a2243455254454e222c2276657273696f6e223a22322e30222c226f7065726174696f6e47726f75704964223a2264666236633837382d313662662d346632352d386638302d353934373832623466323836222c226c656773223a5b7b226c65674964223a226c65672d31222c22726f6c65223a227061796d656e74222c22636861696e223a22626173652d7365706f6c6961222c22636861696e4964223a38343533322c226e6574776f726b223a22626173652d7365706f6c6961222c226173736574223a7b2273796d626f6c223a22455448222c22646563696d616c73223a31382c226e6174697665223a747275652c22636f6e74726163745f61646472657373223a6e756c6c2c227665726966696564223a747275657d2c2266726f6d223a22307831353531633239413733343944454336376632393238343632653435653836443864663231463645222c22746f223a22307832643965373234644539373441383145393765653535334233343832634146413664354665343662222c22616d6f756e74457468223a22302e30222c22616d6f756e74576569223a2230222c22616d6f756e745f776569223a2230222c2273657175656e63655f6f72646572223a302c22646570656e64735f6f6e5f6c656773223a5b5d2c226d61785f72657472696573223a332c227072696f72697479223a302c22657865637574696f6e5f73657175656e6365223a312c22636f6e646974696f6e616c5f657865637574696f6e223a66616c73652c22726f6c6c6261636b5f636f6e646974696f6e73223a7b2274696d656f75745f7365636f6e6473223a333630302c226661696c7572655f6d6f646573223a5b226761735f6c696d69745f6578636565646564222c22696e73756666696369656e745f62616c616e6365225d7d2c22616e63686f72436f6e7472616374223a7b2274797065223a2265766d5f636f6e7472616374222c2266756e6374696f6e53656c6563746f72223a22637265617465416e63686f72576974684c65677328627974657333322c627974657333322c627974657333322c75696e74382c28627974657333322c75696e74382c616464726573732c616464726573732c75696e743235362c62797465733332295b5d29222c2276657273696f6e223a2276342e30227d2c22676173506f6c696379223a7b226d617846656550657247617347776569223a223230222c226d61785072696f7269747946656550657247617347776569223a2232222c226761734c696d6974223a3330303030302c227061796572223a2266726f6d222c226761735f657374696d6174696f6e5f627566666572223a312e327d2c22736c6970706167655f746f6c6572616e6365223a22302e3525222c22646561646c696e655f74696d657374616d70223a313738393934343735322c22657865637574696f6e5061796c6f6164223a7b22746172676574223a22307832643965373234644539373441383145393765653535334233343832634146413664354665343662222c2276616c7565223a2230222c2263616c6c44617461223a2230786532323333656238303030303030303030303030303030303030303030303030653636653666343066316437613163303661626163653439336633386330333830306163353635613030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030636638353064663462633336636635363135336130343766613861393966343739653832653036656231366636363938663234663738663133613966333366366164633232222c226461746148617368223a22307834343362656364633166363036656161383539323836653936626431383233646339646138666665383565333363363063343936386663643237383337623635222c22636861696e4964223a38343533322c22657865637574696f6e436f6d6d69746d656e74223a22307865663165623830356536373432353263393236613465616530366363616632326139323561666466343937303364643566663561373734323136303762313535222c2265787065637465644576656e7473223a5b7b22636f6e7472616374223a22307832643965373234644539373441383145393765653535334233343832634146413664354665343662222c22746f70696330223a22307865376533643838366433613166386661623838363261326461653430333931626666313634613338313636333766306435346466356434313234333138356334222c226461746148617368223a22307865633930633935333963646530643164626661636236623735623864643138306136666433366534323231626462643163663537636563313530653766653437227d5d7d7d5d2c22657865637574696f6e5f6d6f6465223a2273657175656e7469616c222c226c65675f646570656e64656e63696573223a5b5d2c22726f6c6c6261636b5f706f6c696379223a7b226d6f6465223a22636f6e74696e75655f6f6e5f6661696c757265222c227061727469616c5f657865637574696f6e5f616c6c6f776564223a747275657d2c2274696d656f75745f706f6c696379223a7b227065725f6c65675f74696d656f75745f7365636f6e6473223a333630302c22746f74616c5f74696d656f75745f7365636f6e6473223a333630302c2267726163655f706572696f645f7365636f6e6473223a3330307d2c2261746f6d6963697479223a7b226d6f6465223a22626573745f6566666f7274222c22726f6c6c6261636b5f7374726174656779223a227061727469616c5f616c6c6f776564222c227061727469616c5f657865637574696f6e5f616c6c6f776564223a747275657d2c22657865637574696f6e5f636f6e73747261696e7473223a7b226d6f6465223a2273657175656e7469616c222c226d61785f657865637574696f6e5f74696d655f7365636f6e6473223a333630302c2272657175697265645f636f6e6669726d6174696f6e73223a312c22706172616c6c656c5f657865637574696f6e223a66616c73657d2c2263726f73735f636861696e5f726f7574696e67223a7b226272696467655f74797065223a2263657274656e5f616e63686f725f7634222c2272656c61795f6d656368616e69736d223a2270726f6f665f6261736564222c2266696e616c6974795f726571756972656d656e7473223a2266617374227d7d",
+     "7b226f7267616e697a6174696f6e416469223a226163633a2f2f686172626f722d6d66672d74636c312e61636d65222c22617574686f72697a6174696f6e223a7b2272657175697265645f6b65795f626f6f6b223a226163633a2f2f686172626f722d6d66672d74636c312e61636d652f626f6f6b222c2272657175697265645f6b65795f70616765223a226163633a2f2f686172626f722d6d66672d74636c312e61636d652f626f6f6b2f70616765222c227369676e61747572655f7468726573686f6c64223a312c2272657175697265645f7369676e657273223a5b226163633a2f2f686172626f722d6d66672d74636c312e61636d652f626f6f6b225d2c22726f6c6573223a5b7b22726f6c65223a2244454641554c545f5349474e4552222c226b657950616765223a226163633a2f2f686172626f722d6d66672d74636c312e61636d652f626f6f6b2f70616765227d5d2c22617574686f72697a6174696f6e5f68617368223a22307830666131353235623730653736353336633736386537636565313039633730613031343038666363653133626437343463616434396638306561386437363637227d2c2276616c69646174696f6e5f72756c6573223a7b226d61785f616d6f756e74223a2231302e30222c226461696c795f6c696d6974223a223130302e30222c2272657175697265735f617070726f76616c223a66616c73652c227269736b5f6c6576656c223a226d656469756d227d2c22636f6d706c69616e63655f636865636b73223a7b22616d6c5f7265717569726564223a66616c73652c226b79635f7665726966696564223a747275652c2273616e6374696f6e735f636865636b223a22706173736564222c226a7572697364696374696f6e223a22636f6d706c69616e74227d7d",
+     "7b226e6f6e6365223a2263657274656e5f6d756c74696c65675f313738393934313135323633315f6535613162313661643563363138383339363433353530623636323632633561222c22637265617465645f6174223a313738393934313135322c22657870697265735f6174223a313738393934363835322c22696e74656e745f68617368223a22307832393438393463653961636639316566333436633733616539333431333262386261653033643564316432336439656136623039633966326537333531383765222c22636861696e5f6e6f6e636573223a7b22616363756d756c61746564223a2231222c22626173652d7365706f6c6961223a226c6174657374227d2c22657865637574696f6e5f77696e646f77223a7b2273746172745f74696d65223a313738393934313135322c22656e645f74696d65223a313738393934363835322c2267726163655f706572696f645f6d696e75746573223a352c226d61785f72657472696573223a337d2c227365637572697479223a7b22646f75626c655f7370656e64696e675f70726f74656374696f6e223a747275652c227265706c61795f61747461636b5f70726576656e74696f6e223a747275652c2274656d706f72616c5f76616c69646174696f6e223a22737472696374222c226e6f6e63655f76616c69646174696f6e223a227265717569726564227d7d"
+    ]
+   }
+  }
+ },
+ "txReceipt": {
+  "account": "acc://harbor-mfg-tcl1.acme/data",
+  "chain": "main",
+  "index": 25,
+  "entry": "abc50d1544231032d1bfa1d5b3b36ae0dcf7be1494f9aedf6d02ea92d6b887c0",
+  "receipt": {
+   "start": "abc50d1544231032d1bfa1d5b3b36ae0dcf7be1494f9aedf6d02ea92d6b887c0",
+   "end": "abc50d1544231032d1bfa1d5b3b36ae0dcf7be1494f9aedf6d02ea92d6b887c0",
+   "anchor": "277dd414c34168c513fb6801696566f559c17ad11f0c32e138cb4d7faf62b587",
+   "entries": [
+    {
+     "hash": "2470ac4cb2484a6a763ba97c6a222b78025fef175ad147a6f28e3bd4e3f82f1b"
+    },
+    {
+     "hash": "be0b420150fac5778f2e357a9cdd8ecc204597b2e049f3c71e13a11bd45245bd"
+    },
+    {
+     "hash": "e6722af1a120ee5b13a76b58d09d971ca34421e82b632edac2cfcc71205f619b"
+    },
+    {
+     "right": true,
+     "hash": "52f70cd2b8be69f82f8e48f1688c661a30f3ad0f8f5e722262680a03c6ca6588"
+    },
+    {
+     "hash": "c2c7ed96415978e5213bc244f49f461013b11d1cccafd7532cf0950754bb7ad0"
+    },
+    {
+     "hash": "61e695ebcb6ad521de69227c585858dfd15e91a83dd722a30c9a51be42199641"
+    },
+    {
+     "hash": "039882b710e3848e9914902227b960670524a0fa8fe7cc76a91e625d43dc806c"
+    },
+    {
+     "hash": "3f6c1b14cedbb2af4ffaa6676fbb90923e167d469c3bdbe1819fc68525a3da4a"
+    },
+    {
+     "hash": "f2817d1d4c16d15b3876d82a0533358ba3e87ee1acceb080765b5d8a08846ce7"
+    },
+    {
+     "hash": "4b80c49e1f38dff2eed0f2fd0f1465ff0d98288c4e0513959423688857ac78d1"
+    },
+    {
+     "hash": "68cff8bced077e84932c5e24193cd6eafe918c08f421350919ffd242a5c66d24"
+    },
+    {
+     "hash": "c4e865b7f0af6138860f0538a0f289d3886a27923b2c268664ce87b2fc1ba542"
+    }
+   ],
+   "localBlock": 12428475,
+   "localBlockTime": "2026-09-20T21:53:18Z",
+   "majorBlock": 464
+  }
+ },
+ "signatures": [
+  {
+   "messageId": "acc://bd9a6784562f88d6d65efb9219dceca637940d314fcc8f4de1c7415d3ebec8d6@fdb-compliance-tcl1.acme/book/2",
+   "signature": {
+    "type": "ed25519",
+    "publicKey": "04952a856d2c4a78b483b1c0abdc7e3c95302066f80cba0608cc76ee503ae3c7",
+    "signature": "2c7a16462050d8cab1ea036ed2e7aa6a288f2fa7ebf6a87bd03955b789f71a2b829eb65564528e2a78c0d6bb5710bc2cffc0f1bb0ff53a7bfd8277e8a17cbe00",
+    "signer": "acc://fdb-compliance-tcl1.acme/book/2",
+    "signerVersion": 1,
+    "timestamp": 1789941194517000,
+    "transactionHash": "abc50d1544231032d1bfa1d5b3b36ae0dcf7be1494f9aedf6d02ea92d6b887c0"
+   },
+   "receipt": {
+    "account": "acc://fdb-compliance-tcl1.acme/book/2",
+    "chain": "signature",
+    "index": 68,
+    "entry": "bd9a6784562f88d6d65efb9219dceca637940d314fcc8f4de1c7415d3ebec8d6",
+    "receipt": {
+     "start": "bd9a6784562f88d6d65efb9219dceca637940d314fcc8f4de1c7415d3ebec8d6",
+     "end": "bd9a6784562f88d6d65efb9219dceca637940d314fcc8f4de1c7415d3ebec8d6",
+     "anchor": "c297493530777a728462dc430edaf9b1d0a08ba41aa71766c26faaf31b3c58b9",
+     "entries": [
+      {
+       "hash": "8216201428819cfcbf272cd66674e66ff363430896f9012684a43d63432dc6da"
+      },
+      {
+       "hash": "62551855c9b3beef61a1914b61bfcdf7998665c5761fefe75afa7316a02c72f8"
+      },
+      {
+       "right": true,
+       "hash": "5baf0b19652522db64e09c0f6593973ebbc16008a3a9dcc9406b2fe4a76d5f4d"
+      },
+      {
+       "right": true,
+       "hash": "5481b0eeaa1e3ec014e75986a9bb30d55d2a0b11a3c6cf5dfbab20da01e3bede"
+      },
+      {
+       "hash": "61e695ebcb6ad521de69227c585858dfd15e91a83dd722a30c9a51be42199641"
+      },
+      {
+       "hash": "039882b710e3848e9914902227b960670524a0fa8fe7cc76a91e625d43dc806c"
+      },
+      {
+       "hash": "3f6c1b14cedbb2af4ffaa6676fbb90923e167d469c3bdbe1819fc68525a3da4a"
+      },
+      {
+       "hash": "f2817d1d4c16d15b3876d82a0533358ba3e87ee1acceb080765b5d8a08846ce7"
+      },
+      {
+       "hash": "4b80c49e1f38dff2eed0f2fd0f1465ff0d98288c4e0513959423688857ac78d1"
+      },
+      {
+       "hash": "68cff8bced077e84932c5e24193cd6eafe918c08f421350919ffd242a5c66d24"
+      },
+      {
+       "hash": "c4e865b7f0af6138860f0538a0f289d3886a27923b2c268664ce87b2fc1ba542"
+      }
+     ],
+     "localBlock": 12428470,
+     "localBlockTime": "2026-09-20T21:53:13Z",
+     "majorBlock": 464
+    }
+   }
+  },
+  {
+   "messageId": "acc://51afb67b80fcfbf6533141847af6b5930447f9b4eb99891103ff0c3a4d73093b@harbor-mfg-tcl1.acme/book/2",
+   "signature": {
+    "type": "ed25519",
+    "publicKey": "7af62e68cf591bc71e9b61cf28cb3ab358c7e3fd2c138d8749648d682b96f20a",
+    "signature": "b37d411cede4fc92bd0b89df02a4dbb3681c5bd2a138033ef78ba5c6f66b98e69c7dbfa02b146d6eacabef53fa8effeb89a36404f1b0649aea97a7911e36400b",
+    "signer": "acc://harbor-mfg-tcl1.acme/book/2",
+    "signerVersion": 3,
+    "timestamp": 1789941170414000,
+    "transactionHash": "abc50d1544231032d1bfa1d5b3b36ae0dcf7be1494f9aedf6d02ea92d6b887c0"
+   },
+   "receipt": {
+    "account": "acc://harbor-mfg-tcl1.acme/book/2",
+    "chain": "signature",
+    "index": 58,
+    "entry": "51afb67b80fcfbf6533141847af6b5930447f9b4eb99891103ff0c3a4d73093b",
+    "receipt": {
+     "start": "51afb67b80fcfbf6533141847af6b5930447f9b4eb99891103ff0c3a4d73093b",
+     "end": "51afb67b80fcfbf6533141847af6b5930447f9b4eb99891103ff0c3a4d73093b",
+     "anchor": "4630657cf6dc0dac5160f7e49e9d99897b0241c59ce90f2d377b29993bfbe05c",
+     "entries": [
+      {
+       "hash": "957c632184797a37e0156ebca55934203ac798a1f68197f1c13fbc1332422e6b"
+      },
+      {
+       "hash": "53868aa83f454d14854c6157ee993a7fc4aa207990bb2a913feb68f4c1220be5"
+      },
+      {
+       "hash": "5ff8b14971a02c4ed6665de657d1ee596e7993ac3a8e5abe869f4f86bfe0e2cf"
+      },
+      {
+       "hash": "e62939e2871449b3ec2fc15ebcd4f9f37789ea01305e228a8eb1e168e469e476"
+      },
+      {
+       "hash": "f0756c440db4712cb3a178aad91a9ab238e4982501c4d543dd8e71aab93e2af1"
+      },
+      {
+       "right": true,
+       "hash": "0b7d11dfb34e734abf0169d2e64700d46324aa3915c609a8a22a7359cc21a816"
+      },
+      {
+       "hash": "712c1d042fdefe9cf74002d3b0146f0fc589f7c6dcb45b19aa403ebe86bfc3c2"
+      },
+      {
+       "hash": "42cb0b12fe9d2a3cb8d4b3acff0e52d868711515fe6d9fd0684b4bbd0766d703"
+      },
+      {
+       "hash": "039882b710e3848e9914902227b960670524a0fa8fe7cc76a91e625d43dc806c"
+      },
+      {
+       "hash": "3f6c1b14cedbb2af4ffaa6676fbb90923e167d469c3bdbe1819fc68525a3da4a"
+      },
+      {
+       "hash": "f2817d1d4c16d15b3876d82a0533358ba3e87ee1acceb080765b5d8a08846ce7"
+      },
+      {
+       "hash": "4b80c49e1f38dff2eed0f2fd0f1465ff0d98288c4e0513959423688857ac78d1"
+      },
+      {
+       "hash": "68cff8bced077e84932c5e24193cd6eafe918c08f421350919ffd242a5c66d24"
+      },
+      {
+       "hash": "c4e865b7f0af6138860f0538a0f289d3886a27923b2c268664ce87b2fc1ba542"
+      }
+     ],
+     "localBlock": 12428446,
+     "localBlockTime": "2026-09-20T21:52:49Z",
+     "majorBlock": 464
+    }
+   }
+  },
+  {
+   "messageId": "acc://fcabb00a7239a4dbef0daf811a1f67dd4f6f592a34e85ca469159e5c79e7a48b@fdb-risk-tcl1.acme/book/2",
+   "signature": {
+    "type": "ed25519",
+    "publicKey": "98eacf4423d94cd9a371c95526a6e79c21c3c0f500cd57beb41e09b0ee48a3ca",
+    "signature": "11dde18d980665300f89db63b29b81c2eca170140e189842b7f2285dd9f10f44d9b3d3c0cffe667dd12ff3b02ca6771a8ac0ad8192556e4d5c6b0292ec32300a",
+    "signer": "acc://fdb-risk-tcl1.acme/book/2",
+    "signerVersion": 1,
+    "timestamp": 1789941189325000,
+    "transactionHash": "abc50d1544231032d1bfa1d5b3b36ae0dcf7be1494f9aedf6d02ea92d6b887c0"
+   },
+   "receipt": {
+    "account": "acc://fdb-risk-tcl1.acme/book/2",
+    "chain": "signature",
+    "index": 64,
+    "entry": "fcabb00a7239a4dbef0daf811a1f67dd4f6f592a34e85ca469159e5c79e7a48b",
+    "receipt": {
+     "start": "fcabb00a7239a4dbef0daf811a1f67dd4f6f592a34e85ca469159e5c79e7a48b",
+     "end": "fcabb00a7239a4dbef0daf811a1f67dd4f6f592a34e85ca469159e5c79e7a48b",
+     "anchor": "88d76b8b583e0e744a05a6430d512ff3ab8381aaa6bb88c0550c74ee3386e22d",
+     "entries": [
+      {
+       "hash": "958f6bde58523aa30d3d1eca34dda69ee95928458064c455c5746da3df25db6c"
+      },
+      {
+       "hash": "becc60ba593bf0b7d5d519fd305d8300e80947c85c826bd74cf7b1fafe16e9e4"
+      },
+      {
+       "hash": "26c0092da8754f828398330fdeb52ccdd903800c540280e5a41f271e034e7800"
+      },
+      {
+       "right": true,
+       "hash": "a3ae6b80785342d6061a1d04d9aef5eea8f0bb603ce1ce606d5e32776d7591f8"
+      },
+      {
+       "hash": "56bb1afc968f1c916b0c6ba62b595c0522b2dcd5b6ba5b1bbb7670af0f2782e0"
+      },
+      {
+       "hash": "156a0bba2ec82ed6b1da1215af055ebdab66fa737cae0fc197901a84eafb7269"
+      },
+      {
+       "hash": "83659e96c9b1963ce9c2d667c38c698e32d6a6952cbd7a2cbd183d616eb971c4"
+      },
+      {
+       "hash": "2b580441ede2b0de6f06caf07b012fa677d65c730cd2572d9777f4be08d50dc6"
+      },
+      {
+       "hash": "d9137fe845099a25b2ac302a47d061f519c3b486c823c90edc0fe1626c229117"
+      },
+      {
+       "hash": "75dfa07f5d404015a974af34d9de2dcaac1039038f85d5e39b29f651e9fffca3"
+      },
+      {
+       "hash": "aa7207374a1e71333267f4860c1e6db0a721c3f66dbceedb38e937aa86ca7c6d"
+      },
+      {
+       "hash": "5012d2500092064ffcbcebf94fe11425a5cdf0a893ea277956f359f9d58e679e"
+      },
+      {
+       "hash": "7550b0b0e2ff96b74bae57a807fd8b4b0d91a2a0b0397ca358e85b8973f8ec3b"
+      }
+     ],
+     "localBlock": 12429250,
+     "localBlockTime": "2026-09-20T21:53:07Z",
+     "majorBlock": 464
+    }
+   }
+  },
+  {
+   "messageId": "acc://de53c91553fb7b34eb792e81d7ec937e97f1cf71880570caf387386412d5228d@harbor-mfg-erp-tcl1.acme/book/1",
+   "signature": {
+    "type": "ed25519",
+    "publicKey": "5aba441224f061401eab7afcaaaf9ad273f637e226f1ea4d4c26d516c99b1dbf",
+    "signature": "2125e1a0749f9f3d99adb36f5bcb7ed9fa79987d5428b82cbe48fb758b4e00b408bea251df1cd4f6281f9203edbfebb50bae7093c200f3de9168571969369f0a",
+    "signer": "acc://harbor-mfg-erp-tcl1.acme/book/1",
+    "signerVersion": 2,
+    "timestamp": 1789941154358000
+   },
+   "receipt": {
+    "account": "acc://harbor-mfg-erp-tcl1.acme/book/1",
+    "chain": "signature",
+    "index": 27,
+    "entry": "de53c91553fb7b34eb792e81d7ec937e97f1cf71880570caf387386412d5228d",
+    "receipt": {
+     "start": "de53c91553fb7b34eb792e81d7ec937e97f1cf71880570caf387386412d5228d",
+     "end": "de53c91553fb7b34eb792e81d7ec937e97f1cf71880570caf387386412d5228d",
+     "anchor": "78dc0ca44158363e5e584a33687301d975d80f0ad3e93869611c715d697d7a85",
+     "entries": [
+      {
+       "hash": "86ea953746ae2e27ce48f33aff17df4baf3326e41d0fb389238ca52f08046be6"
+      },
+      {
+       "hash": "701d25e017bb89068309213134b0300b1600c92b31547baaf9f0fac83060bdf6"
+      },
+      {
+       "hash": "78c6037ab0f4d8d897a4f3771a8be82cceda154f507a3abfedcd925ec38128d1"
+      },
+      {
+       "hash": "dafb4f1028850a89446b0d5d7f124980d3b6ed6d0c6636b2a957f5793ae8bd03"
+      },
+      {
+       "hash": "d3eaeaa23541dd142c454b4c164fcba2cc9c45a5ee0202c0f0f04211d2cd5c43"
+      },
+      {
+       "right": true,
+       "hash": "cd82b48109d558ecb2fc8cf82d30d45b19a25861d09fa415cd7d721360b1bef3"
+      },
+      {
+       "hash": "a63fb5078734e66b54caa53b6854cf64ea3a2beca3d440533a2ca80a790ef1e7"
+      },
+      {
+       "hash": "11ceeb7bf76d788363a70add19e748692d016afa502f8a87d3aa6380e7d0c88b"
+      },
+      {
+       "hash": "9bd497b8e3b4bd99e91d72c62c7639268d3e11785f1c6cba9268cd523b68d2ee"
+      },
+      {
+       "hash": "7de77d889b88ee7b33409a48a2a36fd5e4fde99e2c51a0626fd0549e04fc641d"
+      },
+      {
+       "hash": "45d4b91219ef35280f4f8d7d1a7c12486df0c4f52069e3e8914d98fd14a93d35"
+      },
+      {
+       "hash": "f3b2b4c703f9163a996d23111e193ac03f5a6c9e8f24484d2d06e2b92f55cfe5"
+      },
+      {
+       "hash": "b573806c23afaf4bad087132b8584dfd113d988cc9f73fac6234e4a182bab216"
+      },
+      {
+       "hash": "104b8edd002ca642b4cefab6506c19da3f3cafab4f6599470bdee45c4ccaac6d"
+      }
+     ],
+     "localBlock": 12428289,
+     "localBlockTime": "2026-09-20T21:52:34Z",
+     "majorBlock": 464
+    }
+   }
+  }
+ ],
+ "accounts": [
+  {
+   "url": "acc://fdb-compliance-tcl1.acme/book",
+   "account": {
+    "type": "keyBook",
+    "url": "acc://fdb-compliance-tcl1.acme/book",
+    "authorities": [
+     {
+      "url": "acc://fdb-compliance-tcl1.acme/book"
+     }
+    ],
+    "pageCount": 2
+   },
+   "receipt": {
+    "start": "710a583aab991d4180c32dfe7c443d1c649cdb96f8e16dac5432726d868ed1ca",
+    "endIndex": 3,
+    "anchor": "89a334daa523e5d262edea9ea6596c5e3c88b780e16bc833bbf20bbd90dbd240",
+    "entries": [
+     {
+      "right": true,
+      "hash": "8f3c69837b36a7bd9e0ab20fce1f3dd0805237a2b438ac5a9bc296e038c563c7"
+     },
+     {
+      "right": true,
+      "hash": "ce6c466d115d6b5beee337b7d1e6942daea7d7ec1169f0d56fd5d8b00cf44994"
+     },
+     {
+      "hash": "934c756a9ac1b12ce48c8fe63a67f0e55539fcc60af7ea5240026fd9e64708c8"
+     },
+     {
+      "hash": "5df47791632ec606a2c64ad548454c74f91fca72e6fce7eb2c6c054cb8a5efff"
+     },
+     {
+      "hash": "34c7a886059c35a3b9fc93a3fd7d0ff4367b30164759f69f77324ecf9bccbd2e"
+     },
+     {
+      "hash": "2663fd42424e651ed0e15dfa45337e2811d6306a96329f8f15f958b01fca64b8"
+     },
+     {
+      "hash": "78750fa2d58c8586974b012014bcca085e44123a63d843e912621dddf0518181"
+     },
+     {
+      "right": true,
+      "hash": "32a722ef912838dd40dbf754d2d7fc01667d4803bce92ab7448d30214372179a"
+     },
+     {
+      "hash": "5191ac33d19e8bac6f67145d6b2156ccdbb83c8d71c5db29a0df04cbb2ac4b09"
+     },
+     {
+      "hash": "5e1a4f9747ea5dc94c6477fb1917cad6d8be9707a2648e9fa3d8e3854a1bd731"
+     },
+     {
+      "hash": "d9b0b96d099e588406ca9fb023149755c152cdce2832de64b0d71f63897e2bcf"
+     },
+     {
+      "hash": "625f1956d092df7d08bad32dc655f0334ba6bce3c80957797dcb90b495d75d86"
+     },
+     {
+      "hash": "81ac8a73aeac3b57eba6e9a11acfd45475cc5cbbdf6ae5bd3ca2b35f8c7393be"
+     },
+     {
+      "right": true,
+      "hash": "410b88bfba9e24a89370228508d00d95fb271c76dc41447102c9362ed49c7b5e"
+     },
+     {
+      "right": true,
+      "hash": "09dba09faddfe54262d344d19123ff93d5e5d7378b10430d1a4ccc75209f4015"
+     }
+    ],
+    "localBlock": 13370217,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN1"
+   }
+  },
+  {
+   "url": "acc://fdb-compliance-tcl1.acme/book/1",
+   "account": {
+    "type": "keyPage",
+    "keyBook": "acc://fdb-compliance-tcl1.acme/book",
+    "url": "acc://fdb-compliance-tcl1.acme/book/1",
+    "creditBalance": 5985972,
+    "acceptThreshold": 1,
+    "threshold": 1,
+    "version": 4,
+    "keys": [
+     {
+      "publicKeyHash": "e87d37638c71f2876d4a0118e4ca923e0dc84af0f466d24df3ed5968cc3eae25",
+      "publicKey": "e87d37638c71f2876d4a0118e4ca923e0dc84af0f466d24df3ed5968cc3eae25",
+      "lastUsedOn": 1789466662138000
+     }
+    ]
+   },
+   "receipt": {
+    "start": "d87741d3b8e71d858ebfc9ed49c6dfb4320006d68bcc4bfb4f8d0f6fdeed4a1f",
+    "endIndex": 3,
+    "anchor": "89a334daa523e5d262edea9ea6596c5e3c88b780e16bc833bbf20bbd90dbd240",
+    "entries": [
+     {
+      "right": true,
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "right": true,
+      "hash": "4f6f5f4eb104bf81cd340f71ecef2cfc27a3ab86dcfa60929353a8b0d266315e"
+     },
+     {
+      "hash": "00a4e699bff1aab42f678e823c7bc0aefc3f50b01659fbcad0235f0922140a93"
+     },
+     {
+      "hash": "137537a2a197bf875e5589d922f04a8303dfe7199145146e31ca2ef669aee9c6"
+     },
+     {
+      "right": true,
+      "hash": "0ec70fe75ead146bdd38bec62ce0fb48f6386fcc180be2cdcb00809f5038127b"
+     },
+     {
+      "right": true,
+      "hash": "6d0a05cc8fa7ff62343cab9da845ad084d3c14386d5acc3977a9e10f17c8fa8d"
+     },
+     {
+      "right": true,
+      "hash": "137f43065cb9d5ce24d4ae347b3653fb924a095aee927cd6bec72c16fc256c0a"
+     },
+     {
+      "hash": "d639a26feb60ac039a87adf1c37406934cd6f5fbe768435249e6eed1bb87a020"
+     },
+     {
+      "hash": "6cfc2cb40159a604add7ecd39a59322c7fa883b866022a3b59f8eaa4d16502ad"
+     },
+     {
+      "hash": "30000dde9289caf6b493200ebb03211b4f8b0e32570cb61f8df3002352f41b19"
+     },
+     {
+      "right": true,
+      "hash": "88355288c9949bb60924adefa6145644b4501dde1dcd4f2d36b2c18145eb677f"
+     },
+     {
+      "hash": "d4c0d4029646bed64ada0de292b064960194a5755caeace9e797a5c5cedcfb69"
+     },
+     {
+      "right": true,
+      "hash": "aef28184e8c36582865722b2594854d67ff75e027eabcb62042bcf2c9b077aed"
+     },
+     {
+      "right": true,
+      "hash": "9448a979dbc7f12a163889d47d22d844b450b4ebfaac688e66507597ac3bd08b"
+     },
+     {
+      "hash": "36c40f6afb1a11d1e8c0953638b0f6f1ca774ab033b0e73ed43df8260ef93252"
+     },
+     {
+      "hash": "0c831071e7dd2c727203de428a8d9370cd96267d983985b0f734cc19aab189ab"
+     },
+     {
+      "right": true,
+      "hash": "09dba09faddfe54262d344d19123ff93d5e5d7378b10430d1a4ccc75209f4015"
+     }
+    ],
+    "localBlock": 13370217,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN1"
+   }
+  },
+  {
+   "url": "acc://fdb-compliance-tcl1.acme/book/2",
+   "account": {
+    "type": "keyPage",
+    "keyBook": "acc://fdb-compliance-tcl1.acme/book",
+    "url": "acc://fdb-compliance-tcl1.acme/book/2",
+    "creditBalance": 149690,
+    "acceptThreshold": 1,
+    "threshold": 1,
+    "version": 1,
+    "keys": [
+     {
+      "publicKeyHash": "d06fb91b171dc935edd1117eae3c49fd0523d15603dd7bfaa09489c521095ce5",
+      "publicKey": "d06fb91b171dc935edd1117eae3c49fd0523d15603dd7bfaa09489c521095ce5",
+      "lastUsedOn": 1790929027048000
+     }
+    ]
+   },
+   "receipt": {
+    "start": "e32013490ea3c1b08a4c52d872633b17380c45ebc0ef0697d388e06c4724b15b",
+    "endIndex": 3,
+    "anchor": "89a334daa523e5d262edea9ea6596c5e3c88b780e16bc833bbf20bbd90dbd240",
+    "entries": [
+     {
+      "right": true,
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "right": true,
+      "hash": "a25cdfd0e9868c96e2ffe79182e242957a942f04e1f559b170a2e6ef6c270dc8"
+     },
+     {
+      "right": true,
+      "hash": "d0dc63f954208c79e0524a224a380d4f7c51772bafeb6fc4a75e26a2af57abb7"
+     },
+     {
+      "hash": "69d4f328b905344130d9581b002db52d637d782e8bf1338ba9ceecd631e87738"
+     },
+     {
+      "right": true,
+      "hash": "e19311882a6702b881420d14526b57bef91261075a66a2a59491b92cd6b47c6a"
+     },
+     {
+      "right": true,
+      "hash": "2aca9aae18d1e48e2907986482cf061852eaab9b9940d7be5c4aa30d28e32d40"
+     },
+     {
+      "right": true,
+      "hash": "bb659fece85514306841295e4b17634e29c952318ebf908c3a4c9a7270b106e9"
+     },
+     {
+      "right": true,
+      "hash": "beac7a55d4a3ce9e702afe22e18d0ef4e243f24f8ac5aaf8817c787d3033d776"
+     },
+     {
+      "right": true,
+      "hash": "6d86b03f852a0737116ed240ed0f78bb30788d39eca90b8dec7fd6da5a37daf6"
+     },
+     {
+      "right": true,
+      "hash": "b6366c01555f42390ea6077cd050d2f1ae0b3f45f84a2a6c4007e3301c3bad88"
+     },
+     {
+      "right": true,
+      "hash": "1e26ca24d4c04cd6ec0667f33360f59e2a55e8a06502ed2d9d66c4083af41893"
+     },
+     {
+      "right": true,
+      "hash": "9750853ca90f6938a2ed32532c3c446529e236f66254526334956303911835e2"
+     },
+     {
+      "right": true,
+      "hash": "6b9704acc9345f8b12bda6d377baf80b96ea5ca2ee7ac9c360dfb5f2d5a74fa1"
+     },
+     {
+      "hash": "81ac8a73aeac3b57eba6e9a11acfd45475cc5cbbdf6ae5bd3ca2b35f8c7393be"
+     },
+     {
+      "right": true,
+      "hash": "410b88bfba9e24a89370228508d00d95fb271c76dc41447102c9362ed49c7b5e"
+     },
+     {
+      "right": true,
+      "hash": "09dba09faddfe54262d344d19123ff93d5e5d7378b10430d1a4ccc75209f4015"
+     }
+    ],
+    "localBlock": 13370217,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN1"
+   }
+  },
+  {
+   "url": "acc://fdb-risk-tcl1.acme/book",
+   "account": {
+    "type": "keyBook",
+    "url": "acc://fdb-risk-tcl1.acme/book",
+    "authorities": [
+     {
+      "url": "acc://fdb-risk-tcl1.acme/book"
+     }
+    ],
+    "pageCount": 2
+   },
+   "receipt": {
+    "start": "f066e11878fbf69ee063ca2e8c0f14a40b90c32eca50656c238afd79122aadec",
+    "endIndex": 3,
+    "anchor": "ef4a379a76efa94c733591c0f7344836d74b751bdfbfdf80809024c37512946e",
+    "entries": [
+     {
+      "right": true,
+      "hash": "d800bbc3031be760bae750138e995f635b23330fa3e21c4552db813037d386a1"
+     },
+     {
+      "right": true,
+      "hash": "1b0e5640913d78dbb0104b76f7178170542aa571bfd4568f3a398a439b2be57f"
+     },
+     {
+      "hash": "8acb516c5de8087dd0de6f08362ea49797a3fd5104b904107dd452f720c3e108"
+     },
+     {
+      "hash": "cb1fd3374bceeaf6fba29e1c57159b1ce11d62c2de965a2435303deb7811b35e"
+     },
+     {
+      "right": true,
+      "hash": "e2b9151ea3f7fe412ff91bdd1b801fcef9fdf08d36250424d329c1786fc677d6"
+     },
+     {
+      "hash": "8283a959fec51eba5437390a9569dc04f710419e252971ea9c4ddcea51494c50"
+     },
+     {
+      "hash": "5a03404595c984873d0382a6bd083042ee88f6df56ab3a3566866e8db5771d73"
+     },
+     {
+      "hash": "178794b22ce3d91fd5f954dd3ad1c23647268252e2d7bc893188c41119316e1c"
+     },
+     {
+      "hash": "aac44783b07a005836f2f09db0942961a140636b99988387eb3dad0a7f3017a1"
+     },
+     {
+      "hash": "9ea02c69cc037df6e2e5aae705c5ba6ad477f1f20c9384f187dd0b5f2b19542b"
+     },
+     {
+      "right": true,
+      "hash": "99ba21cefc84c0658a3b87b7cb5d3fccc02a880c2e03ebd755499e1d7a0aeeda"
+     },
+     {
+      "right": true,
+      "hash": "3fcc88053c93e6080e859b14e239b3e5a1cf28fbefb6067c33d871e53d092beb"
+     },
+     {
+      "hash": "b38eaaa7b7847d66eab10db43d5c6c7dc0ecb5a0c3916fb7c2b551315f881800"
+     },
+     {
+      "hash": "84f86b551f5625e126d962099323bbe863c18806494cc70681b238bebdf92292"
+     },
+     {
+      "hash": "3fab2919b795c67f52d5fb93a82ce4c74c476ecb460e7837df3dec0d6ec2a990"
+     },
+     {
+      "right": true,
+      "hash": "109e08103087ea3ba87c7d92e19901ccd5ae76da64c0b54acfeebf3f1429b0a7"
+     }
+    ],
+    "localBlock": 13373711,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN2"
+   }
+  },
+  {
+   "url": "acc://fdb-risk-tcl1.acme/book/1",
+   "account": {
+    "type": "keyPage",
+    "keyBook": "acc://fdb-risk-tcl1.acme/book",
+    "url": "acc://fdb-risk-tcl1.acme/book/1",
+    "creditBalance": 5986589,
+    "acceptThreshold": 1,
+    "threshold": 1,
+    "version": 4,
+    "keys": [
+     {
+      "publicKeyHash": "759240b87fa1f40a742917f9183b0f261e55c745245fe0a9cc119370af9b669b",
+      "publicKey": "759240b87fa1f40a742917f9183b0f261e55c745245fe0a9cc119370af9b669b"
+     }
+    ]
+   },
+   "receipt": {
+    "start": "62f4d10239f9fd4027f0dffacd6e88e6e3b2a9b4890558d7cc554a8f5f58a88a",
+    "endIndex": 3,
+    "anchor": "ef4a379a76efa94c733591c0f7344836d74b751bdfbfdf80809024c37512946e",
+    "entries": [
+     {
+      "right": true,
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "right": true,
+      "hash": "52f83f38a4930368ea3a02ae76336936ac46904926a788fa025f7f96ecc4aad7"
+     },
+     {
+      "hash": "65bd8b9f327b5f795150f615fc892a37f9a17b3649aff1f0696041babfc98628"
+     },
+     {
+      "hash": "50fff2c78274aa18fd0070ef2c49d2cfb607174f5431002a33eb1d309aeec1dc"
+     },
+     {
+      "right": true,
+      "hash": "1954a732a87bf1d04dcb550d83c5ca84e20cc892d998cbb95026670a11376ee4"
+     },
+     {
+      "right": true,
+      "hash": "5a2581929fb8214dab91a87cb4f1771e603134fa1560d2461f2f2d52920e4a21"
+     },
+     {
+      "right": true,
+      "hash": "72260f730f2f5d2e6c78c1d071fff67eeb4b5a53d7c2b7d88e566376c739130b"
+     },
+     {
+      "hash": "53d5f1d20e62ed6242ba0bad123a751b7bf87335b732e3b84bc7501df4b6ebb1"
+     },
+     {
+      "hash": "93ebe842cac91906da0e6c11c717be0d67e66a03339326cf2ef93b47d6e0dfbd"
+     },
+     {
+      "hash": "7ad1bd7c83814799fb0ca80b44deaf8101adfffc5b1a1688a841131e3f25d58d"
+     },
+     {
+      "hash": "b38eaaa7b7847d66eab10db43d5c6c7dc0ecb5a0c3916fb7c2b551315f881800"
+     },
+     {
+      "hash": "84f86b551f5625e126d962099323bbe863c18806494cc70681b238bebdf92292"
+     },
+     {
+      "hash": "3fab2919b795c67f52d5fb93a82ce4c74c476ecb460e7837df3dec0d6ec2a990"
+     },
+     {
+      "right": true,
+      "hash": "109e08103087ea3ba87c7d92e19901ccd5ae76da64c0b54acfeebf3f1429b0a7"
+     }
+    ],
+    "localBlock": 13373711,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN2"
+   }
+  },
+  {
+   "url": "acc://fdb-risk-tcl1.acme/book/2",
+   "account": {
+    "type": "keyPage",
+    "keyBook": "acc://fdb-risk-tcl1.acme/book",
+    "url": "acc://fdb-risk-tcl1.acme/book/2",
+    "creditBalance": 149900,
+    "acceptThreshold": 1,
+    "threshold": 1,
+    "version": 1,
+    "keys": [
+     {
+      "publicKeyHash": "8e692a3b88024b0a9bee55e71ecb3970200bb09936890eaebb10961b8ae51bfb",
+      "publicKey": "8e692a3b88024b0a9bee55e71ecb3970200bb09936890eaebb10961b8ae51bfb",
+      "lastUsedOn": 1790929125390000
+     }
+    ]
+   },
+   "receipt": {
+    "start": "1c56f65e949ce1830560ecad606fc9c7a7d63c2f0a4e841c7c4e35842bd0fa13",
+    "endIndex": 3,
+    "anchor": "ef4a379a76efa94c733591c0f7344836d74b751bdfbfdf80809024c37512946e",
+    "entries": [
+     {
+      "right": true,
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "right": true,
+      "hash": "a9c6a19a67b104fe177cb12995052a4925f06196d2ffbfb03442ebb5af1f1ec0"
+     },
+     {
+      "right": true,
+      "hash": "2804a83a9fe32cdfa8fcceb8200a1c85558c5dbe34b5f14c275b8d1499f8e1a5"
+     },
+     {
+      "hash": "d60360cc8d19017d50dcbd9a6a676b1800a9ba21534855211bb20d6119090c48"
+     },
+     {
+      "right": true,
+      "hash": "a6a94fc88bd823ec466d1e8ca0000d6114003b45292b65b36822d505d70fd75a"
+     },
+     {
+      "right": true,
+      "hash": "d35d8ad3c769a7b5856bc9dd46ee356ca1750908594ff02069298fc173dd2c7d"
+     },
+     {
+      "right": true,
+      "hash": "a2f3d61e2462f28207443cf8acc61a561cf97ddb7a88dc4efa4bd956f9a1653e"
+     },
+     {
+      "hash": "680ac007fb815f81dfbb1b77c8e009aeba6454b8449695f8fc6a825f016b7c23"
+     },
+     {
+      "hash": "cd4c4dce64b9d328f86b601fe28f22080b4f4049aa33caf29e83b5aed793e607"
+     },
+     {
+      "hash": "95cc7ef76ba17306e1b1eac7a4af49225dc4afa11fa1da8d6e2986f232d9c88f"
+     },
+     {
+      "right": true,
+      "hash": "b31f1d9b67357a9a045ea5ebbfd078b0edf5e735f6c7c4cbe916c60d395774ed"
+     },
+     {
+      "hash": "0254dbf16ce74622fd110b0caa6769012b590cc900f61500d55db6fe00a8fc5e"
+     },
+     {
+      "right": true,
+      "hash": "f50ac4678585ba9dc61bc8bbbd4b2212cfe0be0e33ee12276681194c7131a16b"
+     },
+     {
+      "right": true,
+      "hash": "08c2096eef1f2edca9da9020968653d274659d97ac342f10a6e1146159d881ea"
+     },
+     {
+      "hash": "3ae12a52d4ddca7948e212675385fa483bda120863acc56da766fdc009c39252"
+     },
+     {
+      "hash": "122cfaa2c641de4a415cfb6b2a43eef2e892ee781f07a7492a7ace2798ed636e"
+     }
+    ],
+    "localBlock": 13373711,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN2"
+   }
+  },
+  {
+   "url": "acc://harbor-mfg-erp-tcl1.acme/book",
+   "account": {
+    "type": "keyBook",
+    "url": "acc://harbor-mfg-erp-tcl1.acme/book",
+    "authorities": [
+     {
+      "url": "acc://harbor-mfg-erp-tcl1.acme/book"
+     }
+    ],
+    "pageCount": 1
+   },
+   "receipt": {
+    "start": "d6cddbd90c26812ab35d9b710d5a30a4f8e7995fa24f6490af26868e3137892b",
+    "endIndex": 3,
+    "anchor": "9235b8824bf83ae058a24586f7221306bcba085c0005d8ab463b33afc0ffa992",
+    "entries": [
+     {
+      "right": true,
+      "hash": "f24e72c26723920f39b28846334a711e81fdddaa955cefbe1bcc291ae13eff8f"
+     },
+     {
+      "right": true,
+      "hash": "07f6e0448080cb3c7e441feb7f43bac2d63227c427c59e544cd1473cc96fb867"
+     },
+     {
+      "right": true,
+      "hash": "e9954a704d5fb850b18ca6570b8e708bfb3d274a568dceaa7b10de7c93fb60bf"
+     },
+     {
+      "right": true,
+      "hash": "38ed3497554a8d0f1584431aa3acf6a54aa080941f29f931e20ad96ad3eb79d2"
+     },
+     {
+      "hash": "678df47615f324167a6fcf96f4e6229efa46ce1ca834ac7d915cc6806c3f67d3"
+     },
+     {
+      "right": true,
+      "hash": "3653a0a75bba83feea6a0d19a517aa08c39f8bdc98e9a7d15792f9ba6ec9625b"
+     },
+     {
+      "hash": "1824c7c2f6ad9afcd84dd6e07602b14afa64ca0d3c7cefa40278d2ca4e952d2f"
+     },
+     {
+      "right": true,
+      "hash": "cff2b18466c7794c8054254c95b3213cc28b1d4c86dad04e09bed8d86c340915"
+     },
+     {
+      "right": true,
+      "hash": "891c93125fcc42d82c5c08b93e753f57f82bb53f1a6687d4f6a8f52a4d7733b0"
+     },
+     {
+      "right": true,
+      "hash": "f0b46e1cdeeff30e2b3f81fba8e4ab88372d2a80fda6cbe957f9bfb6ee5d6b57"
+     },
+     {
+      "right": true,
+      "hash": "a10811ecee434446fbaaec847ba2b6d865b3c13130871a55f33f2fde14320186"
+     },
+     {
+      "right": true,
+      "hash": "c321bcf256d41a3ec762ade0aafe69f923c51989a65872e6f88c9d53aabfb12f"
+     },
+     {
+      "right": true,
+      "hash": "f28d9cb7bedf93a9cd1fc86c99bb680ac79e2187a58fbc194911dae17f3b06b1"
+     },
+     {
+      "right": true,
+      "hash": "710204e9e07dff520c566f41edbdcbcd6ccf327ff38a5f0292ee70a83f4abdb2"
+     },
+     {
+      "right": true,
+      "hash": "b6a0cf939f3033cfd2e0900185d64dbec69a00fc50d00c26beb9148eacfd5a68"
+     },
+     {
+      "hash": "57f5aaa39f56063d1ad86961888c45749cba0fcedb3735f55cb791145828d901"
+     },
+     {
+      "right": true,
+      "hash": "b879c6ca2025a838db0bf20408f479c82f782ba8767726bc45063bcf57f56566"
+     }
+    ],
+    "localBlock": 13371088,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN3"
+   }
+  },
+  {
+   "url": "acc://harbor-mfg-erp-tcl1.acme/book/1",
+   "account": {
+    "type": "keyPage",
+    "keyBook": "acc://harbor-mfg-erp-tcl1.acme/book",
+    "url": "acc://harbor-mfg-erp-tcl1.acme/book/1",
+    "creditBalance": 5989650,
+    "acceptThreshold": 1,
+    "threshold": 1,
+    "version": 2,
+    "keys": [
+     {
+      "publicKeyHash": "d3b5b9507ae180403a02038014927a41209a95cc23cddded44b694b36dcdb6ee",
+      "publicKey": "d3b5b9507ae180403a02038014927a41209a95cc23cddded44b694b36dcdb6ee",
+      "lastUsedOn": 1790929089370000
+     }
+    ]
+   },
+   "receipt": {
+    "start": "31176ed5760547b236a4e4ecb485df9e3f03f97fe9a92d25434b73397e24111c",
+    "endIndex": 3,
+    "anchor": "9235b8824bf83ae058a24586f7221306bcba085c0005d8ab463b33afc0ffa992",
+    "entries": [
+     {
+      "right": true,
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "right": true,
+      "hash": "08623b00bcb0f01b900a8f0ffebeed7c65a9e1253082423dcae45d153f86872c"
+     },
+     {
+      "right": true,
+      "hash": "8c9ed8f1498e981da3eefe0b67f08635fb7c530413f32f4f293e2b6e19f87092"
+     },
+     {
+      "hash": "b61d002d18afde75a7a3e36c84257bcee093450d6597b712e08d418d409ead3b"
+     },
+     {
+      "right": true,
+      "hash": "9c1e74e3453207cdc925ded77d59997ca0b61beaa26e0660be2a84b2175340f1"
+     },
+     {
+      "right": true,
+      "hash": "99cd3b9d44c454ab0a911869fc6f6a0d2570d203ed21a55007dc56895917d7ce"
+     },
+     {
+      "right": true,
+      "hash": "fd16d1cfd2aecd08670d9b723f4a8f97a29efcc78cfbee5396240365aa20bb63"
+     },
+     {
+      "right": true,
+      "hash": "e35334933abc6871ce9ed1a9da1c9bef15d5fee09042974b049d985e39ad53d2"
+     },
+     {
+      "right": true,
+      "hash": "ec7ff7b22750621dbbcc2df60efe07d756f5217e987e1a25c762b9463d0dffaf"
+     },
+     {
+      "hash": "bb3f97fc4db561c158202ca07b11b39dbd4d9c67770ff3dcce4aa9135e60df5d"
+     },
+     {
+      "hash": "81a9897d23376e01f51c4e66e3e77fe95cc29a745c6d1b67fa2d99be5b1df8e3"
+     },
+     {
+      "hash": "771260bc51faa1054df2b717f70bfe3b3ca808c793cada5e8dfa469516d4de74"
+     },
+     {
+      "hash": "57f5aaa39f56063d1ad86961888c45749cba0fcedb3735f55cb791145828d901"
+     },
+     {
+      "right": true,
+      "hash": "b879c6ca2025a838db0bf20408f479c82f782ba8767726bc45063bcf57f56566"
+     }
+    ],
+    "localBlock": 13371088,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN3"
+   }
+  },
+  {
+   "url": "acc://harbor-mfg-tcl1.acme/book",
+   "account": {
+    "type": "keyBook",
+    "url": "acc://harbor-mfg-tcl1.acme/book",
+    "authorities": [
+     {
+      "url": "acc://harbor-mfg-tcl1.acme/book"
+     }
+    ],
+    "pageCount": 2
+   },
+   "receipt": {
+    "start": "af58c686121331a235f6d56342e6c186f36cf33c66a6af668f5c08d3f8bc40a1",
+    "endIndex": 3,
+    "anchor": "89a334daa523e5d262edea9ea6596c5e3c88b780e16bc833bbf20bbd90dbd240",
+    "entries": [
+     {
+      "right": true,
+      "hash": "1058b40f72343fbfdb061dd0b1b071e26bb42048cb00bf17c2cef2bd73567849"
+     },
+     {
+      "right": true,
+      "hash": "ad79171fbfd708bf3c8bdbce1171dcd22139a4db30911dd03423c6748570327e"
+     },
+     {
+      "right": true,
+      "hash": "79c6d7cddd6af3c991bdc7ca920ad66d7f1c4b810634277b6ed00c39ac0e0af1"
+     },
+     {
+      "hash": "ed409288dcd793286b8ee98648773eda1fb7eefb08e9b8ef6c7485ae96d798f6"
+     },
+     {
+      "hash": "e888f4e30e68d1adaa643b548f95db57101524603254035edc118a44652b0459"
+     },
+     {
+      "hash": "39e8f5175e037aec6d8ca1b7dd2eee8f3c40f3b256fa791b0519152c422c69c7"
+     },
+     {
+      "right": true,
+      "hash": "d89f3bd67dc86c9432ab16c6793522ca0c7f8cac6f0d055d8a1717f1dffb8d08"
+     },
+     {
+      "hash": "455e6c5ec250beefb7ce15a4b876d516fb1191926ce922f9de0a36de00c839c9"
+     },
+     {
+      "hash": "5da89679ef79e91288276a88cc9137123bee56d021e2c65ea6bc612a64f9321f"
+     },
+     {
+      "right": true,
+      "hash": "ae8e5d98108ea70d81ef6ec95e32d2857a76d3df664e4b275822a33580ee2078"
+     },
+     {
+      "right": true,
+      "hash": "b303fd4e23f1e21137042f0bcf8dafccfbfb91cb118ba58d3b2d6b1290c23040"
+     },
+     {
+      "hash": "e59b5df62325c0a41daf3974630166bd8b6f10d38103d8ea656c8bffad2a6054"
+     },
+     {
+      "hash": "b241ca9911aa24a6a7a9ed213c00caaba224cbed0094fdcee25a1f65b785ec35"
+     },
+     {
+      "right": true,
+      "hash": "5f5c4c22775fd588cbef80c3546e30d5ced0fdb83e1065c1a4dc93e488de9f75"
+     },
+     {
+      "hash": "96adf115cfd6522dcc163461c5424ab8e33b063bccb74e06979e9a10eb005b3b"
+     },
+     {
+      "right": true,
+      "hash": "70aa2e02156144fa2c812246f1f0a81441c8abeabba69a3467ee061854706315"
+     },
+     {
+      "right": true,
+      "hash": "1fcdf51f84e995d513173193f84c70c1da0a906f5a89844f8adf0edb278a9f75"
+     },
+     {
+      "hash": "c596a07026f923c78393372257804544cf943e977999073e5fe43928ac5f63f3"
+     }
+    ],
+    "localBlock": 13370217,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN1"
+   }
+  },
+  {
+   "url": "acc://harbor-mfg-tcl1.acme/book/1",
+   "account": {
+    "type": "keyPage",
+    "keyBook": "acc://harbor-mfg-tcl1.acme/book",
+    "url": "acc://harbor-mfg-tcl1.acme/book/1",
+    "creditBalance": 5977824,
+    "acceptThreshold": 1,
+    "threshold": 1,
+    "version": 11,
+    "keys": [
+     {
+      "publicKeyHash": "63250e7cd4598c520f82450366d091660d4fe826db5c2d2d2c445dd32cf4b9f6",
+      "publicKey": "63250e7cd4598c520f82450366d091660d4fe826db5c2d2d2c445dd32cf4b9f6"
+     },
+     {
+      "publicKeyHash": "7c388d6e9d75780e150f465ae3be1c7c7f8a85e9045ce5658024dc9e89272bcc",
+      "publicKey": "7c388d6e9d75780e150f465ae3be1c7c7f8a85e9045ce5658024dc9e89272bcc"
+     }
+    ]
+   },
+   "receipt": {
+    "start": "7268953d94440ce0490ec6752e346c2296bcdd2308f6233b03f659cf78674c13",
+    "endIndex": 3,
+    "anchor": "89a334daa523e5d262edea9ea6596c5e3c88b780e16bc833bbf20bbd90dbd240",
+    "entries": [
+     {
+      "right": true,
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "right": true,
+      "hash": "6408971d2173bba117ba3d3b2a6e4d302e4992a0d69aa5291cb68870d61f86aa"
+     },
+     {
+      "right": true,
+      "hash": "714a6c3e7dff4d13779ffb8e5e0edb2fff251b62036548543200b1033e08691b"
+     },
+     {
+      "right": true,
+      "hash": "ebab00a5f3c65b3e66dbcea2b6f5674cff44e33e357fed0d6edbfc3d5608f58b"
+     },
+     {
+      "right": true,
+      "hash": "f3fd33eb112d1bd3637aaa6b0132532c5b66d5e526148c455c23f9b400adae1d"
+     },
+     {
+      "hash": "099bc11c72fa8374daa01f0d58a57943755d781e92f9262d100089afc480d8bd"
+     },
+     {
+      "right": true,
+      "hash": "4a2cf6e0df9aa4b2aacc9af58f70c7473ce751a3b513b30018af6661661b077d"
+     },
+     {
+      "hash": "97719d04747a8dbf511ad72cfe92438f0b2994d169d934ad80a2641b87496f51"
+     },
+     {
+      "right": true,
+      "hash": "ccb723e6750f7ab49e2f485d7c7151c2ca1c9cdc9bd6db29a807dc6a9da35921"
+     },
+     {
+      "right": true,
+      "hash": "39d7b3dc98308b0082a04c80d87d460b02f80d664e5d6d5c8c85cbed47c63267"
+     },
+     {
+      "right": true,
+      "hash": "59ebdce28d75aca5f4bf50db6bbea12941c3b64aff1f9cf8ab56dc92973bc0c2"
+     },
+     {
+      "hash": "0caf5ee3c0005fa70240dfd864e7a22b9e752910d530cede4f74e6b1c43f5fd0"
+     },
+     {
+      "right": true,
+      "hash": "459b7afa66c76bfca4ea51a33a1114e04861ec8de619c7133e3d57b27204f621"
+     },
+     {
+      "right": true,
+      "hash": "5f5c4c22775fd588cbef80c3546e30d5ced0fdb83e1065c1a4dc93e488de9f75"
+     },
+     {
+      "hash": "96adf115cfd6522dcc163461c5424ab8e33b063bccb74e06979e9a10eb005b3b"
+     },
+     {
+      "right": true,
+      "hash": "70aa2e02156144fa2c812246f1f0a81441c8abeabba69a3467ee061854706315"
+     },
+     {
+      "right": true,
+      "hash": "1fcdf51f84e995d513173193f84c70c1da0a906f5a89844f8adf0edb278a9f75"
+     },
+     {
+      "hash": "c596a07026f923c78393372257804544cf943e977999073e5fe43928ac5f63f3"
+     }
+    ],
+    "localBlock": 13370217,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN1"
+   }
+  },
+  {
+   "url": "acc://harbor-mfg-tcl1.acme/book/2",
+   "account": {
+    "type": "keyPage",
+    "keyBook": "acc://harbor-mfg-tcl1.acme/book",
+    "url": "acc://harbor-mfg-tcl1.acme/book/2",
+    "creditBalance": 149716,
+    "acceptThreshold": 1,
+    "threshold": 1,
+    "version": 3,
+    "keys": [
+     {
+      "publicKeyHash": "f7e51b2d3678e64c7ef9204306a54583e9cae8f3fb19231870344d51e39e410d",
+      "publicKey": "f7e51b2d3678e64c7ef9204306a54583e9cae8f3fb19231870344d51e39e410d",
+      "lastUsedOn": 1790929100091000
+     }
+    ]
+   },
+   "receipt": {
+    "start": "c08abaf5dcb9b8a2d5b15197c8ca7013dbdf00ff275261512aa0dee1a8a82484",
+    "endIndex": 3,
+    "anchor": "89a334daa523e5d262edea9ea6596c5e3c88b780e16bc833bbf20bbd90dbd240",
+    "entries": [
+     {
+      "right": true,
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "right": true,
+      "hash": "3a0a7e19bfced685402875049ac581f0375a9e82bcfeb6bcc78e3cac774bc4c6"
+     },
+     {
+      "hash": "2f560940e49c265b18b3bc11cf616f1e834aa37c41ea6158efb8bb11b49b8611"
+     },
+     {
+      "hash": "370f1e88428aedf02cac68749cd284bbac9a440e5c37bf2378b9adc614700e58"
+     },
+     {
+      "right": true,
+      "hash": "1899fa7fc18510cb085c4b2b5af6bcb657dfaebbb3dcda182cc06d5afd968f3b"
+     },
+     {
+      "right": true,
+      "hash": "2d4727326db93a6cf6ff446edb92c08e2c9ae9b94a8f5d11db8618d988c55fcd"
+     },
+     {
+      "right": true,
+      "hash": "914fbeeb976e78595db5c97422d0279c3fd67383982e5544f08d4430edd5d57f"
+     },
+     {
+      "hash": "97c3661d8c0118b16b74b6051f75d22009e75cf861f67118beba8c141da6544d"
+     },
+     {
+      "right": true,
+      "hash": "555dcbd25072f85754ccbedc1b6f3fe7c400c8a1d096878251f4c842c81aa402"
+     },
+     {
+      "hash": "1e4187a4282e0d2d1350e13d1e9889c8278a6f18f8fa36ea0c7f0b58ccb367a8"
+     },
+     {
+      "hash": "462ac40f829e75ca7c4a2126494a3f74b43bf1d6e7d248796efc0bf10d32d0c1"
+     },
+     {
+      "hash": "13f823d3303f68f833caef6d0ff364c0aa7cd7ca88bde041754b7891e31e9680"
+     },
+     {
+      "right": true,
+      "hash": "fcd9875ff56474c31879466f77afd861b54f53824e8b7817e528b270939a2095"
+     },
+     {
+      "right": true,
+      "hash": "da58a7c059b58737c44b623f91d43f05280476d8020ce259eb65c9797b02ce2c"
+     },
+     {
+      "right": true,
+      "hash": "f20fd302f3825577a9637ed6734ae255d05b4797eb4e63dba717fd8924f0aaf8"
+     },
+     {
+      "right": true,
+      "hash": "410b88bfba9e24a89370228508d00d95fb271c76dc41447102c9362ed49c7b5e"
+     },
+     {
+      "right": true,
+      "hash": "09dba09faddfe54262d344d19123ff93d5e5d7378b10430d1a4ccc75209f4015"
+     }
+    ],
+    "localBlock": 13370217,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN1"
+   }
+  },
+  {
+   "url": "acc://harbor-mfg-tcl1.acme/data",
+   "account": {
+    "type": "dataAccount",
+    "url": "acc://harbor-mfg-tcl1.acme/data",
+    "authorities": [
+     {
+      "url": "acc://fdb-compliance-tcl1.acme/book"
+     },
+     {
+      "url": "acc://fdb-risk-tcl1.acme/book"
+     },
+     {
+      "url": "acc://harbor-mfg-tcl1.acme/book"
+     }
+    ]
+   },
+   "receipt": {
+    "start": "24c19faa82f1bc679c4d3bc0ca8ccdaf8ddc6f17c4ae51097025e98b943725c4",
+    "endIndex": 3,
+    "anchor": "89a334daa523e5d262edea9ea6596c5e3c88b780e16bc833bbf20bbd90dbd240",
+    "entries": [
+     {
+      "right": true,
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "right": true,
+      "hash": "372e50dd470c2d5095c30efbce1384c985b2b9e23077a6262f49390d7ab28088"
+     },
+     {
+      "hash": "188e92f83916bcf39d34195fe603de33560ca143b375322caa4d5b9833543804"
+     },
+     {
+      "hash": "7d07a4ce158cf7b85bd79c5dff7d0bab3d23947240af3b30ce182f745a899361"
+     },
+     {
+      "hash": "b0c970d54183b581544242b4500128ecc3af7279d320d00c58e7d08895aa55b8"
+     },
+     {
+      "hash": "dddc91b8ae82ca2c1547771899e2cb9f021cdc974e0eb6b2804bff13d67e7f41"
+     },
+     {
+      "hash": "49da7fb61a52bf280a3fd930833175ecbfe6a4b5ed97d00d0d7f8c5b30c1ebdc"
+     },
+     {
+      "right": true,
+      "hash": "527315e4fa1ecb4c4db1d7a76df84e45c949180d8bd8dec802afd41e7f2396d6"
+     },
+     {
+      "right": true,
+      "hash": "f29dc3ea5ac610656abc009772af8ec57f18c72713fd449c9a2757941b1ca22d"
+     },
+     {
+      "right": true,
+      "hash": "4b2839a6fdd476ae34d31c0f2b5fc4db06be7aa1e647c4906ffef7a362a8d19e"
+     },
+     {
+      "hash": "5ce632a31f5ca2eb277f82cd5c5d4a88d7ca135949839969d6f6f83ee298e712"
+     },
+     {
+      "hash": "0a351d5ab6d07096dcbf8ef8ba8f4eb941d1c42f6173ada4cdf243404651a5e5"
+     },
+     {
+      "right": true,
+      "hash": "9448a979dbc7f12a163889d47d22d844b450b4ebfaac688e66507597ac3bd08b"
+     },
+     {
+      "hash": "36c40f6afb1a11d1e8c0953638b0f6f1ca774ab033b0e73ed43df8260ef93252"
+     },
+     {
+      "hash": "0c831071e7dd2c727203de428a8d9370cd96267d983985b0f734cc19aab189ab"
+     },
+     {
+      "right": true,
+      "hash": "09dba09faddfe54262d344d19123ff93d5e5d7378b10430d1a4ccc75209f4015"
+     }
+    ],
+    "localBlock": 13370217,
+    "localBlockTime": "2026-10-02T08:31:36Z",
+    "partition": "BVN1"
+   }
+  }
+ ]
+}
