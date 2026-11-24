@@ -72,6 +72,12 @@ export interface VoteAttribution {
 export interface VoteResult {
   ok: boolean;
   error?: string;
+  /**
+   * DAX-F191, on a failure only: `none` means NO signature left this process for this vote (no key for the ref, the key source refused,
+   * a pause at the cast, a gateway answer refused before signing), so it cannot have landed. Absent on a failure means a signature was
+   * (or may have been) sent: whether it landed is the chain's to say, and the caller must read it before treating it as not cast.
+   */
+  cast?: 'none';
   signatureHash?: string;
   timestamp?: number;
   /**
@@ -177,7 +183,7 @@ export class DirectVoteBackend implements VoteBackend {
       } catch (e) {
         const msg = (e as Error).message;
         this.logger.error({ tx: tx.txHash, page: tx.signerUrl, err: msg }, 'signing failed; vote withheld');
-        return { ok: false, error: `signing failed: ${msg}` };
+        return { ok: false, error: `signing failed: ${msg}`, ...(attempt === 0 ? { cast: 'none' as const } : {}) };
       }
       const sigObj = delegators?.length
         ? buildDelegatedSignatureObject(pre, sigBytes, tx.txHash)
