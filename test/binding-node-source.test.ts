@@ -193,7 +193,7 @@ describe('a key book is read as a roster: keys AND delegate seats, every seat ex
 
   it('a key seat, a delegate seat and a seat that is both: each is kept, hashes lower-cased', async () => {
     expect(await pagesOf([{ publicKeyHash: 'AB'.repeat(32) }, { delegate: 'acc://x.acme/book' }, { publicKeyHash: 'cd'.repeat(32), delegate: 'acc://y.acme/book' }])).toEqual([
-      { url: `${BK}/1`, keyHashes: ['ab'.repeat(32), 'cd'.repeat(32)], delegates: ['acc://x.acme/book', 'acc://y.acme/book'], threshold: 1, rejectThreshold: 0 },
+      { url: `${BK}/1`, keyHashes: ['ab'.repeat(32), 'cd'.repeat(32)], delegates: ['acc://x.acme/book', 'acc://y.acme/book'], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'ab'.repeat(32), delegate: null }, { keyHash: null, delegate: 'acc://x.acme/book' }, { keyHash: 'cd'.repeat(32), delegate: 'acc://y.acme/book' }] },
     ]);
   });
 
@@ -210,6 +210,33 @@ describe('a key book is read as a roster: keys AND delegate seats, every seat ex
     expect(await read(-1)).toBeNull();
     expect(await read(1.5)).toBeNull();
     expect(await read('2')).not.toBeNull(); // the node's JSON number may arrive as text: read as the number, as acceptThreshold is
+  });
+
+  it('DAX-F167c: each page carries its STORED response threshold, 0 when the node omits it; a bad or over-large one makes the book unreadable', async () => {
+    const read = async (responseThreshold?: unknown) => {
+      const node = new FakeNode();
+      node.book(BK, [{ keyHashes: ['ab'.repeat(32), 'cd'.repeat(32), 'ef'.repeat(32)], threshold: 1, ...(responseThreshold === undefined ? {} : { responseThreshold: responseThreshold as number }) }]);
+      return createNodeSource(node.query).keyBookPages(BK, meter());
+    };
+    expect((await read())![0]!.responseThreshold).toBe(0);
+    expect((await read(2))![0]!.responseThreshold).toBe(2);
+    expect((await read(3))![0]!.responseThreshold).toBe(3);
+    expect(await read(4)).toBeNull(); // above the page's entries: Accumulate caps it there, so the read is wrong
+    expect(await read(-1)).toBeNull();
+    expect(await read(1.5)).toBeNull();
+    expect(await read('2')).not.toBeNull(); // the node's JSON number may arrive as text: read as the number, as acceptThreshold is
+  });
+
+  it('DAX-F167c: each page carries its key ENTRIES in chain order (Accumulate counts a page per entry): a key, a delegate, or both in ONE entry', async () => {
+    const pages = await pagesOf([{ delegate: 'acc://desk.acme/book' }, { publicKeyHash: 'AB'.repeat(32), delegate: 'acc://pair.acme/book' }, { delegate: 'acc://desk.acme/book2' }, { publicKeyHash: 'cd'.repeat(32) }]);
+    expect(pages![0]!.entries).toEqual([{ keyHash: null, delegate: 'acc://desk.acme/book' }, { keyHash: 'ab'.repeat(32), delegate: 'acc://pair.acme/book' }, { keyHash: null, delegate: 'acc://desk.acme/book2' }, { keyHash: 'cd'.repeat(32), delegate: null }]);
+    expect(pages![0]!.keyHashes).toEqual(['ab'.repeat(32), 'cd'.repeat(32)]);
+    expect(pages![0]!.delegates).toEqual(['acc://desk.acme/book', 'acc://pair.acme/book', 'acc://desk.acme/book2']);
+  });
+
+  it('DAX-F167c: a page that lists one key hash or one delegate twice is unreadable (the chain refuses a duplicate entry; only one could be voted)', async () => {
+    expect(await pagesOf([{ publicKeyHash: 'ab'.repeat(32) }, { publicKeyHash: 'AB'.repeat(32) }])).toBeNull();
+    expect(await pagesOf([{ delegate: 'acc://x.acme/book' }, { publicKeyHash: 'cd'.repeat(32), delegate: 'acc://x.acme/book' }])).toBeNull();
   });
 
   it('a seat that cannot be read exactly makes the book unreadable, never a shorter roster', async () => {
