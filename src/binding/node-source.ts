@@ -54,7 +54,11 @@ export interface NodeSource {
  * A key page as the quorum roster needs it: the key hashes (64 lower-case hex) AND the delegate books of its seats (a seat may be a key, a
  * delegation to another key BOOK, or both: a delegate entry stands as its book url), and the accept threshold.
  */
-export interface RosterPage extends KeyPageInfo { delegates: string[] }
+/**
+ * DAX-F167a: `rejectThreshold` is the page's STORED reject threshold, 0 when the page sets none (Accumulate then rejects at the accept threshold:
+ * SignerWillVote, internal/core/execute/v2/block/transaction.go). The quorum needs it to know when a page's refusals deny (core DE-84).
+ */
+export interface RosterPage extends KeyPageInfo { delegates: string[]; rejectThreshold: number }
 
 const PAGE = 100;
 const MAX_RECORDS = 100_000;
@@ -182,6 +186,11 @@ export function createNodeSource(query: ChainQuery): NodeSource {
         const keys = p?.account?.keys;
         const threshold = Number(p?.account?.acceptThreshold);
         if (!p?.account || !Array.isArray(keys) || !Number.isSafeInteger(threshold) || threshold < 1) return null;
+        // DAX-F167a: the reject threshold as stored; the node omits it when the page sets none (0). A value that is not a whole number, or one above
+        // the page's entries (Accumulate caps it there), makes the book unreadable: never a guessed threshold.
+        const rawReject = p.account.rejectThreshold;
+        const rejectThreshold = rawReject === undefined || rawReject === null ? 0 : Number(rawReject);
+        if (!Number.isSafeInteger(rejectThreshold) || rejectThreshold < 0 || rejectThreshold > keys.length) return null;
         // every seat is read exactly: a seat with a key hash that is not 64 hex, a delegate that is not text, or neither a key nor a delegate
         // makes the book unreadable. A roster that silently lost a seat would be SHORTER than the chain's, and shorter is never safe to answer.
         const keyHashes: string[] = [];
@@ -201,7 +210,7 @@ export function createNodeSource(query: ChainQuery): NodeSource {
             delegates.push(d);
           }
         }
-        pages.push({ url, keyHashes, delegates, threshold });
+        pages.push({ url, keyHashes, delegates, threshold, rejectThreshold });
       }
       return pages;
     },

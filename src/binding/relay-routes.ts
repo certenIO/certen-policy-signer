@@ -98,5 +98,5 @@ export async function relayAccountRoute(reader: CountedReader, route: AccountRou
   }
   const p = reader.keyBookPages === undefined ? null : await reader.keyBookPages(account);
   const headers = headersOf(reader);
-  return p === null ? { status: 502, body: { error: 'unreadable' }, headers } : { status: 200, headers, body: { pages: p.map((x) => ({ url: x.url, keyHashes: x.keyHashes, delegates: x.delegates, threshold: x.threshold })) } };
+  return p === null ? { status: 502, body: { error: 'unreadable' }, headers } : { status: 200, headers, body: { pages: p.map((x) => ({ url: x.url, keyHashes: x.keyHashes, delegates: x.delegates, threshold: x.threshold, rejectThreshold: x.rejectThreshold })) } };
 }

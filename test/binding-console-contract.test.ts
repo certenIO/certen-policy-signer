@@ -28,7 +28,7 @@ function scene() {
   node.identity(SUBJECT, [`${SUBJECT}/book`]);
   node.book(BOOK, [
     { keyHashes: ['aa'.repeat(32)], threshold: 1 },
-    { keyHashes: ['bb'.repeat(32), 'CC'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2 },
+    { keyHashes: ['bb'.repeat(32), 'CC'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 2 },
     { keyHashes: [], delegates: ['acc://fic-ops.acme/ops'], threshold: 1 },
   ]);
   return node;
@@ -73,9 +73,9 @@ describe('every route answers what the Console strict parser accepts (fake node 
     const r = await get(`/relay/keybook/${enc(BOOK)}`);
     expect(r.status).toBe(200);
     expect(parseKeybook(r.body)).toEqual([
-      { url: `${BOOK}/1`, keyHashes: ['aa'.repeat(32)], delegates: [], threshold: 1 },
-      { url: `${BOOK}/2`, keyHashes: ['bb'.repeat(32), 'cc'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2 },
-      { url: `${BOOK}/3`, keyHashes: [], delegates: ['acc://fic-ops.acme/ops'], threshold: 1 },
+      { url: `${BOOK}/1`, keyHashes: ['aa'.repeat(32)], delegates: [], threshold: 1, rejectThreshold: 0 },
+      { url: `${BOOK}/2`, keyHashes: ['bb'.repeat(32), 'cc'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 2 },
+      { url: `${BOOK}/3`, keyHashes: [], delegates: ['acc://fic-ops.acme/ops'], threshold: 1, rejectThreshold: 0 },
     ]);
   });
 
@@ -121,7 +121,7 @@ describe('the same contract on the recorded REAL Kermit answers (DAX-3A, FICTION
     expect(parseAuthorities((await get(`/relay/authorities/${enc(`${G}/certen-grants`)}`)).body)).toEqual([`${G}/book`]);
     expect(parseChainLen((await get(`/relay/chainlen/${enc(`${G}/certen-grants`)}`)).body)).toBe(4);
     expect(parseKeybook((await get(`/relay/keybook/${enc(`${G}/book`)}`)).body)).toEqual([
-      { url: `${G}/book/1`, keyHashes: ['23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd'], delegates: [], threshold: 1 },
+      { url: `${G}/book/1`, keyHashes: ['23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd'], delegates: [], threshold: 1, rejectThreshold: 0 },
     ]);
     expect(parseDataEntries((await get(`/relay/data/${enc(`${G}/certen-subjects`)}`)).body)).toHaveLength(3);
     expect(parseDataEntries((await get(`/relay/data/${enc('acc://d3adfbd25-agent.acme/certen-acceptances')}`)).body)).toHaveLength(3);
