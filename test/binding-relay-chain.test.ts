@@ -8,6 +8,7 @@ import { AddressInfo } from 'node:net';
 import pino from 'pino';
 import { createChainWorld } from '../src/binding/chain-world.js';
 import { ReadCache } from '../src/binding/read-cache.js';
+import { MAX_DELEGATE_BOOKS } from '../src/binding/relay-routes.js';
 import { createRelayClientsHandler } from '../src/relay-clients.js';
 import { FakeNode } from './support/fake-node.js';
 
@@ -32,7 +33,8 @@ async function start() {
   node.write(GRANTS, [new Uint8Array([1, 2, 3]), new Uint8Array([0xab])], 1_800_000_000);
   node.write(GRANTS, [new Uint8Array([9])], null); // an entry whose record carries no executing block: no chain time to ask for
   node.identity('acc://agent-one.fic-grantor.acme', ['acc://agent-one.fic-grantor.acme/book']);
-  node.book(`${GRANTOR}/book`, [{ keyHashes: ['aa'.repeat(32)], threshold: 1 }, { keyHashes: ['bb'.repeat(32), 'cc'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 1, responseThreshold: 2 }]);
+  node.book(`${GRANTOR}/book`, [{ keyHashes: ['aa'.repeat(32)], threshold: 1 }, { keyHashes: ['bb'.repeat(32), 'cc'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 1, responseThreshold: 2, version: 4 }]);
+  node.book('acc://fic-risk.acme/risk', [{ keyHashes: ['dd'.repeat(32), 'ee'.repeat(32)], threshold: 2, version: 2 }]);
   const cache = new ReadCache(node.query);
   const base = await serve(createRelayClientsHandler({
     ...baseDeps, clients: [{ name: 'console', key: KEY, scopes: ['chain'] }, { name: 'proof-only', key: NOKEY, scopes: ['proof'] }], chainReader: () => cache.evaluation(),
@@ -69,15 +71,76 @@ describe('the chain relay routes (GET only, strictly validated)', () => {
     expect((await call(`/relay/history/${enc(GRANTS)}`)).json).toEqual({ types: ['createDataAccount', 'writeData', 'writeData'], incomplete: false });
   });
 
-  it('GET /relay/keybook/:book -> { pages: [{ url, keyHashes, delegates, threshold, rejectThreshold }] } (the quorum roster; DAX-F167a: rejectThreshold 0 = the page sets none), a page URL is refused', async () => {
+  it('GET /relay/keybook/:book -> { pages: [Page], delegateBooks } (the quorum roster; DAX-F167a: rejectThreshold 0 = the page sets none; DAX-F170: each page its version, each delegate book its pages), a page URL is refused', async () => {
     const { call } = await start();
     expect((await call(`/relay/keybook/${enc(`${GRANTOR}/book`)}`)).json).toEqual({
       pages: [
-        { url: `${GRANTOR}/book/1`, keyHashes: ['aa'.repeat(32)], delegates: [], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'aa'.repeat(32) }] },
-        { url: `${GRANTOR}/book/2`, keyHashes: ['bb'.repeat(32), 'cc'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 1, responseThreshold: 2, entries: [{ keyHash: 'bb'.repeat(32) }, { keyHash: 'cc'.repeat(32) }, { delegate: 'acc://fic-risk.acme/risk' }] },
+        { url: `${GRANTOR}/book/1`, version: 1, keyHashes: ['aa'.repeat(32)], delegates: [], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'aa'.repeat(32) }] },
+        { url: `${GRANTOR}/book/2`, version: 4, keyHashes: ['bb'.repeat(32), 'cc'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 1, responseThreshold: 2, entries: [{ keyHash: 'bb'.repeat(32) }, { keyHash: 'cc'.repeat(32) }, { delegate: 'acc://fic-risk.acme/risk' }] },
       ],
+      delegateBooks: {
+        'acc://fic-risk.acme/risk': { pages: [{ url: 'acc://fic-risk.acme/risk/1', version: 2, keyHashes: ['dd'.repeat(32), 'ee'.repeat(32)], delegates: [], threshold: 2, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'dd'.repeat(32) }, { keyHash: 'ee'.repeat(32) }] }] },
+      },
     });
     expect((await call(`/relay/keybook/${enc(`${GRANTOR}/book/1`)}`)).status).toBe(400);
+  });
+
+  it('DAX-F170 D4: the delegation closure is read transitively, each book once, a cycle closes on the book already read; a book with no delegate answers delegateBooks {}', async () => {
+    const { call, node } = await start();
+    // fic-risk's page delegates on to fic-ops, whose page delegates back to the grantor book (a cycle the chain allows: only self-delegation is refused)
+    node.book('acc://fic-risk.acme/risk', [{ keyHashes: ['dd'.repeat(32)], delegates: ['acc://fic-ops.acme/ops'], threshold: 2 }]);
+    node.book('acc://fic-ops.acme/ops', [{ keyHashes: ['ee'.repeat(32)], threshold: 1 }, { keyHashes: [], delegates: [`${GRANTOR}/book`], threshold: 1, version: 7 }]);
+    const r = await call(`/relay/keybook/${enc(`${GRANTOR}/book`)}`);
+    expect(r.status).toBe(200);
+    expect(Object.keys(r.json.delegateBooks).sort()).toEqual([`${GRANTOR}/book`, 'acc://fic-ops.acme/ops', 'acc://fic-risk.acme/risk']);
+    expect(r.json.delegateBooks[`${GRANTOR}/book`].pages).toEqual(r.json.pages);
+    expect(r.json.delegateBooks['acc://fic-ops.acme/ops'].pages[1]).toMatchObject({ version: 7, entries: [{ delegate: `${GRANTOR}/book` }] });
+    // each book read once: one book query and one query per page
+    expect(node.calls.filter((c) => c === 'acc://fic-ops.acme/ops')).toHaveLength(1);
+    expect(node.calls.filter((c) => c === `${GRANTOR}/book`)).toHaveLength(1);
+    node.book('acc://fic-plain.acme/book', [{ keyHashes: ['ff'.repeat(32)], threshold: 1 }]);
+    expect((await call(`/relay/keybook/${enc('acc://fic-plain.acme/book')}`)).json.delegateBooks).toEqual({});
+  });
+
+  it('DAX-F170 D4: ANY unreadable read in the closure makes the whole roster unreadable (a missing delegate book, an account that is not a book, a bad delegate page, a nested one), never a partial map', async () => {
+    const cases: Array<(n: FakeNode) => void> = [
+      (n) => { n.accounts.delete('acc://fic-risk.acme/risk'); },
+      (n) => { n.accounts.get('acc://fic-risk.acme/risk')!.type = 'liteIdentity'; },
+      (n) => { n.accounts.get('acc://fic-risk.acme/risk/1')!.version = undefined; },
+      (n) => { n.down.add('acc://fic-risk.acme/risk/1'); },
+      (n) => { n.book('acc://fic-risk.acme/risk', [{ keyHashes: ['dd'.repeat(32)], delegates: ['acc://fic-gone.acme/book'], threshold: 1 }]); },
+      (n) => { n.book('acc://fic-risk.acme/risk', [{ keyHashes: ['dd'.repeat(32)], delegates: ['acc://fic-ops.acme/ops/1'], threshold: 1 }]); n.book('acc://fic-ops.acme/ops', [{ keyHashes: ['ee'.repeat(32)], threshold: 1 }]); },
+    ];
+    for (const mut of cases) {
+      const { call, node } = await start();
+      mut(node);
+      const r = await call(`/relay/keybook/${enc(`${GRANTOR}/book`)}`);
+      expect(r.status).toBe(502);
+      expect(r.json).toEqual({ error: 'unreadable' });
+    }
+  });
+
+  it('DAX-F170 D4: a closure of more than MAX_DELEGATE_BOOKS books is unreadable, never truncated', async () => {
+    // fic-risk, then a line of `n` more books, each delegating to the next
+    const line = async (n: number) => {
+      const { call, node } = await start();
+      const chain = Array.from({ length: n }, (_, i) => `acc://fic-d${i}.acme/book`);
+      node.book('acc://fic-risk.acme/risk', [{ keyHashes: ['dd'.repeat(32)], delegates: [chain[0]!], threshold: 1 }]);
+      chain.forEach((b, i) => node.book(b, [{ keyHashes: ['ee'.repeat(32)], delegates: i + 1 < chain.length ? [chain[i + 1]!] : [], threshold: 1 }]));
+      return call(`/relay/keybook/${enc(`${GRANTOR}/book`)}`);
+    };
+    expect((await line(MAX_DELEGATE_BOOKS)).status).toBe(502); // 1 + 64 books
+    const r = await line(MAX_DELEGATE_BOOKS - 1); // 1 + 63 books: exactly the bound
+    expect(r.status).toBe(200);
+    expect(Object.keys(r.json.delegateBooks)).toHaveLength(MAX_DELEGATE_BOOKS);
+  });
+
+  it('DAX-F170 D9: an emptied page past the first is answered (threshold 0, no entries) and the book stays readable', async () => {
+    const { call, node } = await start();
+    node.book('acc://fic-risk.acme/risk', [{ keyHashes: ['dd'.repeat(32)], threshold: 1 }, { keyHashes: [], threshold: 0, version: 5 }]);
+    const r = await call(`/relay/keybook/${enc(`${GRANTOR}/book`)}`);
+    expect(r.status).toBe(200);
+    expect(r.json.delegateBooks['acc://fic-risk.acme/risk'].pages[1]).toEqual({ url: 'acc://fic-risk.acme/risk/2', version: 5, keyHashes: [], delegates: [], threshold: 0, rejectThreshold: 0, responseThreshold: 0, entries: [] });
   });
 
   it('GET /relay/chainlen/:account -> { length } is ONE node query, and moves when the chain does', async () => {

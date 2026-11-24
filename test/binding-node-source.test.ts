@@ -193,7 +193,7 @@ describe('a key book is read as a roster: keys AND delegate seats, every seat ex
 
   it('a key seat, a delegate seat and a seat that is both: each is kept, hashes lower-cased', async () => {
     expect(await pagesOf([{ publicKeyHash: 'AB'.repeat(32) }, { delegate: 'acc://x.acme/book' }, { publicKeyHash: 'cd'.repeat(32), delegate: 'acc://y.acme/book' }])).toEqual([
-      { url: `${BK}/1`, keyHashes: ['ab'.repeat(32), 'cd'.repeat(32)], delegates: ['acc://x.acme/book', 'acc://y.acme/book'], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'ab'.repeat(32), delegate: null }, { keyHash: null, delegate: 'acc://x.acme/book' }, { keyHash: 'cd'.repeat(32), delegate: 'acc://y.acme/book' }] },
+      { url: `${BK}/1`, version: 1, keyHashes: ['ab'.repeat(32), 'cd'.repeat(32)], delegates: ['acc://x.acme/book', 'acc://y.acme/book'], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'ab'.repeat(32), delegate: null }, { keyHash: null, delegate: 'acc://x.acme/book' }, { keyHash: 'cd'.repeat(32), delegate: 'acc://y.acme/book' }] },
     ]);
   });
 
@@ -232,6 +232,45 @@ describe('a key book is read as a roster: keys AND delegate seats, every seat ex
     expect(pages![0]!.entries).toEqual([{ keyHash: null, delegate: 'acc://desk.acme/book' }, { keyHash: 'ab'.repeat(32), delegate: 'acc://pair.acme/book' }, { keyHash: null, delegate: 'acc://desk.acme/book2' }, { keyHash: 'cd'.repeat(32), delegate: null }]);
     expect(pages![0]!.keyHashes).toEqual(['ab'.repeat(32), 'cd'.repeat(32)]);
     expect(pages![0]!.delegates).toEqual(['acc://desk.acme/book', 'acc://pair.acme/book', 'acc://desk.acme/book2']);
+  });
+
+  it('DAX-F170 D2: each page carries its STORED version (Accumulate: 1 at creation, +1 per UpdateKeyPage); absent, 0, negative or not whole makes the book unreadable', async () => {
+    const read = async (version: unknown) => {
+      const node = new FakeNode();
+      node.book(BK, [{ keyHashes: ['ab'.repeat(32)], threshold: 1, version }, { keyHashes: ['cd'.repeat(32)], threshold: 1, version: 2 }]);
+      return createNodeSource(node.query).keyBookPages(BK, meter());
+    };
+    expect((await read(1))!.map((p) => p.version)).toEqual([1, 2]);
+    expect((await read(9))![0]!.version).toBe(9);
+    expect((await read('3'))![0]!.version).toBe(3); // the node's JSON number may arrive as text: read as the number, as the thresholds are
+    expect(await read(null)).toBeNull(); // omitted: the node omits only a 0, which no page has
+    expect(await read(0)).toBeNull();
+    expect(await read(-1)).toBeNull();
+    expect(await read(1.5)).toBeNull();
+    expect(await read('')).toBeNull();
+    expect(await read('x')).toBeNull();
+  });
+
+  it('DAX-F170 D9: an EMPTIED page past the first (no entries, every threshold 0, served with keys and acceptThreshold omitted) is readable; page 1 so, or a half-empty page, is not', async () => {
+    const read = async (second: { keyHashes: string[]; threshold: number; rejectThreshold?: number; responseThreshold?: number; seats?: Array<Record<string, unknown>> }, first?: typeof second) => {
+      const node = new FakeNode();
+      node.book(BK, [first ?? { keyHashes: ['ab'.repeat(32)], threshold: 1 }, second]);
+      return createNodeSource(node.query).keyBookPages(BK, meter());
+    };
+    expect((await read({ keyHashes: [], threshold: 0 }))![1]).toEqual({ url: `${BK}/2`, version: 1, keyHashes: [], delegates: [], threshold: 0, rejectThreshold: 0, responseThreshold: 0, entries: [] });
+    expect(await read({ keyHashes: [], threshold: 0, rejectThreshold: 1 })).toBeNull(); // a reject threshold above the (zero) entries
+    expect(await read({ keyHashes: [], threshold: 0, responseThreshold: 1 })).toBeNull();
+    expect(await read({ keyHashes: ['cd'.repeat(32)], threshold: 0 })).toBeNull(); // entries with no accept threshold: SetThreshold 0 is refused
+    expect(await read({ keyHashes: [], threshold: 1, seats: [] })).toBeNull(); // an accept threshold with no entries
+    expect(await read({ keyHashes: ['cd'.repeat(32)], threshold: 1 }, { keyHashes: [], threshold: 0 })).toBeNull(); // page 1 cannot be emptied
+    expect(await read({ keyHashes: ['cd'.repeat(32)], threshold: 2 })).toBeNull(); // an accept threshold above the entries (SetThreshold refuses it)
+  });
+
+  it('DAX-F170: an account that is not a key page where a page should be makes the book unreadable', async () => {
+    const node = new FakeNode();
+    node.book(BK, [{ keyHashes: ['ab'.repeat(32)], threshold: 1 }]);
+    node.accounts.get(`${BK}/1`)!.type = 'liteIdentity';
+    expect(await createNodeSource(node.query).keyBookPages(BK, meter())).toBeNull();
   });
 
   it('DAX-F167c: a page that lists one key hash or one delegate twice is unreadable (the chain refuses a duplicate entry; only one could be voted)', async () => {

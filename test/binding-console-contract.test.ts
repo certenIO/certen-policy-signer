@@ -31,6 +31,9 @@ function scene() {
     { keyHashes: ['bb'.repeat(32), 'CC'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 2, responseThreshold: 2 },
     { keyHashes: [], delegates: ['acc://fic-ops.acme/ops'], threshold: 1 },
   ]);
+  // DAX-F170: the delegate books the roster reads (fic-ops with an emptied second page, D9)
+  node.book('acc://fic-risk.acme/risk', [{ keyHashes: ['dd'.repeat(32), 'ee'.repeat(32)], delegates: ['acc://fic-ops.acme/ops'], threshold: 2, version: 3 }]);
+  node.book('acc://fic-ops.acme/ops', [{ keyHashes: ['ff'.repeat(32)], threshold: 1 }, { keyHashes: [], threshold: 0, version: 2 }]);
   return node;
 }
 

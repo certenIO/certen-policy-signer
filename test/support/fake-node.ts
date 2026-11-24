@@ -40,6 +40,8 @@ export interface FakeAccount {
   rejectThreshold?: number;
   /** DAX-F167c: the page's stored response threshold; absent = the node omits it (the page sets none) */
   responseThreshold?: number;
+  /** DAX-F170: the page's stored version as the node serves it (any value, to test a bad one); undefined = the node omits it */
+  version?: unknown;
 }
 
 const FIRST_BLOCK = 16_000_000;
@@ -82,9 +84,25 @@ export class FakeNode {
   }
 
   /** a key book with pages (the quorum roster read; never an online verdict). `delegates` are delegate seats (book urls); `seats` replaces both with raw seats */
-  book(url: string, pages: Array<{ keyHashes: string[]; threshold: number; rejectThreshold?: number; responseThreshold?: number; delegates?: string[]; seats?: Array<Record<string, unknown>> }>): void {
+  /**
+   * DAX-F170: every page carries a stored `version` (default 1, as Accumulate sets at creation; `null` = the node omits it). A page with no seat and
+   * threshold 0 is served as the node serves an emptied page: `keys` and `acceptThreshold` omitted (zero values are omitted from the JSON).
+   */
+  book(url: string, pages: Array<{ keyHashes: string[]; threshold: number; rejectThreshold?: number; responseThreshold?: number; delegates?: string[]; seats?: Array<Record<string, unknown>>; version?: unknown }>): void {
     this.accounts.set(url, { type: 'keyBook', authorities: [], chain: [{ type: 'createKeyBook' }], entries: [], pageCount: pages.length });
-    pages.forEach((p, i) => this.accounts.set(`${url}/${i + 1}`, { type: 'keyPage', authorities: [], chain: [{ type: 'createKeyPage' }], entries: [], keys: p.keyHashes, acceptThreshold: p.threshold, ...(p.rejectThreshold === undefined ? {} : { rejectThreshold: p.rejectThreshold }), ...(p.responseThreshold === undefined ? {} : { responseThreshold: p.responseThreshold }), seats: p.seats ?? [...p.keyHashes.map((publicKeyHash) => ({ publicKeyHash })), ...(p.delegates ?? []).map((delegate) => ({ delegate }))] }));
+    pages.forEach((p, i) => this.accounts.set(`${url}/${i + 1}`, { type: 'keyPage', authorities: [], chain: [{ type: 'createKeyPage' }], entries: [], keys: p.keyHashes, acceptThreshold: p.threshold, ...(p.rejectThreshold === undefined ? {} : { rejectThreshold: p.rejectThreshold }), ...(p.responseThreshold === undefined ? {} : { responseThreshold: p.responseThreshold }), ...(p.version === null ? {} : { version: p.version ?? 1 }), seats: p.seats ?? [...p.keyHashes.map((publicKeyHash) => ({ publicKeyHash })), ...(p.delegates ?? []).map((delegate) => ({ delegate }))] }));
+  }
+
+  /** a key page's members as the node serves them: a zero threshold and an empty key list are OMITTED (Accumulate KeyPage MarshalJSON) */
+  private pageMembers(a: FakeAccount): Record<string, unknown> {
+    const keys = a.seats ?? a.keys!.map((publicKeyHash) => ({ publicKeyHash }));
+    return {
+      ...(keys.length === 0 && a.acceptThreshold === 0 ? {} : { keys }),
+      ...(a.acceptThreshold === 0 ? {} : { acceptThreshold: a.acceptThreshold }),
+      ...(a.rejectThreshold === undefined ? {} : { rejectThreshold: a.rejectThreshold }),
+      ...(a.responseThreshold === undefined ? {} : { responseThreshold: a.responseThreshold }),
+      ...(a.version === undefined ? {} : { version: a.version }),
+    };
   }
 
   private newBlock(time: number | undefined): number {
@@ -173,7 +191,7 @@ export class FakeNode {
           }),
         };
       }
-      return { recordType: 'account', account: { type: a.type, authorities: a.authorities.map((url) => (a.disabled?.includes(url) ? { url, disabled: true } : { url })), ...(a.pageCount === undefined ? {} : { pageCount: a.pageCount }), ...(a.keys === undefined ? {} : { keys: a.seats ?? a.keys.map((publicKeyHash) => ({ publicKeyHash })), acceptThreshold: a.acceptThreshold, ...(a.rejectThreshold === undefined ? {} : { rejectThreshold: a.rejectThreshold }), ...(a.responseThreshold === undefined ? {} : { responseThreshold: a.responseThreshold }) }) } };
+      return { recordType: 'account', account: { type: a.type, authorities: a.authorities.map((url) => (a.disabled?.includes(url) ? { url, disabled: true } : { url })), ...(a.pageCount === undefined ? {} : { pageCount: a.pageCount }), ...(a.keys === undefined ? {} : this.pageMembers(a)) } };
     } finally {
       this.active--;
     }
