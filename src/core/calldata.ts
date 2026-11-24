@@ -29,6 +29,16 @@ export const SELECTOR_APPROVE = '095ea7b3';
  */
 export const SELECTOR_TRANSFER_WITH_REFERENCE = 'e2233eb8';
 const REFERENCE_LENGTH = 100;
+/**
+ * setHolderStatus(address holder, uint8 status): the holder registration of a token the registry flags `holderRegistry` (FDBUSD's registrar call; the
+ * status is its HolderStatus enum None, Active, Suspended, Closed). Understood ONLY at such a token, as the request kind holder.status (beneficiary the
+ * holder, asset the token, amount the status code), read as strictly as transfer (finding DAX-F176, DECISION.md DE-114); at any other contract the selector
+ * stays unknown.
+ */
+export const SELECTOR_SET_HOLDER_STATUS = '72370319';
+const HOLDER_STATUS_LENGTH = 68;
+/** the status codes of the HolderStatus enum, by code: an enum argument outside them is refused by the contract's ABI decoding, and by this decoder */
+export const HOLDER_STATUS_NAMES = ['None', 'Active', 'Suspended', 'Closed'] as const;
 /** execute(address,uint256,bytes): the one wrapper form understood, and only for a wrapper the registry names */
 export const SELECTOR_EXECUTE = 'b61d27f6';
 /** transfer and approve calldata is exactly 4 + 64 bytes; a wrapper's head is 4 + 4 words */
@@ -36,7 +46,7 @@ export const MAX_CALLDATA_BYTES = 65536;
 const ERC20_LENGTH = 68;
 const EXECUTE_MIN_LENGTH = 132;
 
-type Kind = 'erc20.transfer' | 'erc20.approve' | 'native.transfer';
+type Kind = 'erc20.transfer' | 'erc20.approve' | 'native.transfer' | 'holder.status';
 type Refusal = { ok: false; reason: string; detail?: string };
 const refuse = (reason: string, detail?: string): Refusal => (detail === undefined ? { ok: false, reason } : { ok: false, reason, detail });
 
@@ -164,9 +174,9 @@ export interface DecodedCall {
   source: string;
   /** the contract that is called: the token, the named wrapper, or the recipient of a native send */
   target: string;
-  /** the recipient of a transfer or a native send, the SPENDER of an approve */
+  /** the recipient of a transfer or a native send, the SPENDER of an approve, the HOLDER of a holder registration (DE-114) */
   beneficiary: string;
-  beneficiaryRole: 'recipient' | 'spender';
+  beneficiaryRole: 'recipient' | 'spender' | 'holder';
   /** the token address, or `native` */
   asset: string;
   assetSymbol: string;
@@ -261,11 +271,13 @@ function readPolicy(policy: unknown): boolean | null {
 }
 
 function decodedCall(ex: DecodeExecution, hash: string, entry: TokenEntry, kind: Kind, beneficiary: string, asset: string, amount: string, via: string | null, reference: string | null = null): DecodedCall {
-  const amountText = formatUnitsExact(amount, entry.decimals) as string;
+  // a holder registration's amount is the status code, never a token amount: it is shown as the code, in no units
+  const amountText = kind === 'holder.status' ? amount : (formatUnitsExact(amount, entry.decimals) as string);
   const unlimited = kind === 'erc20.approve' && amount === '115792089237316195423570985008687907853269984665640564039457584007913129639935';
   let text: string;
   if (kind === 'erc20.transfer') text = `TRANSFER ${amountText} ${entry.symbol} from ${ex.source} to ${beneficiary} on chain ${ex.chainId} (token ${asset})`;
   else if (kind === 'erc20.approve') text = `APPROVE ${unlimited ? 'UNLIMITED ' : ''}ALLOWANCE (not a transfer): spender ${beneficiary} may spend up to ${amountText} ${entry.symbol} of ${ex.source} on chain ${ex.chainId} (token ${asset})`;
+  else if (kind === 'holder.status') text = `SET HOLDER STATUS of ${beneficiary} to ${amount} (${HOLDER_STATUS_NAMES[Number(amount)]}) on ${entry.symbol} (token ${asset}) on chain ${ex.chainId}, from ${ex.source}: a registration, no value moves`;
   else text = `SEND ${amountText} ${entry.symbol} (native) from ${ex.source} to ${beneficiary} on chain ${ex.chainId}`;
   if (via !== null) text += ` via proxy ${via}`;
   if (reference !== null) text += ` with payment reference ${reference}`;
@@ -277,7 +289,7 @@ function decodedCall(ex: DecodeExecution, hash: string, entry: TokenEntry, kind:
     source: ex.source,
     target: ex.target,
     beneficiary,
-    beneficiaryRole: kind === 'erc20.approve' ? 'spender' : 'recipient',
+    beneficiaryRole: kind === 'erc20.approve' ? 'spender' : kind === 'holder.status' ? 'holder' : 'recipient',
     asset,
     assetSymbol: entry.symbol,
     decimals: entry.decimals,
@@ -328,6 +340,23 @@ function decodeInner(input: unknown, registryInput: unknown, policyInput: unknow
     const reading = { kind: 'erc20.transfer' as const, beneficiary: to, amount };
     if (ex.value !== '0') return undecoded(ctx, 'token_call_carries_value', undefined, { reading });
     return decodedCall(ex, ctx.hash, token, 'erc20.transfer', to, ex.target, amount, null, '0x' + hexOf(bytes, 68, 100));
+  }
+
+  // the holder registration (DAX-F176, DE-114): understood only for a token the registry flags, and then read as strictly as transfer: exactly 4 + 64 bytes,
+  // the address word padded with twelve zero bytes, a status word whose 31 high bytes are zero and whose value is a HolderStatus code; at any other contract
+  // the selector is as unknown as it ever was, so the call stays not bound at a seat without allowRaw (DE-91)
+  if (bytes.length >= 4 && hexOf(bytes, 0, 4) === SELECTOR_SET_HOLDER_STATUS) {
+    const token = findToken(registry, ex.chainId, ex.target);
+    if (token === null || token.holderRegistry !== true) return undecoded(ctx, 'selector_unknown', SELECTOR_SET_HOLDER_STATUS);
+    if (bytes.length < HOLDER_STATUS_LENGTH) return undecoded(ctx, 'calldata_too_short', 'expected ' + HOLDER_STATUS_LENGTH + ' got ' + bytes.length);
+    if (bytes.length > HOLDER_STATUS_LENGTH) return undecoded(ctx, 'calldata_trailing_bytes', 'expected ' + HOLDER_STATUS_LENGTH + ' got ' + bytes.length);
+    if (!zeroPad(bytes, 4, 16)) return undecoded(ctx, 'address_pad_dirty');
+    const status = wordValue(bytes, 36);
+    if (!zeroPad(bytes, 36, 67) || status >= BigInt(HOLDER_STATUS_NAMES.length)) return undecoded(ctx, 'holder_status_invalid', status.toString(16));
+    const holder = '0x' + hexOf(bytes, 16, 36);
+    const reading = { kind: 'holder.status' as const, beneficiary: holder, amount: status.toString() };
+    if (ex.value !== '0') return undecoded(ctx, 'token_call_carries_value', undefined, { reading });
+    return decodedCall(ex, ctx.hash, token, 'holder.status', holder, ex.target, status.toString(), null);
   }
 
   const r = readBytes(bytes);

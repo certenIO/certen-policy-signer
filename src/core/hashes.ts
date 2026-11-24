@@ -4,7 +4,7 @@
  * lowercase hex (the proof v2 convention). `*Preimage` returns the bytes that are hashed so that an implementer can find
  * which step differs; `hash*` returns the digest. These helpers throw CoreError on input that has no hash.
  */
-import { ACTION_KINDS, canonicalGrant } from './grant-profile.js';
+import { REQUEST_KINDS, canonicalGrant } from './grant-profile.js';
 import { canonicalRegistration } from './registry-profile.js';
 import { CoreError, address20, be64, concat, hash32, isAmount, isPlainObject, lp, sha256, toHex, utf8 } from './bytes.js';
 import { canonicalize } from './jcs.js';
@@ -79,7 +79,8 @@ export function requestPreimage(request: unknown): Uint8Array {
   const chainId = request['chainId'];
   if (typeof chainId !== 'number' || !Number.isSafeInteger(chainId) || chainId < 1) throw new CoreError('request_field_invalid', 'chainId');
   const kind = request['kind'];
-  if (typeof kind !== 'string' || !(ACTION_KINDS as readonly string[]).includes(kind)) throw new CoreError('request_field_invalid', 'kind');
+  // the REQUEST kinds (DE-114: holder.status is a request kind, never a Grant action)
+  if (typeof kind !== 'string' || !(REQUEST_KINDS as readonly string[]).includes(kind)) throw new CoreError('request_field_invalid', 'kind');
   const asset = request['asset'];
   if (asset !== 'native') address20(asset, 'asset');
   const amount = request['amount'];

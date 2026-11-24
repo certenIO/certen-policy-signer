@@ -153,8 +153,9 @@ describe('relay: accumulate', () => {
     const sha = (h: string) => crypto.createHash('sha256').update(Buffer.from(h, 'hex')).digest('hex');
     // Duplicate dropped; partition (no signer) dropped; unreadable vote "maybe" dropped rather than read as accept.
     expect(out.signatures).toEqual([
-      { signer: 'acc://fictional-corporate.acme/book/1', book: 'acc://fictional-corporate.acme/book', type: 'ed25519', vote: 'accept', keyHash: sha('11'.repeat(32)), delegators: [], timestamp: 1790000000001 },
-      { signer: 'acc://fictional-approver-ada.acme/book/1', book: 'acc://fictional-approver-ada.acme/book', type: 'ecdsaSha256', vote: 'reject', keyHash: sha('22'.repeat(32)), delegators: ['acc://fictional-corporate.acme/book/1'], timestamp: 1790000000002 },
+      // DAX-F177 (b): every keyed signature also carries the signer version it names (and the initiating one would carry initiator: true; this record names none)
+      { signer: 'acc://fictional-corporate.acme/book/1', book: 'acc://fictional-corporate.acme/book', type: 'ed25519', vote: 'accept', keyHash: sha('11'.repeat(32)), delegators: [], timestamp: 1790000000001, signerVersion: expect.any(Number) },
+      { signer: 'acc://fictional-approver-ada.acme/book/1', book: 'acc://fictional-approver-ada.acme/book', type: 'ecdsaSha256', vote: 'reject', keyHash: sha('22'.repeat(32)), delegators: ['acc://fictional-corporate.acme/book/1'], timestamp: 1790000000002, signerVersion: expect.any(Number) },
       { signer: 'acc://fictional-bank.acme/book/1', book: 'acc://fictional-bank.acme/book', type: 'authority', vote: 'abstain', delegators: [] },
     ]);
   });

@@ -9,6 +9,13 @@ export const GRANT_SCHEMA = 'certen.grant/v1';
 /** the closed action set (GR-84): three typed kinds and `raw`, the kind of a single call that no typed kind describes (GRANT.md section 6a); a decoder never answers raw */
 export const ACTION_KINDS = ['erc20.transfer', 'erc20.approve', 'native.transfer', 'raw'] as const;
 export type ActionKind = (typeof ACTION_KINDS)[number];
+/**
+ * The kinds a bound REQUEST may carry (DECISION.md section 2): the Grant's action kinds and `holder.status`, a declared holder registration of a token the
+ * policy flags as a holder registry (finding DAX-F176, DE-114). It is never a Grant action: the Grant action set stays closed (DE-107), so a Grant can
+ * never name it and a Grant-bound request of that kind is never within a Grant's scope.
+ */
+export const REQUEST_KINDS = [...ACTION_KINDS, 'holder.status'] as const;
+export type RequestKind = (typeof REQUEST_KINDS)[number];
 export const SUBJECT_TYPES = ['agent', 'merchant', 'client'] as const;
 export type SubjectType = (typeof SUBJECT_TYPES)[number];
 

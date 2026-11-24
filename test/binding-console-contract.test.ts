@@ -31,6 +31,9 @@ function scene() {
     { keyHashes: ['bb'.repeat(32), 'CC'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 2, responseThreshold: 2 },
     { keyHashes: [], delegates: ['acc://fic-ops.acme/ops'], threshold: 1 },
   ]);
+  // DAX-F170: the delegate books the roster reads (fic-ops with an emptied second page, D9)
+  node.book('acc://fic-risk.acme/risk', [{ keyHashes: ['dd'.repeat(32), 'ee'.repeat(32)], delegates: ['acc://fic-ops.acme/ops'], threshold: 2, version: 3 }]);
+  node.book('acc://fic-ops.acme/ops', [{ keyHashes: ['ff'.repeat(32)], threshold: 1 }, { keyHashes: [], threshold: 0, version: 2 }]);
   return node;
 }
 
@@ -72,11 +75,30 @@ describe('every route answers what the Console strict parser accepts (fake node 
     const { get } = await serveRelay(scene().query);
     const r = await get(`/relay/keybook/${enc(BOOK)}`);
     expect(r.status).toBe(200);
-    expect(parseKeybook(r.body)).toEqual([
-      { url: `${BOOK}/1`, keyHashes: ['aa'.repeat(32)], delegates: [], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'aa'.repeat(32), delegate: null }] },
-      { url: `${BOOK}/2`, keyHashes: ['bb'.repeat(32), 'cc'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 2, responseThreshold: 2, entries: [{ keyHash: 'bb'.repeat(32), delegate: null }, { keyHash: 'cc'.repeat(32), delegate: null }, { keyHash: null, delegate: 'acc://fic-risk.acme/risk' }] },
-      { url: `${BOOK}/3`, keyHashes: [], delegates: ['acc://fic-ops.acme/ops'], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: null, delegate: 'acc://fic-ops.acme/ops' }] },
-    ]);
+    expect(parseKeybook(r.body)).toEqual({
+      pages: [
+        { url: `${BOOK}/1`, version: 1, keyHashes: ['aa'.repeat(32)], delegates: [], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'aa'.repeat(32), delegate: null }] },
+        { url: `${BOOK}/2`, version: 1, keyHashes: ['bb'.repeat(32), 'cc'.repeat(32)], delegates: ['acc://fic-risk.acme/risk'], threshold: 2, rejectThreshold: 2, responseThreshold: 2, entries: [{ keyHash: 'bb'.repeat(32), delegate: null }, { keyHash: 'cc'.repeat(32), delegate: null }, { keyHash: null, delegate: 'acc://fic-risk.acme/risk' }] },
+        { url: `${BOOK}/3`, version: 1, keyHashes: [], delegates: ['acc://fic-ops.acme/ops'], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: null, delegate: 'acc://fic-ops.acme/ops' }] },
+      ],
+      // DAX-F170: the delegation closure, each book once (fic-risk delegates on to fic-ops, read once); fic-ops page 2 is an emptied page (D9)
+      delegateBooks: {
+        'acc://fic-risk.acme/risk': [{ url: 'acc://fic-risk.acme/risk/1', version: 3, keyHashes: ['dd'.repeat(32), 'ee'.repeat(32)], delegates: ['acc://fic-ops.acme/ops'], threshold: 2, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'dd'.repeat(32), delegate: null }, { keyHash: 'ee'.repeat(32), delegate: null }, { keyHash: null, delegate: 'acc://fic-ops.acme/ops' }] }],
+        'acc://fic-ops.acme/ops': [
+          { url: 'acc://fic-ops.acme/ops/1', version: 1, keyHashes: ['ff'.repeat(32)], delegates: [], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'ff'.repeat(32), delegate: null }] },
+          { url: 'acc://fic-ops.acme/ops/2', version: 2, keyHashes: [], delegates: [], threshold: 0, rejectThreshold: 0, responseThreshold: 0, entries: [] },
+        ],
+      },
+    });
+  });
+
+  it('DAX-F170: a keybook answer the Console reads as unreadable is one the relay never gives (old shape, missing version, partial closure)', async () => {
+    const { get } = await serveRelay(scene().query);
+    const body = (await get(`/relay/keybook/${enc(BOOK)}`)).body as { pages: Array<Record<string, unknown>>; delegateBooks: Record<string, unknown> };
+    expect(parseKeybook(body)).not.toBeNull();
+    expect(parseKeybook({ pages: body.pages })).toBeNull(); // an older relay: no delegateBooks
+    expect(parseKeybook({ ...body, pages: body.pages.map(({ version: _v, ...p }) => p) })).toBeNull(); // no version
+    expect(parseKeybook({ ...body, delegateBooks: { ...body.delegateBooks, 'acc://fic-ops.acme/ops': { pages: [] } } })).toBeNull(); // a delegate book with no page
   });
 
   it('chainlen: { length } and nothing else, one node query', async () => {
@@ -120,9 +142,10 @@ describe('the same contract on the recorded REAL Kermit answers (DAX-3A, FICTION
     expect(parseHistory((await get(`/relay/history/${enc(`${G}/certen-grants`)}`)).body)).toEqual({ types: ['createDataAccount', 'writeData', 'writeData', 'writeData'], incomplete: false });
     expect(parseAuthorities((await get(`/relay/authorities/${enc(`${G}/certen-grants`)}`)).body)).toEqual([`${G}/book`]);
     expect(parseChainLen((await get(`/relay/chainlen/${enc(`${G}/certen-grants`)}`)).body)).toBe(4);
-    expect(parseKeybook((await get(`/relay/keybook/${enc(`${G}/book`)}`)).body)).toEqual([
-      { url: `${G}/book/1`, keyHashes: ['23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd'], delegates: [], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: '23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd', delegate: null }] },
-    ]);
+    expect(parseKeybook((await get(`/relay/keybook/${enc(`${G}/book`)}`)).body)).toEqual({
+      pages: [{ url: `${G}/book/1`, version: 3, keyHashes: ['23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd'], delegates: [], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: '23cdfdf6dde7d68ec49537e68e362df9c130057e3ed51f0873c157120e7554fd', delegate: null }] }],
+      delegateBooks: {},
+    }); // the recorded REAL page carries its stored version (3)
     expect(parseDataEntries((await get(`/relay/data/${enc(`${G}/certen-subjects`)}`)).body)).toHaveLength(3);
     expect(parseDataEntries((await get(`/relay/data/${enc('acc://d3adfbd25-agent.acme/certen-acceptances')}`)).body)).toHaveLength(3);
   });

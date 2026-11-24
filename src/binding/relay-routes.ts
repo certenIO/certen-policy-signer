@@ -15,8 +15,11 @@
  *   GET /relay/history/:account     -> { types: [string], incomplete: boolean }              the account's own main chain from its
  *                                                                                           creation; never an answer when the chain
  *                                                                                           could not be read back
- *   GET /relay/keybook/:book        -> { pages: [{ url, keyHashes: [64 hex], delegates: [url], threshold, rejectThreshold, responseThreshold, entries: [{ keyHash?, delegate? }] }] }
- *                                      (DAX-F167a/F167c: the stored reject and response thresholds, 0 = the page sets none; the key entries in chain order)
+ *   GET /relay/keybook/:book        -> { pages: [Page], delegateBooks: { <delegate url>: { pages: [Page] } } }
+ *                                      Page = { url, version, keyHashes: [64 hex], delegates: [url], threshold, rejectThreshold, responseThreshold, entries: [{ keyHash?, delegate? }] }
+ *                                      (DAX-F167a/F167c: the stored reject and response thresholds, 0 = the page sets none; the key entries in chain order.
+ *                                      DAX-F170: the page's stored version (>= 1); threshold 0 only on an emptied page past the first (no entries);
+ *                                      delegateBooks = every book the delegation reaches, transitively, each once, read as strictly; any failed read = 502)
  *                                                                                           the ROSTER of the Console's quorum (the current
  *                                                                                           members of a required book): a key seat is its
  *                                                                                           key hash, a delegate seat stands as its book url.
@@ -37,6 +40,7 @@
  */
 import { isAccUrl, isAdiUrl } from '../core/grant-profile.js';
 import type { CountedReader } from './read-cache.js';
+import type { RosterPage } from './node-source.js';
 
 export type AccountRoute = 'data' | 'authorities' | 'history' | 'keybook' | 'chainlen';
 
@@ -97,7 +101,51 @@ export async function relayAccountRoute(reader: CountedReader, route: AccountRou
     const headers = headersOf(reader);
     return h === null ? { status: 502, body: { error: 'unreadable' }, headers } : { status: 200, headers, body: { types: h.types, incomplete: h.incomplete } };
   }
-  const p = reader.keyBookPages === undefined ? null : await reader.keyBookPages(account);
+  const r = await rosterOf(reader, account);
   const headers = headersOf(reader);
-  return p === null ? { status: 502, body: { error: 'unreadable' }, headers } : { status: 200, headers, body: { pages: p.map((x) => ({ url: x.url, keyHashes: x.keyHashes, delegates: x.delegates, threshold: x.threshold, rejectThreshold: x.rejectThreshold, responseThreshold: x.responseThreshold, entries: x.entries.map((e) => ({ ...(e.keyHash === null ? {} : { keyHash: e.keyHash }), ...(e.delegate === null ? {} : { delegate: e.delegate }) })) })) } };
+  if (r === null) return { status: 502, body: { error: 'unreadable' }, headers };
+  const delegateBooks: Record<string, { pages: unknown[] }> = {};
+  for (const [url, pages] of r.delegateBooks) delegateBooks[url] = { pages: pages.map(pageAnswer) };
+  return { status: 200, headers, body: { pages: r.pages.map(pageAnswer), delegateBooks } };
+}
+
+/** one page of the keybook answer: the same shape for the required book and for every delegate book */
+function pageAnswer(x: RosterPage): unknown {
+  return {
+    url: x.url, version: x.version, keyHashes: x.keyHashes, delegates: x.delegates, threshold: x.threshold, rejectThreshold: x.rejectThreshold, responseThreshold: x.responseThreshold,
+    entries: x.entries.map((e) => ({ ...(e.keyHash === null ? {} : { keyHash: e.keyHash }), ...(e.delegate === null ? {} : { delegate: e.delegate }) })),
+  };
+}
+
+/** at most this many books in the delegation closure of one required book; more is unreadable, never a truncated closure */
+export const MAX_DELEGATE_BOOKS = 64;
+
+/**
+ * DAX-F170 D3/D4: the roster of a required book AND of every book its delegation reaches. A delegate entry votes for its page only once ITS OWN book
+ * decides (Accumulate block/sig_authority.go: the delegate's authority signature is produced when one of the delegate book's pages is ready,
+ * block/transaction.go AuthorityWillVote 277-296 / SignerWillVote 297-383), so the Console needs each delegate book's pages, read as strictly as the
+ * required book's, and theirs in turn: the transitive closure, each book read once (through the same read cache), keyed by the delegate url exactly as
+ * an entry names it. A cycle (A -> B -> A; only self-delegation is refused, chain/update_key_page.go 162-166) closes on a book already read. ANY read
+ * that fails (a node error, a missing account, an account that is not a key book, a page that breaks a rule) makes the whole roster unreadable.
+ */
+export async function rosterOf(reader: CountedReader, book: string): Promise<{ pages: RosterPage[]; delegateBooks: Map<string, RosterPage[]> } | null> {
+  if (reader.keyBookPages === undefined) return null;
+  const pages = await reader.keyBookPages(book);
+  if (pages === null) return null;
+  const delegateBooks = new Map<string, RosterPage[]>();
+  const queue: string[] = [];
+  const enqueue = (ps: RosterPage[]): void => {
+    for (const p of ps) for (const d of p.delegates) if (!delegateBooks.has(d) && !queue.includes(d)) queue.push(d);
+  };
+  enqueue(pages);
+  while (queue.length > 0) {
+    const d = queue.shift()!;
+    if (delegateBooks.size >= MAX_DELEGATE_BOOKS) return null;
+    if (!BOOK.test(d) || /\/\d+$/.test(d)) return null; // a delegate that is not a key book URL cannot be read as one
+    const dp = d === book ? pages : await reader.keyBookPages(d);
+    if (dp === null) return null;
+    delegateBooks.set(d, dp);
+    enqueue(dp);
+  }
+  return { pages, delegateBooks };
 }

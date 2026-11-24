@@ -242,7 +242,7 @@ describe('the key pages (the quorum roster) are cached by the TTL ALONE, the cha
   it('a roster read inside the TTL costs no node query, and is the same facts; no chain-length probe is made for it', async () => {
     const r = rosterRig();
     const first = await r.cache.evaluation().keyBookPages(RISK);
-    expect(first).toEqual([{ url: `${RISK}/1`, keyHashes: ['aa'.repeat(32)], delegates: ['acc://fic-ops.acme/ops'], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'aa'.repeat(32), delegate: null }, { keyHash: null, delegate: 'acc://fic-ops.acme/ops' }] }]);
+    expect(first).toEqual([{ url: `${RISK}/1`, version: 1, keyHashes: ['aa'.repeat(32)], delegates: ['acc://fic-ops.acme/ops'], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'aa'.repeat(32), delegate: null }, { keyHash: null, delegate: 'acc://fic-ops.acme/ops' }] }]);
     const before = r.node.calls.length;
     r.clock.ms += 10_000;
     const ev = r.cache.evaluation();
@@ -267,7 +267,7 @@ describe('the key pages (the quorum roster) are cached by the TTL ALONE, the cha
     r.node.accounts.get(`${RISK}/1`)!.seats = [{}];
     expect(await r.cache.evaluation().keyBookPages(RISK)).toBeNull();
     r.node.accounts.get(`${RISK}/1`)!.seats = [{ publicKeyHash: 'aa'.repeat(32) }];
-    expect(await r.cache.evaluation().keyBookPages(RISK)).toEqual([{ url: `${RISK}/1`, keyHashes: ['aa'.repeat(32)], delegates: [], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'aa'.repeat(32), delegate: null }] }]);
+    expect(await r.cache.evaluation().keyBookPages(RISK)).toEqual([{ url: `${RISK}/1`, version: 1, keyHashes: ['aa'.repeat(32)], delegates: [], threshold: 1, rejectThreshold: 0, responseThreshold: 0, entries: [{ keyHash: 'aa'.repeat(32), delegate: null }] }]);
   });
 });
 

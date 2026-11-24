@@ -29,7 +29,11 @@ import { decodeSummary } from '../src/resolver.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const VECTORS = join(ROOT, '..', 'certen-contracts', 'test', 'vectors', 'operation_id_test_vectors.json');
-const PRODUCER = join(ROOT, '..', 'api-bridge', 'src', 'CertenIntentService.ts');
+// The producer checkout: CERTEN_API_BRIDGE_REPO when set (a worktree under .worktrees has no `../api-bridge` sibling, so the cross-repo run names
+// one, as CERTEN_TCL_REPO / CERTEN_CONSOLE_REPO name theirs), else the sibling repo. When the variable is SET the producer must be there: the test
+// then runs, and fails, rather than skipping on a wrong path.
+const API_BRIDGE = process.env['CERTEN_API_BRIDGE_REPO'];
+const PRODUCER = join(API_BRIDGE ?? join(ROOT, '..', 'api-bridge'), 'src', 'CertenIntentService.ts');
 
 /** The one vector both language suites pin, by its description. */
 function subjectVector(): { blob0: Record<string, unknown>; blob1: unknown; blob2: unknown; blob3: unknown } {
@@ -113,7 +117,8 @@ describe('the demo and verification producer round-trips through the decoder', (
 });
 
 describe('producer and consumer name the same members', () => {
-  it.runIf(existsSync(PRODUCER))('api-bridge writes exactly the members this repo reads', () => {
+  it.runIf(API_BRIDGE !== undefined || existsSync(PRODUCER))('api-bridge writes exactly the members this repo reads', () => {
+    expect(existsSync(PRODUCER), `CERTEN_API_BRIDGE_REPO names no api-bridge checkout (${PRODUCER} is missing)`).toBe(true);
     const producer = readFileSync(PRODUCER, 'utf8');
 
     // The producer's normalizer is the single place blob 0's subject shape is decided.

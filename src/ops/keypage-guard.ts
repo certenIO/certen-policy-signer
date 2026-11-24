@@ -288,6 +288,7 @@ export function operationsFromKeyPageOps(ops: KeyPageOp[], ourKeyHash?: string):
       case 'add-delegate': return { type: 'add', delegate: o.delegate };
       case 'remove-delegate': return { type: 'remove', delegate: o.delegate };
       case 'set-threshold': return { type: 'setThreshold', threshold: o.threshold };
+      case 'set-reject-threshold': return { type: 'setRejectThreshold', threshold: o.threshold };
       case 'rotate-key':
         return ourKeyHash ? { type: 'update', oldKeyHash: ourKeyHash, newKeyHash: o.newKeyHash } : { type: 'rotate-key', unrecognized: true };
       default: return { type: String((o as { op?: unknown }).op), unrecognized: true };

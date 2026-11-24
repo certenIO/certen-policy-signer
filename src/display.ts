@@ -134,6 +134,7 @@ export function proposalOperations(ops: KeyPageOp[]): Array<Record<string, unkno
       case 'add-key': return { type: 'add', entry: { keyHash: o.keyHash } };
       case 'remove-key': return { type: 'remove', entry: { keyHash: o.keyHash } };
       case 'set-threshold': return { type: 'setThreshold', threshold: o.threshold };
+      case 'set-reject-threshold': return { type: 'setRejectThreshold', threshold: o.threshold };
       case 'add-delegate': return { type: 'add', entry: { delegate: o.delegate } };
       case 'remove-delegate': return { type: 'remove', entry: { delegate: o.delegate } };
       default: throw new Error(`operation ${(o as { op: string }).op} cannot be proposed`);

@@ -64,7 +64,12 @@ export interface RosterEntry { keyHash: string | null; delegate: string | null }
  * rejectThreshold and responseThreshold: as stored (0 = the page sets none); entries: the page's key entries in chain order (Accumulate counts a page per
  * entry: SignerWillVote over the page's signature set, one entry per key entry and delegation path), so an entry that holds a key AND a delegate is one
  */
-export interface RosterPage extends KeyPageInfo { delegates: string[]; rejectThreshold: number; responseThreshold: number; entries: RosterEntry[] }
+/**
+ * DAX-F170: `version` is the page's stored version (>= 1; a vote cast at an older version is not in the page's signature set any more). `threshold` is
+ * >= 1 on a page with entries and 0 only on an EMPTIED page past the first (no entries, every threshold 0; it never votes, the book decides through its
+ * other pages). The core's own readers never see such a page: the signer hands key pages only to the relay roster.
+ */
+export interface RosterPage extends KeyPageInfo { version: number; delegates: string[]; rejectThreshold: number; responseThreshold: number; entries: RosterEntry[] }
 
 const PAGE = 100;
 const MAX_RECORDS = 100_000;
@@ -189,9 +194,24 @@ export function createNodeSource(query: ChainQuery): NodeSource {
       for (let i = 1; i <= count; i++) {
         const url = `${book}/${i}`;
         const p = await ask(m, url);
-        const keys = p?.account?.keys;
-        const threshold = Number(p?.account?.acceptThreshold);
-        if (!p?.account || !Array.isArray(keys) || !Number.isSafeInteger(threshold) || threshold < 1) return null;
+        if (!p?.account || p.account.type !== 'keyPage') return null;
+        // DAX-F170 D9: an EMPTIED page. RemoveKey caps every threshold at the remaining entries (Accumulate chain/update_key_page.go 253-262) and
+        // refuses to empty page 1 (248-250); SetThreshold 0 is refused (189-192). So a page past the first may hold no entry at all, with its accept,
+        // reject and response thresholds 0, which the node serves with `keys` and `acceptThreshold` omitted (KeyPage MarshalJSON omits zero values).
+        // That page never votes (SignerWillVote has no signature to count) and the book decides through its other pages: a READABLE state. Page 1 so,
+        // a page with entries and no accept threshold, or an accept threshold with no entries is no state the chain builds: unreadable.
+        const rawKeys = p.account.keys;
+        const rawAccept = p.account.acceptThreshold;
+        const emptied = i > 1 && (rawKeys === undefined || rawKeys === null || (Array.isArray(rawKeys) && rawKeys.length === 0)) && (rawAccept === undefined || rawAccept === null || Number(rawAccept) === 0);
+        const keys: any[] = emptied ? [] : rawKeys;
+        const threshold = emptied ? 0 : Number(rawAccept);
+        if (!Array.isArray(keys) || !Number.isSafeInteger(threshold) || (!emptied && (threshold < 1 || keys.length === 0 || threshold > keys.length))) return null;
+        // DAX-F170 D2: the page VERSION as stored. Accumulate sets 1 at creation (chain/create_key_page.go 66, create_identity.go 172, create_key_book.go 97)
+        // and adds 1 on every UpdateKeyPage (update_key_page.go 143, 318-319); a signature at a newer version replaces the page's whole signature set
+        // (block/sig_common.go 232-251). The node omits only a 0, which no page has: absent, not a whole number, or below 1 makes the book unreadable.
+        const rawVersion = p.account.version;
+        const version = rawVersion === undefined || rawVersion === null || rawVersion === '' ? NaN : Number(rawVersion);
+        if (!Number.isSafeInteger(version) || version < 1) return null;
         // DAX-F167a: the reject threshold as stored; the node omits it when the page sets none (0). A value that is not a whole number, or one above
         // the page's entries (Accumulate caps it there), makes the book unreadable: never a guessed threshold.
         const rawReject = p.account.rejectThreshold;
@@ -226,7 +246,7 @@ export function createNodeSource(query: ChainQuery): NodeSource {
         // DAX-F167c: a key hash or a delegate twice on one page is not a page the chain builds (UpdateKeyPage refuses a duplicate entry) and only one of
         // the two could ever be voted on (EntryByKeyHash / EntryByDelegate find one): the book is unreadable, never a guessed count
         if (new Set(keyHashes).size !== keyHashes.length || new Set(delegates).size !== delegates.length) return null;
-        pages.push({ url, keyHashes, delegates, threshold, rejectThreshold, responseThreshold, entries });
+        pages.push({ url, version, keyHashes, delegates, threshold, rejectThreshold, responseThreshold, entries });
       }
       return pages;
     },
