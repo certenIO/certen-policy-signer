@@ -53,6 +53,8 @@ export interface RelayClientsDeps {
   recordAwaiting?: (r: { txHash: string; page: string; op: KeyPageOp }) => Promise<void>;
   /** Phase 7: `POST /relay/governance/proposal` (officer intake). Absent => 404. */
   propose?: (page: string, operations: KeyPageOp[], proposer: string) => Promise<{ status: number; body: unknown }>;
+  /** DAX-F188: `POST /relay/governance/proposal/withdraw` (officer intake). Absent => 403, as `propose`. */
+  withdrawProposal?: (proposalId: string, by: string, note: string) => Promise<{ status: number; body: unknown }>;
   /**
    * The Accumulate facts the Console's reader needs (scope `chain`): one evaluation view of the SAME read cache the signer's own
    * decision binding uses, so the Console's reads and the signer's share the cache, the TTL, the concurrency bound and the
@@ -285,6 +287,27 @@ export function createRelayClientsHandler(d: RelayClientsDeps): RelayClientsHand
         if (e instanceof ExecutionInputError) return send(res, 400, { error: e.message });
         return send(res, 502, { error: `execution lookup failed: ${(e as Error).message}` });
       }
+    }
+    // POST /relay/governance/proposal/withdraw  { proposalId, by, note } — DAX-F188; a proposal no signature was sent for becomes
+    // `withdrawn` (never prepared again); one with a signature sent is refused by name. Nothing is signed or submitted.
+    if (path === '/relay/governance/proposal/withdraw') {
+      if (!need('governance')) return send(res, 403, { error: 'forbidden: scope governance required' });
+      if (method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+      if (!d.governanceKey || !d.withdrawProposal) return send(res, 403, { error: 'proposals disabled (needs admin.governance_admin_key and officer_intake)' });
+      if (!keyMatches(req.headers['x-governance-key'], d.governanceKey)) return send(res, 401, { error: 'unauthorized' });
+      const raw = await readCapped(req, 16 * 1024);
+      if (raw === null) return send(res, 413, { error: 'body too large' });
+      let b: { proposalId?: unknown; by?: unknown; note?: unknown };
+      try { b = JSON.parse(raw); } catch { return send(res, 400, { error: 'body must be JSON' }); }
+      if (b === null || typeof b !== 'object' || Array.isArray(b)) return send(res, 400, { error: 'body must be a JSON object' });
+      if (typeof b.proposalId !== 'string' || !/^(?:proposal:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(b.proposalId)) {
+        return send(res, 400, { error: 'proposalId must be proposal:<uuid>' });
+      }
+      if (typeof b.by !== 'string' || !/^[^\u0000-\u001f\u007f]{1,128}$/.test(b.by) || b.by.trim() === '') return send(res, 400, { error: 'by must be 1..128 printable characters' });
+      if (typeof b.note !== 'string' || !/^[^\u0000-\u001f\u007f]{12,2000}$/.test(b.note.trim())) return send(res, 400, { error: 'note must say why, in 12..2000 printable characters' });
+      d.logger.warn({ audit: 'relay_governance_proposal_withdraw', client: client.name, proposalId: b.proposalId, by: b.by }, 'GOVERNANCE PROPOSAL WITHDRAWAL REQUESTED (relay client)');
+      const out = await d.withdrawProposal(b.proposalId, b.by.trim(), b.note.trim());
+      return send(res, out.status, out.body);
     }
     // POST /relay/governance/proposal  { page, operations: [...], proposer } — Phase 7; nothing is signed or submitted.
     if (path === '/relay/governance/proposal') {

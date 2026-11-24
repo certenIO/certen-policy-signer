@@ -24,7 +24,7 @@ import {
 import type { PendingTxResult, SignerInfo, SubmitResult, TxSignatures } from '../accumulate/client.js';
 import type { KeyPageOp } from '../ops/keypage.js';
 import type { PageState } from '../ops/rotate.js';
-import type { PolicyRequest } from '../types.js';
+import type { PolicyRequest, ProposalWithdrawal } from '../types.js';
 import type { Logger } from '../logger.js';
 import type { Store } from '../store/store.js';
 import type { IntakeSubmission, LandedOfficerSignature } from './landed.js';
@@ -98,8 +98,11 @@ export interface Proposal {
   summaryHash: string;
   createdAt: number;
   expiresAt: number;
-  /** `submitting`: one intake holds it between its checks and its submit; nothing else may prepare or submit it. */
-  status: 'proposed' | 'submitting' | 'submitted' | 'landed';
+  /**
+   * `submitting`: one intake holds it between its checks and its submit; nothing else may prepare or submit it.
+   * `withdrawn` (DAX-F188): taken back by its governance seat while still `proposed` (no signature sent); it is never prepared again.
+   */
+  status: 'proposed' | 'submitting' | 'submitted' | 'landed' | 'withdrawn';
   txHash?: string;
   /**
    * G-39: the transaction hash being submitted while `submitting`. Recorded (and persisted) BEFORE the submit,
@@ -112,6 +115,10 @@ export interface Proposal {
    * that finds the transaction on chain needs it to record the awaiting request co-signers sign by (review #4).
    */
   submittedVia?: { page: string; delegators: string[] };
+  /** DAX-F188: who withdrew it, when (epoch ms) and why; present exactly when `status` is `withdrawn`. */
+  withdrawnBy?: string;
+  withdrawnAt?: number;
+  withdrawNote?: string;
 }
 
 /** G-39: where open prepares and proposals are kept so they survive a restart (the signer's Store). */
@@ -146,6 +153,11 @@ export interface OfficerIntake {
   handle: OfficerIntakeHandler;
   /** POST /relay/governance/proposal (authenticated by relay-clients.ts). */
   propose(page: string, operations: KeyPageOp[], proposer: string): Promise<{ status: number; body: unknown }>;
+  /**
+   * DAX-F188: POST /relay/governance/proposal/withdraw (authenticated by relay-clients.ts). A `proposed` proposal becomes
+   * `withdrawn` and its open prepares are dropped; one a signature was sent for is refused by name (409).
+   */
+  withdraw(proposalId: string, by: string, note: string): Promise<{ status: number; body: unknown }>;
   /** For tests and diagnostics. */
   proposals(): Proposal[];
   /**
@@ -808,6 +820,46 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     return { status: 200, body: { proposalId: `proposal:${p.id}`, display, summaryHash: p.summaryHash } };
   }
 
+  /**
+   * DAX-F188: withdraw a proposal no signature has been sent for. Claimed SYNCHRONOUSLY (as the intake claims `submitting`), so a
+   * concurrent intake either took it first (and this refuses by name) or finds it withdrawn and submits nothing. A proposal left
+   * `submitting` is settled against the chain first; one that may be on chain is never withdrawn.
+   */
+  async function withdraw(proposalId: string, by: string, note: string): Promise<{ status: number; body: unknown }> {
+    sweep();
+    const m = /^(?:proposal:)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(proposalId.toLowerCase());
+    const p = m ? proposals.get(m[1]) : undefined;
+    if (!p) return { status: 404, body: { error: 'proposal not found or expired' } };
+    await reconcile(p);
+    const answer = (already: boolean, droppedPrepares: number): { status: number; body: ProposalWithdrawal } => ({
+      status: 200,
+      body: {
+        proposalId: `proposal:${p.id}`, status: 'withdrawn', withdrawnBy: p.withdrawnBy!, withdrawnAt: new Date(p.withdrawnAt!).toISOString(),
+        note: p.withdrawNote!, droppedPrepares, already,
+      },
+    });
+    if (p.status === 'withdrawn') return answer(true, 0);
+    if (p.status !== 'proposed' || inFlight.has(p.id)) {
+      d.logger.warn({ audit: 'governance_proposal_withdraw_refused', proposalId: p.id, page: p.page, status: p.status, by }, 'GOVERNANCE PROPOSAL WITHDRAWAL REFUSED: a signature was already sent for it');
+      return { status: 409, body: { error: `proposal already ${p.status}`, status: p.status } };
+    }
+    // the claim, before any await
+    p.status = 'withdrawn'; p.withdrawnBy = by; p.withdrawnAt = now(); p.withdrawNote = note;
+    const open = [...prepares.values()].filter((r) => r.kind === 'proposal' && r.proposalId === p.id);
+    for (const r of open) prepares.delete(r.prepareId);
+    try { await saveProposal(p); }
+    catch (e) {
+      // not recorded: give it back exactly as it was, open prepares included
+      p.status = 'proposed'; delete p.withdrawnBy; delete p.withdrawnAt; delete p.withdrawNote;
+      for (const r of open) prepares.set(r.prepareId, r);
+      d.logger.error({ proposalId: p.id, err: (e as Error).message }, 'officer intake: the withdrawal could not be recorded; the proposal stays proposed');
+      return { status: 503, body: { error: 'withdrawal could not be recorded; try again' } };
+    }
+    for (const r of open) await dropPrepare(r.prepareId).catch(logDrop('prepare', r.prepareId));
+    d.logger.warn({ audit: 'governance_proposal_withdrawn', proposalId: p.id, page: p.page, by, note, droppedPrepares: open.length }, 'GOVERNANCE PROPOSAL WITHDRAWN (no signature was sent; it can no longer be prepared)');
+    return answer(false, open.length);
+  }
+
   const handle: OfficerIntakeHandler = async (req, res, url) => {
     const path = url.pathname;
     const m = /^\/relay\/officer\/pending\/([^/]+)$/.exec(path);
@@ -817,5 +869,5 @@ export function createOfficerIntake(d: OfficerIntakeDeps): OfficerIntake {
     return send(res, 404, { error: 'not found' });
   };
 
-  return { handle, propose, proposals: () => [...proposals.values()], restore };
+  return { handle, propose, withdraw, proposals: () => [...proposals.values()], restore };
 }

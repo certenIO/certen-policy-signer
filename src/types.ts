@@ -156,6 +156,28 @@ export interface GovernanceFact {
 }
 
 /**
+ * DAX-F188: the answer to `POST /relay/governance/proposal/withdraw` { proposalId, by, note } (scope governance + x-governance-key).
+ * 200 only when the officer-intake proposal is `withdrawn` (now, or `already` by an earlier withdrawal, whose who/when/why are
+ * echoed unchanged). A proposal a signature was already sent for answers 409 `{ error: 'proposal already <status>', status }`
+ * with status `submitting | submitted | landed`, and an unknown or expired one 404 `{ error: 'proposal not found or expired' }`.
+ */
+export interface ProposalWithdrawal {
+  /** `proposal:<uuid>`, the ref the officer link names */
+  proposalId: string;
+  status: 'withdrawn';
+  withdrawnBy: string;
+  /** ISO 8601 */
+  withdrawnAt: string;
+  note: string;
+  /** open prepares for the proposal dropped by this call (0 when `already`) */
+  droppedPrepares: number;
+  already: boolean;
+}
+
+/** DAX-F188: the proposal states a withdrawal refuses by name (a signature was sent: it may be, or is, on chain). */
+export const PROPOSAL_WITHDRAW_REFUSED = ['submitting', 'submitted', 'landed'] as const;
+
+/**
  * A firm's acceptance (decision 0028 / 0038 §4): a WriteData on `acc://…/acceptances` whose single data
  * element is exactly the canonical JSON `{"amount":N,"category":S,"firm":S,"instructionHash":64hex}`.
  */

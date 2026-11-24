@@ -475,7 +475,7 @@ async function main() {
       readPage: (page) => readPage(accumulate, page),
       // Phase 7: a governance tx still awaiting a signature is stored so a human on that page can sign it via officer intake.
       recordAwaiting: async ({ txHash, page, op }) => store.savePolicyRequest(awaitingGovernanceRequest(txHash, page, op, { labels: cfg.decoders.labels })),
-      ...(officerIntake ? { propose: officerIntake.propose } : {}),
+      ...(officerIntake ? { propose: officerIntake.propose, withdrawProposal: officerIntake.withdraw } : {}),
       timeoutMs: cfg.relay.timeout_ms,
       logger,
     });
