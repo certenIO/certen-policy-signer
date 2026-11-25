@@ -11,6 +11,10 @@ Anything in that list appears here with a migration note before it ships in a re
 
 ## Unreleased
 
+### Changed (DAX-F191b)
+
+- A bound decision released after a vote that was not cast (DAX-F191) is now retried on a schedule held in the journal: the release entry (`recheck.result` `decision_released`) carries `attempt` and `retryAfter`; the first release is retried at the next poll, each further one waits 15 s, doubling to at most 600 s. A presentation of the same decision inside the wait consumes nothing, casts nothing and writes nothing to the journal; it is logged (`decision retry held`) and the item reads `binding: decision_retry_held`. A release by a pause at the cast waits only for the resume. Before, a cause that persisted cost a consume and a release entry on every poll until the decision window ended (720 entries for a 5400 s window at a 15 s poll); now 15 attempts, 30 entries. The wait and the attempt count are folded from the journal, so they hold across a restart. Unchanged: a vote that landed or may have landed stays consumed, a sent vote is released only on a chain read that shows it absent, a voided nonce is never released, and a fresh decision (another nonce) is never held.
+
 ### Added (DAX-F188)
 
 - `POST /relay/governance/proposal/withdraw` `{proposalId, by, note}` (scope `governance` + `x-governance-key`): an officer-intake proposal that no signature was sent for becomes `withdrawn`, persisted with who, when and why, with an audit line `governance_proposal_withdrawn`; its open prepares are dropped and any later prepare answers 409 `proposal already withdrawn`. A proposal that is `submitting`, `submitted` or `landed` refuses the withdrawal by name (409). The answer shape is `ProposalWithdrawal` in `src/types.ts`. Before, an issued officer link stayed signable for the proposal's 24 hours with no way to take it back.
