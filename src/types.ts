@@ -505,6 +505,9 @@ export const REQUEST_STATUSES = [
   'signed',
   'rejected',
   'expired',
+  // DAX-F213: the transaction was already final on chain before this seat's vote. The seat judged it (its decision is on the receipt,
+  // with `voteNotSubmitted`); NO vote was submitted. Terminal.
+  'final',
   'error',
 ] as const;
 
@@ -539,6 +542,8 @@ export interface SigningRequest {
   policyRequestId?: string;
   status: RequestStatus;
   decision?: 'approve' | 'deny';
+  /** DAX-F213: the engine's reason for `decision`, kept on the row so a decision whose vote never landed can still be recorded with it. */
+  decisionReason?: string;
   assertionRef?: string;
   timestampMicros?: number;
   attempts: number;
@@ -605,6 +610,14 @@ export interface FinalisedHold extends PendingHold {
   outcome: string;
 }
 
+/** DAX-F213: why a decided seat submitted no vote (the receipt's `voteNotSubmitted`). */
+export interface VoteNotSubmitted {
+  reason: 'transaction_final';
+  chainStatus: 'executed' | 'rejected' | 'failed' | 'expired';
+  finalBy: string[];
+  observedAt: number;
+}
+
 export interface Receipt {
   /** Stamped by the store on append: store-wide, contiguous from 1. A receipt is never replaced or removed (DAX-4S, DE-48). */
   seq?: number;
@@ -626,6 +639,13 @@ export interface Receipt {
   vote?: Vote;
   /** The policy engine's stated reason. Persisted: the audit trail must say WHY, not just what. */
   reason?: string;
+  /**
+   * DAX-F213: the seat judged a transaction that was already final on chain (another authority rejected it, or it executed, failed or
+   * expired) before this seat could vote. `decision` and `reason` are what the seat decided; NO vote was submitted (no `vote`, no
+   * `signatureHash`). `finalBy`: the authorities (key-book URLs) whose reject votes are on the transaction, [] when executed/expired or not
+   * determined. `observedAt`: ms since the epoch.
+   */
+  voteNotSubmitted?: VoteNotSubmitted;
   signatureHash?: string;        // hash of the submitted signature (audit; not the sig itself)
   submittedAt?: number;
   accumulateResult?: string;

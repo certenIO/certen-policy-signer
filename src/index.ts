@@ -18,7 +18,7 @@ import { buildNotifier, MultiNotifier, NotifyConfig } from './notify.js';
 import { Orchestrator, ScopeRules, WrapperModeOptions } from './orchestrator.js';
 import { FileWrapperRegistry, MemoryWrapperRegistry, WrapperRegistry, isRegisteredWrapperPage } from './registry/wrappers.js';
 import { chainWrapperReader, checkWrapper, checkWrapperChange } from './delegation/wrapper.js';
-import { Poller } from './poller.js';
+import { Poller, openRequestsOf } from './poller.js';
 import { createServer, HealthSource } from './server.js';
 import { DecisionJournal } from './binding/journal.js';
 import { NonceStore } from './binding/nonces.js';
@@ -413,6 +413,8 @@ async function main() {
         gatewayClient && !scope.human ? () => gatewayClient!.listPending() : undefined,
         scope.book,
         wrapperRegistry ? { registry: wrapperRegistry, concurrency: cfg.trigger.poller.wrapper_concurrency } : undefined,
+        // DAX-F213: every signature request the book was sent, read forward from a durable cursor, and every open request driven until judged
+        { cursors: store, revisit: openRequestsOf(store) },
       ))
     : [];
   // Unhealthy if ANY scope's discovery loop is stalled; lastSuccess is the oldest success across them.
