@@ -202,12 +202,16 @@ describe('orchestrator: a human-only seat never signs', () => {
   it('once awaiting_human, a later poll does not ask the engine again; the transaction going away ends it', async () => {
     const policy = new MockPolicyClient({ decision: 'approve' });
     const decide = vi.spyOn(policy, 'decide');
-    const s = seat({ policy });
+    const s = seat({ policy, readPage: async () => ({ version: 1, threshold: 1, keyHashes: [KEY_A], entries: [{ keyHash: KEY_A, delegate: null }] }) });
     await s.go();
     expect((await s.go()).status).toBe('awaiting_human');
     expect(decide).toHaveBeenCalledTimes(1);
     s.acc.pending.get(TX)!.executed = true;
-    expect((await s.go()).status).toBe('signed');
+    (s.acc as unknown as { getTxSignatures: unknown }).getTxSignatures = async () => ({ status: 'delivered', delivered: true, signatures: [] });
+    // DAX-F213 (lead QA): nobody on the page signed, so it is not `signed`: `final`, the decision kept, the vote not submitted
+    expect((await s.go()).status).toBe('final');
+    expect(await s.store.getReceipt(HID)).toMatchObject({ decision: 'approve', voteNotSubmitted: { chainStatus: 'executed' } });
+    expect(decide).toHaveBeenCalledTimes(1);
     expect(s.acc.submissions).toHaveLength(0);
   });
 

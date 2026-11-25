@@ -219,3 +219,78 @@ describe('DAX-F213: RawAccumulateClient.listSignatureRequests reads the book\'s 
     await expect(c.listSignatureRequests(SEAT_BOOK, 0)).rejects.toThrow(/ECONNREFUSED/);
   });
 });
+
+describe('DAX-F213 (lead QA): a human-only seat awaiting a person when the transaction goes final', () => {
+  const H_PAGE = 'acc://summit-inspection.acme/book/1';
+  const PEOPLE = ['b1', 'b2'].map((x) => x.repeat(32));
+  const page = { version: 2, threshold: 1, rejectThreshold: 0, keyHashes: PEOPLE, entries: PEOPLE.map((keyHash) => ({ keyHash, delegate: null })) };
+  const sig = (keyHash: string, vote: 'approve' | 'reject', signer: string) => ({ type: 'ecdsaSha256', publicKeyHash: keyHash, delegators: [] as string[], hops: [] as string[], signer, vote });
+
+  async function humanRig(o: { decision: 'approve' | 'deny'; chain?: 'readable' | 'unreadable' } = { decision: 'approve' }) {
+    const { humanRecordId } = await import('../src/store/store.js');
+    const acc = new Chain();
+    acc.addPending(TX, { body: { type: 'sendTokens', to: [{ url: 'acc://orchid.acme/tokens', amount: '5' }] }, principal: PRINCIPAL });
+    const store = new MemoryStore();
+    const policy = new MockPolicyClient({ decision: o.decision, reason: 'FICTIONAL inspection rule' });
+    const pageReadable = { ok: o.chain !== 'unreadable' };
+    const orch = new Orchestrator({
+      pauses: NO_PAUSES, accumulate: acc, keyring: singleKeyring(new LocalSigner(new Uint8Array(32).fill(3)), H_PAGE),
+      policy, store, resolver: new Resolver(acc), logger: silent, humanOnlyPages: [H_PAGE],
+      readPage: async () => { if (!pageReadable.ok) throw new Error('FICTIONAL node down'); return page; },
+      options: { submitRejectVote: true },
+    });
+    const go = () => orch.handle({ txHash: TX, signerUrl: H_PAGE, principal: PRINCIPAL });
+    expect((await go()).status).toBe('awaiting_human');
+    return { acc, store, policy, go, pageReadable, HID: humanRecordId(TX, H_PAGE) };
+  }
+
+  it('rejected by another authority before the person signed: ends `final` with the decision kept and the vote not submitted (was `expired`)', async () => {
+    const s = await humanRig({ decision: 'approve' });
+    s.acc.pending.get(TX)!.failed = true; s.acc.pending.get(TX)!.status = 'rejected';
+    s.acc.sigs.set(TX, { status: 'rejected', delivered: false, signatures: [sig('22'.repeat(32), 'reject', `${PAYER_BOOK}/2`)] });
+    const r = await s.go();
+    expect(r.status).toBe('final');
+    expect(s.policy.calls.length).toBe(1); // DAX-F100: never re-asked
+    const rc = await s.store.getReceipt(s.HID);
+    expect(rc).toMatchObject({ decision: 'approve', reason: 'FICTIONAL inspection rule', voteNotSubmitted: { reason: 'transaction_final', chainStatus: 'rejected', finalBy: [PAYER_BOOK] } });
+    expect(rc?.vote).toBeUndefined();
+    expect(rc?.signedBy).toBeUndefined();
+    expect(s.acc.submissions.length).toBe(0);
+  });
+
+  it('executed without the person signing: ends `final` (chainStatus executed), never `signed`', async () => {
+    const s = await humanRig({ decision: 'approve' });
+    s.acc.pending.get(TX)!.executed = true;
+    s.acc.sigs.set(TX, { status: 'delivered', delivered: true, signatures: [] });
+    const r = await s.go();
+    expect(r.status).toBe('final');
+    expect(await s.store.getReceipt(s.HID)).toMatchObject({ decision: 'approve', voteNotSubmitted: { chainStatus: 'executed', finalBy: [] } });
+  });
+
+  it('the person’s own signature landed on the chain: signed / rejected as read from the chain, with the people’s vote', async () => {
+    const s = await humanRig({ decision: 'approve' });
+    s.acc.pending.get(TX)!.executed = true;
+    s.acc.sigs.set(TX, { status: 'delivered', delivered: true, signatures: [sig(PEOPLE[0]!, 'approve', H_PAGE)] });
+    expect((await s.go()).status).toBe('signed');
+    const rc = await s.store.getReceipt(s.HID);
+    expect(rc).toMatchObject({ vote: 'approve', signedBy: { page: H_PAGE, publicKeyHash: PEOPLE[0] } });
+    expect(rc?.voteNotSubmitted).toBeUndefined();
+
+    const d = await humanRig({ decision: 'deny' });
+    d.acc.pending.get(TX)!.failed = true; d.acc.pending.get(TX)!.status = 'rejected';
+    d.acc.sigs.set(TX, { status: 'rejected', delivered: false, signatures: [sig(PEOPLE[1]!, 'reject', H_PAGE)] });
+    expect((await d.go()).status).toBe('rejected');
+  });
+
+  it('when the chain cannot tell whether the person signed, nothing is labelled: still awaiting_human, then judged once the chain reads', async () => {
+    const s = await humanRig({ decision: 'approve', chain: 'unreadable' });
+    s.acc.pending.get(TX)!.failed = true; s.acc.pending.get(TX)!.status = 'rejected';
+    s.acc.sigs.set(TX, { status: 'rejected', delivered: false, signatures: [sig('22'.repeat(32), 'reject', `${PAYER_BOOK}/2`)] });
+    const r = await s.go();
+    expect(r.status).toBe('awaiting_human');
+    expect(r.lastError).toMatch(/final_unconfirmed/);
+    s.pageReadable.ok = true;
+    expect((await s.go()).status).toBe('final');
+    expect(s.policy.calls.length).toBe(1);
+  });
+});

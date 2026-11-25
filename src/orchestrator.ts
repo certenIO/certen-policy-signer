@@ -643,8 +643,8 @@ export class Orchestrator {
     let final: VoteNotSubmitted | undefined;
     if (r.kind === 'gone') {
       const row = await store.get(key);
-      // Nothing to read (`not_found`), or a person owes the signature (G-69: officer intake keeps its own ending): as before.
-      if (!r.tx || !r.chainStatus || row?.status === 'awaiting_human') {
+      // Nothing to read (`not_found`): as before.
+      if (!r.tx || !r.chainStatus) {
         const status = r.reason === 'executed' ? 'signed' : 'expired';
         logger.info({ tx: ref.txHash, reason: r.reason }, 'tx gone before signing');
         // G-64: a hold that ends because the transaction went away is still kept, with that as its outcome.
@@ -652,6 +652,8 @@ export class Orchestrator {
       }
       const ftx = { ...r.tx, ...(key !== r.tx.txHash && !this.isHumanOnly(ref.signerUrl) ? { workKey: key } : {}) };
       final = await this.finalState(ftx, r.chainStatus);
+      // G-69: a person owed the signature. The chain says whether the people's own signatures ended it; otherwise it ends `final`.
+      if (row?.status === 'awaiting_human') return this.closeAwaitingHumanFinal(ftx, key, row, final);
       // Already decided (the vote was being cast, or its submission failed): the decision stands and is recorded, never asked again.
       if (row?.decision && ['approved', 'denied', 'signing', 'error'].includes(row.status)) return this.closeDecidedFinal(ftx, key, row, final);
       // Held: the engine had not decided. Recorded as such, with the hold; not asked again (DAX-F100: one question, never one per poll).
@@ -1222,7 +1224,7 @@ export class Orchestrator {
   private async recordFinal(
     tx: ResolvedTx, key: string,
     decision: { decision: string; reason?: string; evidence?: Record<string, unknown> },
-    bindingInfo: Pick<Receipt, 'binding'>, final: VoteNotSubmitted,
+    bindingInfo: Pick<Receipt, 'binding'>, final: VoteNotSubmitted, extra: Pick<Receipt, 'humanSignatures'> = {},
   ): Promise<SigningRequest> {
     const verdict = decision.decision === 'approve' || decision.decision === 'deny' ? decision.decision : undefined;
     this.d.logger.info({ tx: tx.txHash, decision: verdict, reason: decision.reason, chainStatus: final.chainStatus, finalBy: final.finalBy },
@@ -1234,6 +1236,7 @@ export class Orchestrator {
       ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
       policyEvidence: decision.evidence,
       ...bindingInfo,
+      ...extra,
       voteNotSubmitted: final,
     });
     if (verdict === 'deny') this.notify('decision.denied', tx, { reason: decision.reason });
@@ -1258,6 +1261,37 @@ export class Orchestrator {
     return this.recordFinal(tx, key,
       { decision: row.decision!, ...(reason ? { reason } : {}), ...(prior?.policyEvidence ? { evidence: prior.policyEvidence } : {}) },
       prior?.binding ? { binding: prior.binding } : {}, final);
+  }
+
+  /**
+   * DAX-F213 (lead QA): a human-only seat's request was `awaiting_human` (G-69) and the transaction is final. Was: `signed` when it executed
+   * and `expired` otherwise, whoever ended it -- a signature that was not this seat's, an expiry that was not one.
+   *   the people's own signatures met the page's threshold on chain  -> signed / rejected, read from the chain (advanceAwaitingHuman)
+   *   otherwise                                                      -> `final`: the engine's decision and reason kept, the vote not submitted
+   *   the chain or the page cannot be read                           -> nothing labelled; stays awaiting_human with `final_unconfirmed`, read again
+   * The engine is never asked again (DAX-F100).
+   */
+  private async closeAwaitingHumanFinal(tx: ResolvedTx, key: string, row: SigningRequest, final: VoteNotSubmitted): Promise<SigningRequest> {
+    const { store, logger } = this.d;
+    const read = this.d.accumulate.getTxSignatures?.bind(this.d.accumulate);
+    const readPage = this.d.readPage;
+    const unconfirmed = async (why: string) => {
+      logger.warn({ tx: tx.txHash, page: tx.signerUrl, why }, 'transaction final, but whether the people signed cannot be read yet; nothing recorded, read again next poll');
+      return store.update(key, { lastError: `final_unconfirmed: ${why}` });
+    };
+    if (!read || !readPage) return unconfirmed('no chain or page reader is configured');
+    const sigs = await read(tx.txHash, tx.account).catch(() => undefined);
+    if (!sigs || sigs.unavailable) return unconfirmed('the transaction signatures could not be read');
+    try { await readPage(tx.signerUrl); } catch (e) { return unconfirmed(`the page could not be read (${(e as Error).message})`); }
+    const advanced = await advanceAwaitingHuman({ store, readPage, getTxSignatures: async () => sigs, logger, now: this.now }, tx.txHash, tx.signerUrl);
+    if (advanced && advanced.status !== 'awaiting_human') return advanced;
+    const cur = advanced ?? row;
+    const prior = await store.getReceipt(key);
+    const reason = prior?.reason ?? row.decisionReason;
+    return this.recordFinal(tx, key,
+      { decision: row.decision ?? '', ...(reason ? { reason } : {}), ...(prior?.policyEvidence ? { evidence: prior.policyEvidence } : {}) },
+      prior?.binding ? { binding: prior.binding } : {}, final,
+      cur.humanSignatures?.length ? { humanSignatures: cur.humanSignatures } : {});
   }
 
   /**
