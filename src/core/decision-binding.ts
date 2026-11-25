@@ -235,10 +235,14 @@ export function bindDecision(input: BindInput): BindResult {
   // 6. the Grant: required, then the same one named by decision and transaction, then the head, then the subject join
   // require_grant governs only the request kinds a Grant can name (DE-114, lead decision of 2026-11-24, DAX-F176): holder.status is never a Grant action, so a
   // registration is judged by the seat's rules, its declared registration and human review; every Grant-nameable kind without a Grant stays grant_required
-  if (state.requireGrant && (ACTION_KINDS as readonly string[]).includes(presented.kind) && (decision.grantHash === null || presented.grantRefHash === null)) return refuse('grant_required');
+  // DE-115 (DAX-F216): a Grant authorises an APPROVAL. A deny is the seat's refusal, cast as its reject vote: no Grant, a superseded Grant, an unverifiable head
+  // or another subject is a reason to refuse, never a bar to refusing, so for a deny only the agreement of decision and transaction (grant_hash_mismatch) applies
+  // here; the request, the pin, the seat, the approver and single use bind it below exactly as they bind an approval
+  const deny = decision.decision === 'deny';
+  if (!deny && state.requireGrant && (ACTION_KINDS as readonly string[]).includes(presented.kind) && (decision.grantHash === null || presented.grantRefHash === null)) return refuse('grant_required');
   if (decision.grantHash !== presented.grantRefHash) return refuse('grant_hash_mismatch');
   const named = decision.grantHash;
-  if (named !== null) {
+  if (named !== null && !deny) {
     // the grantRef of a transaction is a claim of its producer: only the head read from Accumulate decides
     if (state.grantHeadHash === null) return refuse('grant_unverified', 'head_hash');
     if (named !== state.grantHeadHash) return refuse('grant_superseded');
