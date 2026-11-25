@@ -9,7 +9,7 @@ import { Resolver } from './resolver.js';
 import { Logger } from './logger.js';
 import { VoteBackend, VoteResult, DirectVoteBackend } from './vote/backend.js';
 import { Notifier, NotifyEvent, NULL_NOTIFIER } from './notify.js';
-import { AttachmentKind, PendingRef, PolicyRequest, Receipt, ResolvedTx, SigningRequest } from './types.js';
+import { AttachmentKind, PendingRef, PolicyRequest, Receipt, ResolvedTx, SigningRequest, VoteNotSubmitted } from './types.js';
 import { headerDeadlinePassed } from './accumulate/header.js';
 import { withDisplay } from './display.js';
 import { bookOf, resolveWrapperPaths, sameUrl, workKey } from './delegation/path.js';
@@ -586,7 +586,7 @@ export class Orchestrator {
     const { store, logger } = this.d;
     const key = this.rid(ref);
     const existing = await store.get(key);
-    if (existing && ['signed', 'rejected', 'expired'].includes(existing.status)) {
+    if (existing && ['signed', 'rejected', 'expired', 'final'].includes(existing.status)) {
       logger.debug({ tx: ref.txHash, key, status: existing.status }, 'idempotent skip');
       return existing;
     }
@@ -638,14 +638,31 @@ export class Orchestrator {
       logger.warn({ tx: ref.txHash, err: r.error }, 'could not resolve pending tx; leaving it for the next poll');
       return store.update(key, { lastError: `resolve: ${r.error}` });
     }
+    // DAX-F213: a transaction that is already FINAL is still judged, once, when the chain still holds it. Whichever authority judged first used
+    // to end it for every other seat, which then recorded `expired` (or nothing at all) instead of its own decision.
+    let final: VoteNotSubmitted | undefined;
     if (r.kind === 'gone') {
-      const status = r.reason === 'executed' ? 'signed' : 'expired';
-      logger.info({ tx: ref.txHash, reason: r.reason }, 'tx gone before signing');
-      // G-64: a hold that ends because the transaction went away is still kept, with that as its outcome.
-      return store.update(key, { status, ...finaliseHold(await store.get(key), `gone:${r.reason}`, this.now()) });
+      const row = await store.get(key);
+      // Nothing to read (`not_found`): as before.
+      if (!r.tx || !r.chainStatus) {
+        const status = r.reason === 'executed' ? 'signed' : 'expired';
+        logger.info({ tx: ref.txHash, reason: r.reason }, 'tx gone before signing');
+        // G-64: a hold that ends because the transaction went away is still kept, with that as its outcome.
+        return store.update(key, { status, ...finaliseHold(row, `gone:${r.reason}`, this.now()) });
+      }
+      const ftx = { ...r.tx, ...(key !== r.tx.txHash && !this.isHumanOnly(ref.signerUrl) ? { workKey: key } : {}) };
+      final = await this.finalState(ftx, r.chainStatus);
+      // G-69: a person owed the signature. The chain says whether the people's own signatures ended it; otherwise it ends `final`.
+      if (row?.status === 'awaiting_human') return this.closeAwaitingHumanFinal(ftx, key, row, final);
+      // Already decided (the vote was being cast, or its submission failed): the decision stands and is recorded, never asked again.
+      if (row?.decision && ['approved', 'denied', 'signing', 'error'].includes(row.status)) return this.closeDecidedFinal(ftx, key, row, final);
+      // Held: the engine had not decided. Recorded as such, with the hold; not asked again (DAX-F100: one question, never one per poll).
+      if (row?.pending) return this.closeHeldFinal(ftx, key, row, final, r.reason);
+      logger.info({ tx: ref.txHash, chainStatus: final.chainStatus, finalBy: final.finalBy }, 'transaction already final before this seat could vote; judging it (no vote will be submitted)');
     }
+    const resolved = r.tx!;
     // The work key travels on the resolved transaction for a wrapper path; a human-only seat's record key is its `recordId` (see `rid`).
-    const tx = { ...r.tx, ...(key !== r.tx.txHash && !this.isHumanOnly(ref.signerUrl) ? { workKey: key } : {}) };
+    const tx = { ...resolved, ...(key !== resolved.txHash && !this.isHumanOnly(ref.signerUrl) ? { workKey: key } : {}) };
     // G-69: the engine has already decided and a person owes the signature. Asking again on every poll
     // would rewrite the decision under them (and, for a seat that requires binding, would need a second decision and a second
     // nonce); the request ends when their signature lands (officer intake) or when the transaction goes away (handled just above).
@@ -663,7 +680,7 @@ export class Orchestrator {
     });
     // Discovery: a pending tx that names our book as a required authority. Logged once (first sighting),
     // not on every retry, so an operator can see WHAT was found and on WHICH account.
-    if (!priorStatus || priorStatus === 'discovered') {
+    if (!final && (!priorStatus || priorStatus === 'discovered')) {
       logger.info(
         { tx: tx.txHash, account: tx.account, authority: ref.signerUrl, action: tx.summary.action },
         'discovered pending intent; our book is a required authority',
@@ -818,7 +835,9 @@ export class Orchestrator {
       );
       // G-64: keep WHY, and under which versions, on the record -- updated on every re-evaluation.
       const pending = recordHold(await store.get(key), decision, this.now());
-      return store.update(key, { status: 'awaiting_policy', lastError: undefined, pending });
+      const held = await store.update(key, { status: 'awaiting_policy', lastError: undefined, pending });
+      // DAX-F213: a final transaction takes no later decision; the hold IS this seat's judgement, recorded now (never re-asked per poll).
+      return final ? this.closeHeldFinal(tx, key, held, final, final.chainStatus) : held;
     }
 
     // G-64: the engine has decided; the hold (if there was one) ends here and is kept as history.
@@ -862,9 +881,12 @@ export class Orchestrator {
       ? { binding: { decisionHash: bound.decisionHash, requestHash: bound.requestHash, nonce: bound.nonce, grantHash: bound.grantHash, policyHash: bound.policyHash, policyPinned: bound.policyPinned, seat: bound.seat, approver: bound.approver } }
       : {};
 
+    // DAX-F213: judged, and the transaction is final: record the decision, and the vote as not submitted. Nothing is signed or submitted.
+    if (final && decision.decision === 'deny') return this.recordFinal(tx, key, decision, bindingInfo, final);
+
     if (decision.decision === 'deny') {
       logger.info({ tx: ref.txHash, reason: decision.reason }, 'policy denied');
-      await store.update(key, { status: 'denied', decision: 'deny' });
+      await store.update(key, { status: 'denied', decision: 'deny', ...(decision.reason ? { decisionReason: decision.reason } : {}) });
       // A reject vote that could not be submitted is a FAILURE, exactly as an approve vote is — the
       // result was being discarded here. That mattered: `rejected` is terminal, so the tx was never
       // retried, while the receipt below recorded `vote: reject` for a vote that never reached the
@@ -944,6 +966,10 @@ export class Orchestrator {
       return store.update(key, { status: 'rejected', lastError: 'signature_data_missing' });
     }
 
+    // DAX-F213: an approval of a transaction that is already final is recorded as an approval whose vote was NOT submitted -- never as a
+    // signature, never as a vote that counted.
+    if (final) return this.recordFinal(tx, key, decision, bindingInfo, final);
+
     // 3. Sign + submit (approve). The deadline is re-read against the clock now: an approval that arrived
     // after the transaction died must not become a late signature (0031).
     const lateApprove = this.deadlineRefusal(tx);
@@ -953,7 +979,7 @@ export class Orchestrator {
     // deadline) has run exactly as for a keyed seat; the approve signature is a person's to make.
     if (this.isHumanOnly(tx.signerUrl)) return this.awaitHuman(tx, 'approve', decision, bindingInfo);
 
-    await store.update(key, { status: 'approved', decision: 'approve', assertionRef: decision.assertion ? sha256Hex(decision.assertion) : undefined });
+    await store.update(key, { status: 'approved', decision: 'approve', ...(decision.reason ? { decisionReason: decision.reason } : {}), assertionRef: decision.assertion ? sha256Hex(decision.assertion) : undefined });
     // Whose key signs. T29: when the policy engine names the approver, THEIR key signs — so the
     // signature on chain is the person's rather than the organisation's cast in their name. Absent,
     // the organisation signs as itself, exactly as before.
@@ -1161,6 +1187,128 @@ export class Orchestrator {
       if (!(e instanceof JournalError)) throw e;
       logger.error({ tx: tx.txHash, nonce: bound.nonce, journal: `${e.reason}${e.detail ? ' ' + e.detail : ''}` }, 'the decision release could not be written to the journal; the decision stays consumed');
     }
+  }
+
+  /**
+   * DAX-F213: the facts of a final transaction, as the chain states them: its final status, and the authorities whose votes that are not
+   * accept are on it (any such authority vote makes a transaction final-rejected: accumulate v1.4.x
+   * internal/core/execute/v2/block/transaction.go:237-242). Signatures that cannot be read leave `finalBy` empty, never a guess.
+   */
+  private async finalState(tx: ResolvedTx, chainStatus: VoteNotSubmitted['chainStatus']): Promise<VoteNotSubmitted> {
+    const finalBy: string[] = [];
+    if (chainStatus === 'rejected' || chainStatus === 'failed') {
+      const sigs = await this.d.accumulate.getTxSignatures?.(tx.txHash, tx.account).catch(() => undefined);
+      if (sigs && !sigs.unavailable) {
+        for (const s of sigs.signatures) {
+          if ((s.vote !== 'reject' && s.vote !== 'abstain') || !s.signer) continue;
+          const book = bookOf(s.signer);
+          if (!finalBy.some((b) => sameUrl(b, book))) finalBy.push(book);
+        }
+      }
+    }
+    return { reason: 'transaction_final', chainStatus, finalBy, observedAt: this.now() };
+  }
+
+  /** DAX-F213: what made the transaction final, in the words a log line and an operator read. */
+  private static finalWords(f: VoteNotSubmitted): string {
+    return f.chainStatus === 'rejected' || f.chainStatus === 'failed'
+      ? `${f.chainStatus}${f.finalBy.length ? ` by ${f.finalBy.join(', ')}` : ''}`
+      : f.chainStatus;
+  }
+
+  /**
+   * DAX-F213: record a decision taken on a transaction that was already final. The receipt carries the decision, the engine's reason and
+   * evidence and the binding exactly as a voted one does, and `voteNotSubmitted` in place of a vote: no `vote`, no signature. The request
+   * ends `final`.
+   */
+  private async recordFinal(
+    tx: ResolvedTx, key: string,
+    decision: { decision: string; reason?: string; evidence?: Record<string, unknown> },
+    bindingInfo: Pick<Receipt, 'binding'>, final: VoteNotSubmitted, extra: Pick<Receipt, 'humanSignatures'> = {},
+  ): Promise<SigningRequest> {
+    const verdict = decision.decision === 'approve' || decision.decision === 'deny' ? decision.decision : undefined;
+    this.d.logger.info({ tx: tx.txHash, decision: verdict, reason: decision.reason, chainStatus: final.chainStatus, finalBy: final.finalBy },
+      `decision recorded; vote not submitted: the transaction was already final (${Orchestrator.finalWords(final)})`);
+    await this.saveReceipt({
+      ...this.receiptKey(tx), operationId: tx.operationId,
+      ...(verdict ? { decision: verdict } : {}),
+      reason: decision.reason,
+      ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
+      policyEvidence: decision.evidence,
+      ...bindingInfo,
+      ...extra,
+      voteNotSubmitted: final,
+    });
+    if (verdict === 'deny') this.notify('decision.denied', tx, { reason: decision.reason });
+    return this.d.store.update(key, {
+      status: 'final', ...(verdict ? { decision: verdict } : {}), ...(decision.reason ? { decisionReason: decision.reason } : {}),
+      principal: tx.account, lastError: undefined,
+    });
+  }
+
+  /**
+   * DAX-F213: the seat had decided, and its vote did not land (being cast, or its submission failed) before the transaction became final.
+   * A vote of ours that DID land is what it was (signed / rejected). Otherwise the standing decision is recorded with its reason, and the vote
+   * as not submitted. The engine is not asked again.
+   */
+  private async closeDecidedFinal(tx: ResolvedTx, key: string, row: SigningRequest, final: VoteNotSubmitted): Promise<SigningRequest> {
+    if (await this.ownSignatureOnChain(tx) === 'landed') {
+      this.d.logger.info({ tx: tx.txHash, decision: row.decision }, 'transaction final; the vote of this seat is on it');
+      return this.d.store.update(key, { status: row.decision === 'approve' ? 'signed' : 'rejected', lastError: undefined });
+    }
+    const prior = await this.d.store.getReceipt(key);
+    const reason = row.decisionReason ?? prior?.reason;
+    return this.recordFinal(tx, key,
+      { decision: row.decision!, ...(reason ? { reason } : {}), ...(prior?.policyEvidence ? { evidence: prior.policyEvidence } : {}) },
+      prior?.binding ? { binding: prior.binding } : {}, final);
+  }
+
+  /**
+   * DAX-F213 (lead QA): a human-only seat's request was `awaiting_human` (G-69) and the transaction is final. Was: `signed` when it executed
+   * and `expired` otherwise, whoever ended it -- a signature that was not this seat's, an expiry that was not one.
+   *   the people's own signatures met the page's threshold on chain  -> signed / rejected, read from the chain (advanceAwaitingHuman)
+   *   otherwise                                                      -> `final`: the engine's decision and reason kept, the vote not submitted
+   *   the chain or the page cannot be read                           -> nothing labelled; stays awaiting_human with `final_unconfirmed`, read again
+   * The engine is never asked again (DAX-F100).
+   */
+  private async closeAwaitingHumanFinal(tx: ResolvedTx, key: string, row: SigningRequest, final: VoteNotSubmitted): Promise<SigningRequest> {
+    const { store, logger } = this.d;
+    const read = this.d.accumulate.getTxSignatures?.bind(this.d.accumulate);
+    const readPage = this.d.readPage;
+    const unconfirmed = async (why: string) => {
+      logger.warn({ tx: tx.txHash, page: tx.signerUrl, why }, 'transaction final, but whether the people signed cannot be read yet; nothing recorded, read again next poll');
+      return store.update(key, { lastError: `final_unconfirmed: ${why}` });
+    };
+    if (!read || !readPage) return unconfirmed('no chain or page reader is configured');
+    const sigs = await read(tx.txHash, tx.account).catch(() => undefined);
+    if (!sigs || sigs.unavailable) return unconfirmed('the transaction signatures could not be read');
+    try { await readPage(tx.signerUrl); } catch (e) { return unconfirmed(`the page could not be read (${(e as Error).message})`); }
+    const advanced = await advanceAwaitingHuman({ store, readPage, getTxSignatures: async () => sigs, logger, now: this.now }, tx.txHash, tx.signerUrl);
+    if (advanced && advanced.status !== 'awaiting_human') return advanced;
+    const cur = advanced ?? row;
+    const prior = await store.getReceipt(key);
+    const reason = prior?.reason ?? row.decisionReason;
+    return this.recordFinal(tx, key,
+      { decision: row.decision ?? '', ...(reason ? { reason } : {}), ...(prior?.policyEvidence ? { evidence: prior.policyEvidence } : {}) },
+      prior?.binding ? { binding: prior.binding } : {}, final,
+      cur.humanSignatures?.length ? { humanSignatures: cur.humanSignatures } : {});
+  }
+
+  /**
+   * DAX-F213: the engine had answered `pending` (held) and the transaction is final. The hold is this seat's judgement: recorded on a receipt
+   * (its reason, no decision) with the vote as not submitted, and kept as history on the request (G-64).
+   */
+  private async closeHeldFinal(tx: ResolvedTx, key: string, row: SigningRequest, final: VoteNotSubmitted, how: string): Promise<SigningRequest> {
+    const hold = row.pending!;
+    this.d.logger.info({ tx: tx.txHash, hold: hold.reason, chainStatus: final.chainStatus, finalBy: final.finalBy },
+      `held, and the transaction is final (${Orchestrator.finalWords(final)}); the hold is recorded, no vote submitted`);
+    await this.saveReceipt({
+      ...this.receiptKey(tx), operationId: tx.operationId, reason: hold.reason,
+      ...(tx.summary.subject ? { subject: tx.summary.subject.adi } : {}),
+      policyEvidence: { held: true, ...hold.versions },
+      voteNotSubmitted: final,
+    });
+    return this.d.store.update(key, { status: 'final', principal: tx.account, lastError: undefined, ...finaliseHold(row, `gone:${how}`, this.now()) });
   }
 
   /** DAX-F191: is a signature by any key this signer holds on the transaction's page on the transaction? `unknown` unless the chain answered. */

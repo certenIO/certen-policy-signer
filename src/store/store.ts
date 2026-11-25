@@ -12,7 +12,7 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, wr
 import { dirname } from 'node:path';
 import { PolicyRequest, Receipt, RequestStatus, SigningRequest } from '../types.js';
 
-export const TERMINAL: RequestStatus[] = ['signed', 'rejected', 'expired'];
+export const TERMINAL: RequestStatus[] = ['signed', 'rejected', 'expired', 'final'];
 
 /** The key a record lives under: its `workKey` (a wrapper path), else its `recordId` (a human-only seat), else its `txHash` when it predates both. */
 export function keyOf(r: { workKey?: string; recordId?: string; txHash: string }): string {
@@ -73,6 +73,12 @@ export interface Store {
   saveIntakeRecord(kind: IntakeRecordKind, id: string, record: Record<string, unknown>): Promise<void>;
   deleteIntakeRecord(kind: IntakeRecordKind, id: string): Promise<void>;
   listIntakeRecords(kind: IntakeRecordKind): Promise<Array<Record<string, unknown>>>;
+  /**
+   * DAX-F213: a named discovery cursor (the next signature-chain index of a book still to read). Durable with the rest of the state, so a
+   * restart resumes where it stopped instead of re-reading (and re-judging) the book's history. Undefined when never set.
+   */
+  getCursor(name: string): Promise<number | undefined>;
+  setCursor(name: string, value: number): Promise<void>;
   /** Best-effort single-flight lock, per record key. Returns false if already locked. */
   tryLock(key: string): boolean;
   unlock(key: string): void;
@@ -97,7 +103,15 @@ export class MemoryStore implements Store {
   protected receipts = new Map<string, Receipt>();
   protected policyRequests = new Map<string, PolicyRequest>();
   protected intake = { prepare: new Map<string, Record<string, unknown>>(), proposal: new Map<string, Record<string, unknown>>(), submission: new Map<string, Record<string, unknown>>() };
+  protected cursors = new Map<string, number>();
   private locks = new Set<string>();
+  async getCursor(name: string) { return this.cursors.get(name); }
+  async setCursor(name: string, value: number) {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`cursor ${name}: ${value} is not a chain index`);
+    if (this.cursors.get(name) === value) return;
+    this.cursors.set(name, value);
+    await this.persist();
+  }
 
   async get(key: string) { return this.reqs.get(key); }
   async listForTx(txHash: string) { return [...this.reqs.values()].filter((r) => r.txHash === txHash && r.workKey === undefined); }
@@ -200,6 +214,7 @@ export class FileStore extends MemoryStore {
         /** A file written by a build that kept page-keyed requests as a list parallel to `policyRequests` (G-69, before the merge with DAX-4S). */
         policyRequestKeys?: string[];
         intake?: { prepares?: Array<Record<string, unknown>>; proposals?: Array<Record<string, unknown>>; submissions?: Array<Record<string, unknown>> };
+        cursors?: Record<string, number>;
       };
       // A file written before work keys has no `workKey` on any record; `keyOf` files those under their
       // txHash, which is where they always were, so an upgrade neither re-votes nor loses a receipt.
@@ -211,6 +226,7 @@ export class FileStore extends MemoryStore {
       for (const r of raw.intake?.prepares ?? []) this.intake.prepare.set(String(r.prepareId), r);
       for (const r of raw.intake?.proposals ?? []) this.intake.proposal.set(String(r.id), r);
       for (const r of raw.intake?.submissions ?? []) this.intake.submission.set(String(r.prepareId), r);
+      for (const [k, v] of Object.entries(raw.cursors ?? {})) if (Number.isSafeInteger(v) && v >= 0) this.cursors.set(k, v);
     } catch (e) {
       // A corrupt state file must not silently become an empty one: that would re-vote everything.
       throw new Error(`store: ${this.path} exists but is unreadable (${(e as Error).message}) — refusing to start with an empty history`);
@@ -242,6 +258,7 @@ export class FileStore extends MemoryStore {
       policyRequests: [...this.policyRequests.entries()].filter(([k, r]) => k === r.txHash).map(([, r]) => r),
       policyRequestsByKey: [...this.policyRequests.entries()].filter(([k, r]) => k !== r.txHash),
       intake: { prepares: [...this.intake.prepare.values()], proposals: [...this.intake.proposal.values()], submissions: [...this.intake.submission.values()] },
+      cursors: Object.fromEntries(this.cursors),
     });
     this.queue = this.queue.then(() => this.writeAtomic(snapshot)).catch(() => this.writeAtomic(snapshot));
     return this.queue;

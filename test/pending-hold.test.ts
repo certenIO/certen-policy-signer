@@ -167,7 +167,7 @@ describe('the orchestrator keeps why a seat is holding', () => {
     await p.handle();
     p.acc.pending.get(TX)!.expired = true;
     const r = await p.handle();
-    expect(r.status).toBe('expired');
+    expect(r.status).toBe('final'); // DAX-F213: the hold is recorded as this seat's judgement, the vote not submitted (was `expired`)
     expect(r.pendingFinal).toMatchObject({ outcome: 'gone:expired', reason: 'waiting on sanctions-screen' });
     expect(r.pending).toBeUndefined();
   });

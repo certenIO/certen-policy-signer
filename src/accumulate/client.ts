@@ -23,6 +23,23 @@ export interface PendingTxResult {
   expired?: boolean;
   /** The network recorded the transaction as FAILED (a final, non-success status). */
   failed?: boolean;
+  /** DAX-F213: the status as the network reported it (`pending`, `delivered`, `rejected`, …), when it said. */
+  status?: string;
+}
+
+/**
+ * DAX-F213: one `signatureRequest` recorded on a book's signature chain. Accumulate records the request on the AUTHORITY it asks
+ * (accumulate v1.4.x internal/core/execute/v2/block/msg_signature_request.go:136-142, `RecordHistory` ->
+ * internal/database/signatures.go:87-99, which appends to the account's `signature` chain), whatever the transaction's state and also
+ * under Baikonur where no Pending() entry is written for a non-principal authority (:88-94). The chain is append-only, so the entry is
+ * still there after the transaction is final: this is the complete record of every transaction the book was asked to sign.
+ */
+export interface SignatureRequestEntry {
+  /** The entry's index on the book's signature chain. */
+  index: number;
+  txHash: string;
+  /** The transaction's principal (`acc://<hash>@<principal>`), where it is read. */
+  principal: string;
 }
 
 export interface SignerInfo {
@@ -172,6 +189,13 @@ export interface AccumulateClient {
    * (transaction-header) authority — which under Baikonur are NOT written to any Pending() index.
    */
   listPendingViaSignatureChain(bookUrl: string): Promise<string[]>;
+  /**
+   * DAX-F213: the book's signature-request history read FORWARD from chain index `since`, every request whatever its transaction's state.
+   * `next` is the index to resume from. With `since` undefined it reads no entries and answers only the head (`next` = the chain length),
+   * which is where a book never read before starts. THROWS when the chain cannot be read, so a caller never moves its cursor past
+   * entries it did not see. Optional: a client without it keeps the pending-only discovery.
+   */
+  listSignatureRequests?(bookUrl: string, since?: number): Promise<{ next: number; requests: SignatureRequestEntry[] }>;
   submit(envelope: unknown): Promise<SubmitResult>;
   /**
    * What the chain says about a transaction and the signatures on it. T32.
@@ -198,6 +222,7 @@ export interface MockPending {
   executed?: boolean;
   expired?: boolean;
   failed?: boolean;
+  status?: string;
 }
 
 export class MockAccumulateClient implements AccumulateClient {
@@ -225,6 +250,7 @@ export class MockAccumulateClient implements AccumulateClient {
       executed: p.executed,
       expired: p.expired,
       ...(p.failed ? { failed: true } : {}),
+      ...(p.status ? { status: p.status } : {}),
     };
   }
   async getSignerInfo(): Promise<SignerInfo> { return { ...this.signer }; }

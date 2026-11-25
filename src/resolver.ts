@@ -15,7 +15,12 @@ export type ResolveResult =
   | { kind: 'resolved'; tx: ResolvedTx }
   /** We could not read the transaction. NOT a statement about whether it still exists — retry. */
   | { kind: 'unavailable'; error: string }
-  | { kind: 'gone'; reason: 'not_found' | 'executed' | 'expired' | 'failed' };
+  /**
+   * The transaction will never take another vote. DAX-F213: when the chain still holds it (every final state but `not_found`), `tx` is the
+   * transaction read exactly as a pending one is, and `chainStatus` its final status, so the seat can still JUDGE it and record that judgement
+   * (its vote is then recorded as not submitted). `not_found` carries neither: there is nothing to read.
+   */
+  | { kind: 'gone'; reason: 'not_found' | 'executed' | 'expired' | 'failed'; tx?: ResolvedTx; chainStatus?: 'executed' | 'rejected' | 'failed' | 'expired' };
 
 export class Resolver {
   private readonly decoders: DecoderRegistry;
@@ -32,12 +37,19 @@ export class Resolver {
     const pend = await this.acc.getPendingTx(ref.txHash, ref.principal ?? ref.signerUrl);
     if (pend.unavailable) return { kind: 'unavailable', error: 'the node could not be queried' };
     if (!pend.found) return { kind: 'gone', reason: 'not_found' };
-    if (pend.executed) return { kind: 'gone', reason: 'executed' };
-    if (pend.expired) return { kind: 'gone', reason: 'expired' };
     // DAX-F100: a transaction whose chain status is final-failed (an authority rejected it, or it ran and failed) will never take another
     // vote. Left "resolved" it was handed to the engine again on every poll for the life of the signer (a held request: one round trip each).
-    if (pend.failed) return { kind: 'gone', reason: 'failed' };
+    // DAX-F213: it is still READ, so the seat judges it once (the orchestrator never votes on it).
+    const reason = pend.executed ? 'executed' : pend.expired ? 'expired' : pend.failed ? 'failed' : undefined;
+    const tx = await this.read(ref, pend);
+    if (reason) {
+      const chainStatus = reason === 'failed' ? (/reject/i.test(pend.status ?? '') ? 'rejected' : 'failed') : reason;
+      return { kind: 'gone', reason, tx, chainStatus };
+    }
+    return { kind: 'resolved', tx };
+  }
 
+  private async read(ref: PendingRef, pend: Awaited<ReturnType<AccumulateClient['getPendingTx']>>): Promise<ResolvedTx> {
     const info = await this.acc.getSignerInfo(ref.signerUrl);
     const body = (pend.body ?? { type: 'unknown' }) as TxBody;
     const { summary, operationId } = this.decoders.decode(body, { principal: pend.principal ?? '' });
@@ -49,8 +61,6 @@ export class Resolver {
     const acceptance = extractAcceptance(body, pend.principal ?? '');
 
     return {
-      kind: 'resolved',
-      tx: {
         txHash: ref.txHash,
         account: pend.principal ?? '',
         signerUrl: ref.signerUrl,
@@ -65,7 +75,6 @@ export class Resolver {
         rawTransaction: pend.rawTransaction,
         lastUsedOn: info.lastUsedOn,
         ...(ref.delegators ? { delegators: ref.delegators } : {}),
-      },
     };
   }
 }

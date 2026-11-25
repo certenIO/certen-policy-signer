@@ -19,6 +19,38 @@ export interface WrapperSource {
   concurrency: number;
 }
 
+/**
+ * DAX-F213: discovery from the book's signature-request HISTORY, not only from what is pending when we look.
+ *
+ * Accumulate records every signature request on the authority it asks: `RecordHistory` appends the request to the book's `signature` chain
+ * (accumulate v1.4.x internal/core/execute/v2/block/msg_signature_request.go:136-142, internal/database/signatures.go:87-99), whatever the
+ * transaction's state, and the chain is append-only. Pending lists and the pending-filtered walk only show a transaction while it is pending:
+ * when another authority makes it final first (one reject vote on a book whose reject threshold is 1 ends it in seconds), a seat that polls
+ * later never sees it, and records nothing or `expired`. Reading the chain forward from a durable cursor sees EVERY request exactly once,
+ * whatever the timing, so every seat judges every transaction it was asked to sign (pending: the normal path; final: judged, no vote).
+ *
+ *   cursors  where each book's chain was read up to (Store.getCursor/setCursor). A book never read before starts at its head: the cursor
+ *            begins when the signer first runs, so a new deployment does not judge a book's whole history.
+ *   revisit  this page's open (non-terminal) requests, handed back every cycle: a request found here whose transaction could not be read
+ *            yet, or whose decision service did not answer, is driven again until it is judged, although it is no longer pending.
+ */
+export interface SignatureHistory {
+  cursors: { getCursor(name: string): Promise<number | undefined>; setCursor(name: string, value: number): Promise<void> };
+  revisit: (page: string) => Promise<PendingRef[]>;
+}
+
+/** DAX-F213: the `revisit` a daemon wires: every open (non-terminal) request of the page, with the principal it was found at. */
+export function openRequestsOf(store: { listNonTerminal(): Promise<Array<{ txHash: string; signerUrl: string; principal?: string }>> }): SignatureHistory['revisit'] {
+  return async (page) => {
+    const out: PendingRef[] = [];
+    for (const r of await store.listNonTerminal()) {
+      if (r.signerUrl !== page || out.some((o) => o.txHash === r.txHash)) continue;
+      out.push({ txHash: r.txHash, signerUrl: r.signerUrl, ...(r.principal ? { principal: r.principal } : {}) });
+    }
+    return out;
+  };
+}
+
 const MAX_BACKOFF_MULTIPLIER = 8;
 
 export class Poller {
@@ -47,6 +79,7 @@ export class Poller {
      * passes it explicitly so a page under a non-standard book name is still scanned correctly. */
     private readonly bookUrl?: string,
     private readonly wrapperSource?: WrapperSource,
+    private readonly history?: SignatureHistory,
   ) {
     this.startedAt = this.now();   // must use the injected clock, not the wall clock
   }
@@ -124,6 +157,27 @@ export class Poller {
     return out;
   }
 
+  /**
+   * DAX-F213: the book's signature requests since its cursor (see SignatureHistory). A read that fails moves nothing: the next cycle reads
+   * the same entries again. Returns where the cursor goes once these refs are handled.
+   */
+  private async readHistory(book: string): Promise<{ refs: PendingRef[]; name: string; next: number } | undefined> {
+    const list = this.acc.listSignatureRequests?.bind(this.acc);
+    if (!this.history || !list) return undefined;
+    const name = `signature-requests:${book}`;
+    try {
+      const since = await this.history.cursors.getCursor(name);
+      const { next, requests } = await list(book, since);
+      if (since === undefined) this.logger.info({ book, head: next }, 'signature-request history: first read of this book; starting at its head');
+      const refs = requests.map((r) => ({ txHash: r.txHash, signerUrl: this.signerUrl, ...(r.principal ? { principal: r.principal } : {}) }));
+      metrics.inc('wallet_signature_requests_read_total', requests.length);
+      return { refs, name, next };
+    } catch (e) {
+      this.logger.warn({ book, err: (e as Error).message }, 'signature-request history could not be read; the cursor stays and the next cycle reads it again');
+      return undefined;
+    }
+  }
+
   /** Re-arm after each cycle, backing off while Accumulate is unreachable rather than hammering it. */
   private schedule(delayMs: number) {
     if (this.stopped) return;
@@ -153,17 +207,30 @@ export class Poller {
         }) : Promise.resolve([] as string[]),
       ]);
       const viaWrappers = this.wrapperSource ? await this.pollWrappers(this.wrapperSource) : [];
+      const viaHistory = await this.readHistory(book);
+      const viaRevisit = this.history ? await this.history.revisit(this.signerUrl).catch((e) => {
+        this.logger.warn({ err: (e as Error).message }, 'open requests could not be listed for a revisit; continuing');
+        return [] as PendingRef[];
+      }) : [];
       const hashes = [...new Set([...viaPending, ...viaSigChain, ...viaGateway])];
       const refs: PendingRef[] = [
         ...viaWrappers,
         // A hash a wrapper already surfaced is handled through that wrapper's ref, which knows where to read.
-        ...hashes.filter((h) => !viaWrappers.some((w) => w.txHash === h)).map((txHash) => ({ txHash, signerUrl: this.signerUrl })),
+        ...hashes.filter((h) => !viaWrappers.some((w) => w.txHash === h)).map((txHash) => {
+          // the history knows the principal (where the transaction is read); a bare hash does not
+          const known = viaHistory?.refs.find((r) => r.txHash === txHash)?.principal ?? viaRevisit.find((r) => r.txHash === txHash)?.principal;
+          return { txHash, signerUrl: this.signerUrl, ...(known ? { principal: known } : {}) };
+        }),
       ];
+      // DAX-F213: then every request the history holds and every open request of this page, whatever their transactions' state
+      for (const r of [...(viaHistory?.refs ?? []), ...viaRevisit]) if (!refs.some((x) => x.txHash === r.txHash)) refs.push(r);
       for (const ref of refs) {
         metrics.inc('wallet_pending_seen_total');
         await this.orch.handleAll(ref).catch((e) =>
           this.logger.error({ tx: ref.txHash, err: e.message }, 'poller handle failed'));
       }
+      // Moved only after every request read was handed over: each now has a request row, which `revisit` drives until it is judged.
+      if (viaHistory) await this.history!.cursors.setCursor(viaHistory.name, viaHistory.next);
       this.lastSuccessAt = this.now();
       if (this.consecutiveFailures) {
         this.logger.info({ afterFailures: this.consecutiveFailures }, 'poll cycle recovered');

@@ -5,7 +5,7 @@
  */
 import axios, { AxiosInstance } from 'axios';
 import { createHash } from 'node:crypto';
-import { AccumulateClient, AuthorityVote, AuthorityVotes, ChainSignature, PendingTxResult, SignerInfo, SubmitResult, TxSignatures } from './client.js';
+import { AccumulateClient, AuthorityVote, AuthorityVotes, ChainSignature, PendingTxResult, SignatureRequestEntry, SignerInfo, SubmitResult, TxSignatures } from './client.js';
 import { Logger } from '../logger.js';
 import { extractTxHeader } from './header.js';
 import { toHopOrder } from './signing.js';
@@ -139,6 +139,7 @@ export class RawAccumulateClient implements AccumulateClient {
         executed,
         expired,
         ...(failed ? { failed } : {}),
+        ...(status ? { status } : {}),
       };
     } catch (e) {
       // "The chain has no such record" and "we could not reach the chain" are different answers, and the
@@ -339,6 +340,39 @@ export class RawAccumulateClient implements AccumulateClient {
       if (p.found && !p.executed && !p.expired && !p.failed) out.push(hash);
     }
     return [...new Set(out)];
+  }
+
+  /**
+   * DAX-F213: the book's signature-request history, forward from `since` (see the interface). Bounded per call (`maxEntries`); `next` says
+   * where the caller resumes, so a long backlog is read over several cycles rather than skipped. Throws on any failure to read.
+   */
+  async listSignatureRequests(bookUrl: string, since?: number, maxEntries = 500, pageSize = 50): Promise<{ next: number; requests: SignatureRequestEntry[] }> {
+    if (since === undefined) {
+      const head: any = await this.query(bookUrl, { queryType: 'chain', name: 'signature', range: { count: 1, fromEnd: true } });
+      const total = Number(head?.total ?? 0);
+      if (!Number.isSafeInteger(total) || total < 0) throw new Error(`signature chain of ${bookUrl}: unreadable length ${String(head?.total)}`);
+      return { next: total, requests: [] };
+    }
+    const requests: SignatureRequestEntry[] = [];
+    let next = since;
+    while (next - since < maxEntries) {
+      const res: any = await this.query(bookUrl, { queryType: 'chain', name: 'signature', range: { start: next, count: pageSize, expand: true } });
+      const records: any[] = res?.records ?? [];
+      records.forEach((rec, i) => {
+        const index = typeof rec?.index === 'number' ? rec.index : next + i;
+        // The request's own TxID (messaging.SignatureRequest.TxID) names the transaction; the produced records are read only when it is absent.
+        const own = (rec?.value ?? rec)?.message;
+        const ids = own?.type === 'signatureRequest' && own?.txID ? [String(own.txID)] : extractSignatureRequestTxIds([rec]);
+        for (const id of ids) {
+          const { hash, principal } = splitTxId(id);
+          if (/^[0-9a-f]{64}$/.test(hash) && !requests.some((r) => r.txHash === hash && r.index === index)) requests.push({ index, txHash: hash, principal: principal ? `acc://${principal}` : '' });
+        }
+      });
+      const total = Number(res?.total);
+      next += records.length;
+      if (records.length < pageSize || (Number.isSafeInteger(total) && next >= total)) break;
+    }
+    return { next, requests };
   }
 
   async submit(envelope: unknown): Promise<SubmitResult> {

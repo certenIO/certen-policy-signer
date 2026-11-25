@@ -104,13 +104,17 @@ describe('orchestrator pipeline', () => {
     expect(d.acc.submissions.length).toBe(1);
   });
 
-  it('tx already executed → marked signed, no submission', async () => {
+  it('tx already executed → judged once, recorded `final` with the vote not submitted (never `signed`), no submission (DAX-F213)', async () => {
     const d = setup();
     d.acc.pending.get(TX)!.executed = true;
-    const o = orch(d, new MockPolicyClient({ decision: 'approve' }));
-    const r = await o.handle({ txHash: TX, signerUrl: SIGNER });
-    expect(r.status).toBe('signed');
+    const policy = new MockPolicyClient({ decision: 'approve' });
+    const r = await orch(d, policy).handle({ txHash: TX, signerUrl: SIGNER });
+    expect(r.status).toBe('final');
+    expect(policy.calls.length).toBe(1);
     expect(d.acc.submissions.length).toBe(0);
+    const rc = await d.store.getReceipt(TX);
+    expect(rc).toMatchObject({ decision: 'approve', voteNotSubmitted: { reason: 'transaction_final', chainStatus: 'executed', finalBy: [] } });
+    expect(rc?.vote).toBeUndefined();
   });
 
   it('unknown/expired tx → expired, no submission', async () => {
@@ -121,16 +125,20 @@ describe('orchestrator pipeline', () => {
     expect(d.acc.submissions.length).toBe(0);
   });
 
-  it('chain reports the tx expired → marked expired before policy is even consulted', async () => {
+  it('chain reports the tx expired → judged once and recorded `final` (chainStatus expired), nothing signed, never asked again (DAX-F213)', async () => {
     // Edge case 5: the wallet's expiry HANDLING. (Live-minting an expiring tx is blocked by
     // accumulate.js 0.12 encoding expire.atTime as an unsigned varint vs core's signed varint.)
     const d = setup();
     d.acc.pending.get(TX)!.expired = true;
     const policy = new MockPolicyClient({ decision: 'approve' });
-    const r = await orch(d, policy).handle({ txHash: TX, signerUrl: SIGNER });
-    expect(r.status).toBe('expired');
+    const o = orch(d, policy);
+    const r = await o.handle({ txHash: TX, signerUrl: SIGNER });
+    expect(r.status).toBe('final');
     expect(d.acc.submissions.length).toBe(0);
-    expect(policy.calls.length).toBe(0); // gone before we ask the engine
+    expect(policy.calls.length).toBe(1);
+    expect(await d.store.getReceipt(TX)).toMatchObject({ voteNotSubmitted: { chainStatus: 'expired' } });
+    await o.handle({ txHash: TX, signerUrl: SIGNER });
+    expect(policy.calls.length).toBe(1);
   });
 
   it('DAX-F100: a held request whose tx ends rejected on chain is retired, and the engine is never asked again', async () => {
@@ -148,8 +156,10 @@ describe('orchestrator pipeline', () => {
 
     d.acc.pending.get(TX)!.failed = true; // the chain now says rejected
     const r = await o.handle({ txHash: TX, signerUrl: SIGNER });
-    expect(r.status).toBe('expired');
-    expect(policy.calls.length).toBe(2); // gone before the engine is asked
+    // DAX-F213: ended `final` with the hold as the seat's recorded judgement (was `expired`: a mislabel), the vote not submitted
+    expect(r.status).toBe('final');
+    expect(await d.store.getReceipt(TX)).toMatchObject({ reason: 'awaiting a person', voteNotSubmitted: { reason: 'transaction_final' } });
+    expect(policy.calls.length).toBe(2); // the engine is not asked again
     expect(d.acc.submissions.length).toBe(0);
     // the hold is kept as history, with the way it ended
     expect(r.pending).toBeUndefined();
@@ -162,7 +172,10 @@ describe('orchestrator pipeline', () => {
   it('DAX-F100: the resolver reports a final-failed tx as gone with its own reason, and the mock lists no failed tx as pending', async () => {
     const d = setup();
     d.acc.pending.get(TX)!.failed = true;
-    expect(await d.resolver.resolve({ txHash: TX, signerUrl: SIGNER })).toEqual({ kind: 'gone', reason: 'failed' });
+    // DAX-F213: still gone (no vote is ever cast), and carrying the transaction as read, so the seat can judge it
+    expect(await d.resolver.resolve({ txHash: TX, signerUrl: SIGNER })).toMatchObject({ kind: 'gone', reason: 'failed', chainStatus: 'failed', tx: { txHash: TX } });
+    d.acc.pending.get(TX)!.status = 'rejected';
+    expect(await d.resolver.resolve({ txHash: TX, signerUrl: SIGNER })).toMatchObject({ kind: 'gone', reason: 'failed', chainStatus: 'rejected' });
     expect(await d.acc.listPendingForSigner()).toEqual([]);
     expect(await d.acc.listPendingForAccount()).toEqual([]);
   });
