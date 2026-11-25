@@ -69,6 +69,10 @@ export interface RigOpts {
   pauseGate?: ConstructorParameters<typeof Orchestrator>[0]["pauses"];
   /** AGT-F58: the transaction principal (default `${PRINCIPAL}/tokens`) */
   principal?: string;
+  /** DAX-F191b: the clock, in seconds, the journal, nonce store, pause store, refusals and orchestrator read (default: the fixed NOW_S) */
+  clock?: () => number;
+  /** DAX-F191b: the orchestrator's logger (default: silent) */
+  logger?: pino.Logger;
 }
 export const PIN_BY = 'seat:fic-operator';
 export const PIN_WHY = 'FICTIONAL: the rule set was reviewed by two officers';
@@ -80,11 +84,12 @@ export function pinStoreFor(journal: DecisionJournal, seats: Array<{ seat: strin
 }
 export function rig(o: RigOpts) {
   const dir = o.dir ?? tmp();
+  const nowS = o.clock ?? (() => NOW_S);
   const journal = new DecisionJournal({ path: join(dir, 'decision-journal.jsonl'), logId: 'fic-signer' });
-  const nonces = new NonceStore(journal, () => NOW_S);
+  const nonces = new NonceStore(journal, nowS);
   const seat = o.seat ?? SEAT;
   const page = o.page ?? SIGNER;
-  const pauses = new PauseStore({ journal, statePath: join(dir, 'pause-state.json'), seats: [seat], nowSeconds: () => NOW_S });
+  const pauses = new PauseStore({ journal, statePath: join(dir, 'pause-state.json'), seats: [seat], nowSeconds: nowS });
   const acc = new MockAccumulateClient();
   const tx = o.tx ?? TX;
   const principal = o.principal ?? `${PRINCIPAL}/tokens`;
@@ -94,13 +99,13 @@ export function rig(o: RigOpts) {
   const loaded = { ...RULES, ...(o.rules ?? {}) }.policyHash;
   if (o.stalePin !== undefined) pinStoreFor(journal, [{ seat, loadedHash: o.stalePin }]); // an earlier boot under the earlier rule set pinned it
   const pins = pinStoreFor(journal, [{ seat, loadedHash: loaded }], o.stalePin === undefined && o.pinned !== false);
-  const refusals = new RefusalReceipts(journal, () => NOW_S);
+  const refusals = new RefusalReceipts(journal, nowS);
   const orch = new Orchestrator({
-    accumulate: acc, keyring: o.keyring ?? singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))), policy, store, resolver: new Resolver(acc), logger: silent,
-    now: () => NOW_S * 1000, pauses: o.pauseGate ?? pauses, ...(o.humanOnly ? { humanOnlyPages: [page] } : {}),
+    accumulate: acc, keyring: o.keyring ?? singleKeyring(new LocalSigner(new Uint8Array(32).fill(7))), policy, store, resolver: new Resolver(acc), logger: o.logger ?? silent,
+    now: () => nowS() * 1000, pauses: o.pauseGate ?? pauses, ...(o.humanOnly ? { humanOnlyPages: [page] } : {}),
     ...(o.votes ? { votes: o.votes } : {}),
     seats: new Map([[page.toLowerCase(), { seat, ...(o.rules === null ? {} : { binding: { ...RULES, seat, ...(o.rules ?? {}) } }) }]]),
-    binding: { nonces, pins, refusals, ...(o.world ? { world: o.world } : {}), nowSeconds: () => NOW_S },
+    binding: { nonces, pins, refusals, ...(o.world ? { world: o.world } : {}), nowSeconds: nowS },
     options: { submitRejectVote: o.submitRejectVote ?? false, ...(o.options ?? {}) },
   });
   const handle = () => orch.handle({ txHash: tx, signerUrl: page });

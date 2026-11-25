@@ -278,6 +278,16 @@ export class Orchestrator {
   }
 
   /**
+   * DAX-F191b: a decision released after a cast that did not happen (releaseIfNotCast), presented again before the `retryAfter` its release
+   * entry recorded. Nothing is consumed, cast or written to the journal (the release entry already names the wait); the poll is logged and the
+   * item says why it waits. Not a refusal: the same decision is consumed and cast again at the first poll after the wait.
+   */
+  private withholdRetry(key: string, txHash: string, decision: string, out: Extract<BindingOutcome, { ok: false }>): Promise<SigningRequest> {
+    this.d.logger.warn({ tx: txHash, decision, nonce: out.nonce, requestHash: out.requestHash, wait: out.detail }, 'decision retry held: released after a vote that was not cast; not consumed again before its retryAfter');
+    return this.d.store.update(key, { status: 'awaiting_policy', lastError: 'binding: decision_retry_held' });
+  }
+
+  /**
    * A decision the binding check refused (DE-10): the signer made no signature, cast no vote, cancelled nothing and called no
    * `submit`. The item stays retryable (`awaiting_policy`): the Console may issue a fresh decision. The refusal is an
    * append-only receipt, not repeated while the same refusal stands (a poll every few seconds would otherwise write one per poll).
@@ -841,6 +851,8 @@ export class Orchestrator {
       });
       if (!out.ok) {
         if (out.reason === 'paused' || out.reason === 'pause_state_unreadable') return this.withholdPaused(key, ref.txHash, decision.decision, out.reason);
+        // DAX-F191b: the decision was released after a cast that did not happen and its wait is not over: no consumption, no journal entry
+        if (out.reason === 'decision_retry_held') return this.withholdRetry(key, ref.txHash, decision.decision, out);
         return this.refuseBinding(tx, key, out, decision.decision, seat.seat, decision.reason);
       }
       bound = out;
@@ -1121,6 +1133,10 @@ export class Orchestrator {
    * The release is one journal entry (NonceStore.release, `recheck.result` `decision_released`) that is also the failure record (the error,
    * the transaction, what the chain said), durable before this returns, and an audit line names it. A journal that cannot be written leaves
    * the decision consumed (the safe side) and says so. A crash before the release leaves it consumed, as DE-03 states.
+   *
+   * DAX-F191b: the release entry also records its attempt number and `retryAfter`; the same decision is not consumed again before then
+   * (NonceStore.retryDelaySeconds: the next poll after the first release, then 15 s doubling to 600 s), so a cause that persists costs two
+   * entries per attempt, not per poll. A pause at the cast waits for nothing but the resume.
    */
   private async releaseIfNotCast(tx: ResolvedTx, bound: BoundDecision | undefined, res: VoteResult): Promise<void> {
     if (bound === undefined || res.ok || this.d.binding === undefined) return;
@@ -1139,8 +1155,8 @@ export class Orchestrator {
       chain = 'absent';
     }
     try {
-      const done = await this.d.binding.nonces.release({ nonce: bound.nonce, requestHash: bound.requestHash, txHash: tx.txHash, error: res.error ?? 'vote not cast', chain, seat: bound.seat });
-      if (done) logger.warn({ tx: tx.txHash, nonce: bound.nonce, requestHash: bound.requestHash, seat: bound.seat, chain, err: res.error }, 'decision released for a retry: the vote was not cast (journal recheck.result decision_released)');
+      const done = await this.d.binding.nonces.release({ nonce: bound.nonce, requestHash: bound.requestHash, txHash: tx.txHash, error: res.error ?? 'vote not cast', chain, seat: bound.seat, pausedAtCast: res.error === PAUSED_AT_CAST });
+      if (done) logger.warn({ tx: tx.txHash, nonce: bound.nonce, requestHash: bound.requestHash, seat: bound.seat, chain, err: res.error, attempt: done.attempt, retryAfter: done.retryAfter }, 'decision released for a retry: the vote was not cast (journal recheck.result decision_released)');
     } catch (e) {
       if (!(e instanceof JournalError)) throw e;
       logger.error({ tx: tx.txHash, nonce: bound.nonce, journal: `${e.reason}${e.detail ? ' ' + e.detail : ''}` }, 'the decision release could not be written to the journal; the decision stays consumed');

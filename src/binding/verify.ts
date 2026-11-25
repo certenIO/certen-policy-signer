@@ -21,7 +21,7 @@ import { HASH_RE } from '../core/bytes.js';
 import { isHash } from '../core/decision-identity.js';
 import { hashRequest } from '../core/hashes.js';
 import { JournalError } from './journal.js';
-import { NonceStore } from './nonces.js';
+import { DecisionRetryHeld, NonceStore } from './nonces.js';
 import type { PinGate } from './pin-store.js';
 import type { RefusalReceipts } from './refusals.js';
 import { buildPresentedRequest, presentOptionsOf } from './request.js';
@@ -200,6 +200,8 @@ export async function verifyBinding(a: {
       };
     });
   } catch (e) {
+    // DAX-F191b: a released decision presented inside its wait: nothing consumed, nothing written; the caller withholds and says so
+    if (e instanceof DecisionRetryHeld) return refuse(rfacts, 'decision_retry_held', `attempt ${e.attempt} retry_after ${e.retryAfter}`);
     if (e instanceof JournalError) return refuse(rfacts, e.reason === 'decision_replayed' ? 'decision_replayed' : 'decision_not_recorded', e.reason === 'decision_replayed' ? undefined : `${e.reason}${e.detail ? ' ' + e.detail : ''}`);
     throw e;
   }
