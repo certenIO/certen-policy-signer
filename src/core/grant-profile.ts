@@ -6,9 +6,28 @@ import { CoreError, ADDRESS_RE, HASH_RE, MAX_UINT256, isAmount, isPlainObject, u
 import { canonicalize, parseJson } from './jcs.js';
 
 export const GRANT_SCHEMA = 'certen.grant/v1';
-/** the closed action set (GR-84): three typed kinds and `raw`, the kind of a single call that no typed kind describes (GRANT.md section 6a); a decoder never answers raw */
+/**
+ * The kinds a transaction request carries and a condition may name (GR-84, GR-21): three typed kinds and `raw`, the kind of a single call that no typed
+ * kind describes (GRANT.md section 6a); a decoder never answers raw. They are the Grant's action set without `service.access`.
+ */
 export const ACTION_KINDS = ['erc20.transfer', 'erc20.approve', 'native.transfer', 'raw'] as const;
 export type ActionKind = (typeof ACTION_KINDS)[number];
+/** The kind of an access to a platform service (finding EWA-F9, GRANT.md section 6b): never a transaction request and never a condition value (SA-10). */
+export const SERVICE_ACCESS_KIND = 'service.access';
+/**
+ * The closed action set of a Grant (GR-84 as amended by EWA-F9, SA-01): the four kinds above and `service.access`, each at most once in
+ * `scope.actions`; a kind outside it is refused.
+ */
+export const GRANT_ACTION_KINDS = [...ACTION_KINDS, SERVICE_ACCESS_KIND] as const;
+export type GrantActionKind = (typeof GRANT_ACTION_KINDS)[number];
+/**
+ * A service asset token (GRANT.md section 6b, SA-02): 0x, sixteen zero bytes, then four bytes that are not all zero. The core holds only the id, never the
+ * service name (a Grant names the id); `serviceId(name)` in hashes.ts derives it under `certen:service-id:v1`.
+ */
+export const SERVICE_ASSET_RE = /^0x0{32}[0-9a-f]{8}$/;
+export function isServiceAsset(token: unknown): boolean {
+  return typeof token === 'string' && SERVICE_ASSET_RE.test(token) && token !== '0x' + '0'.repeat(40);
+}
 /**
  * The kinds a bound REQUEST may carry (DECISION.md section 2): the Grant's action kinds and `holder.status`, a declared holder registration of a token the
  * policy flags as a holder registry (finding DAX-F176, DE-114). It is never a Grant action: the Grant action set stays closed (DE-107), so a Grant can
@@ -37,7 +56,7 @@ export interface Grant {
   issuedAt: number;
   subject: { type: SubjectType; adi: string };
   grantor: { adi: string; keyBook: string };
-  scope: { actions: ActionKind[]; accounts: ChainAddress[]; beneficiaries: ChainAddress[]; assets: AssetRef[] };
+  scope: { actions: GrantActionKind[]; accounts: ChainAddress[]; beneficiaries: ChainAddress[]; assets: AssetRef[] };
   limits: Array<{ asset: AssetRef; perTransaction: string; cumulative: { amount: string; periodSeconds: number }; count: { max: number; periodSeconds: number } }>;
   validity: { notBefore: number; notAfter: number };
   approvals: Array<{ asset: AssetRef; tiers: Tier[] }>;
@@ -211,12 +230,13 @@ function validate(v: unknown): void {
   if ((version === 1) !== (prior === null)) fail('grant_lineage_invalid', '$.priorHash');
 
   const scope = obj(g['scope'], '$.scope', ['actions', 'accounts', 'beneficiaries', 'assets']);
-  const actions = arr(scope['actions'], '$.scope.actions', ACTION_KINDS.length);
-  for (const a of actions) if (typeof a !== 'string' || !(ACTION_KINDS as readonly string[]).includes(a)) fail('grant_field_invalid', '$.scope.actions');
+  // EWA-F28: an empty action, account or beneficiary list is refused (as the reference evaluator refuses it): such a Grant permits nothing it names
+  const actions = arr(scope['actions'], '$.scope.actions', GRANT_ACTION_KINDS.length, 1);
+  for (const a of actions) if (typeof a !== 'string' || !(GRANT_ACTION_KINDS as readonly string[]).includes(a)) fail('grant_field_invalid', '$.scope.actions');
   // GR-84: each kind at most once
   if (new Set(actions).size !== actions.length) fail('grant_field_invalid', '$.scope.actions');
-  arr(scope['accounts'], '$.scope.accounts', LIMITS.scopeEntries).forEach((a, i) => chainAddress(a, '$.scope.accounts[' + i + ']'));
-  arr(scope['beneficiaries'], '$.scope.beneficiaries', LIMITS.scopeEntries).forEach((a, i) => chainAddress(a, '$.scope.beneficiaries[' + i + ']'));
+  arr(scope['accounts'], '$.scope.accounts', LIMITS.scopeEntries, 1).forEach((a, i) => chainAddress(a, '$.scope.accounts[' + i + ']'));
+  arr(scope['beneficiaries'], '$.scope.beneficiaries', LIMITS.scopeEntries, 1).forEach((a, i) => chainAddress(a, '$.scope.beneficiaries[' + i + ']'));
   const assets = arr(scope['assets'], '$.scope.assets', LIMITS.scopeEntries, 1).map((a, i) => assetRef(a, '$.scope.assets[' + i + ']'));
   const assetKeys = assets.map(assetKey);
   if (new Set(assetKeys).size !== assetKeys.length) fail('grant_field_invalid', '$.scope.assets');
@@ -282,6 +302,19 @@ function validate(v: unknown): void {
   if (approvalKeys.length !== assetKeys.length || new Set(approvalKeys).size !== approvalKeys.length || !assetKeys.every((k) => approvalKeys.includes(k))) fail('grant_approvals_coverage', '$.approvals');
 
   validateCondition(g['conditions'], 1, { n: 0 }, '$.conditions');
+
+  // SA-03 (finding EWA-F9): a Grant that lists service.access holds at least one service asset, one that does not holds none, and the limits of a service
+  // asset bound only the count (perTransaction "0", cumulative.amount "0"); judged last, after the conditions (the order of the EWA reference evaluator validateGrantSA)
+  const listsAccess = actions.includes(SERVICE_ACCESS_KIND);
+  const serviceAssets = assets.filter((a) => isServiceAsset(a.token));
+  if (!listsAccess && serviceAssets.length > 0) fail('grant_service_asset_without_kind', '$.scope.assets');
+  if (listsAccess && serviceAssets.length === 0) fail('grant_service_asset_missing', '$.scope.assets');
+  limits.forEach((l, i) => {
+    const o = l as Record<string, unknown>;
+    const a = o['asset'] as Record<string, unknown>;
+    const cum = o['cumulative'] as Record<string, unknown>;
+    if (isServiceAsset(a['token']) && (o['perTransaction'] !== '0' || cum['amount'] !== '0')) fail('grant_service_limit_invalid', '$.limits[' + i + ']');
+  });
 }
 
 /** Validates an already-parsed value as a Grant and returns a clean deep copy (later mutation of the input cannot affect it). */
