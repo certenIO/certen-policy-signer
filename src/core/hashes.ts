@@ -20,6 +20,8 @@ export const TAGS = {
   envelopeSig: 'certen:envelope-sig:v1',
   declog: 'certen:declog:v1',
   declogGenesis: 'certen:declog:d0/v1',
+  /** finding EWA-F9 (GRANT.md section 6b, SA-02): the one preimage of a service id */
+  serviceId: 'certen:service-id:v1',
 } as const;
 
 export const digestHex = (preimage: Uint8Array): string => '0x' + toHex(sha256(preimage));
@@ -55,6 +57,26 @@ export const subjectPreimage = (registration: unknown): Uint8Array => registrati
 export const subject2Preimage = (registration: unknown): Uint8Array => registrationPreimage(registration, TAGS.subject2);
 /** The registration hash of either schema (the tag follows the schema). */
 export const hashRegistration = (registration: unknown): string => digestHex(taggedPreimage(registrationTag(registration), [utf8(canonicalRegistration(registration))]));
+
+// ---- service id (GRANT.md section 6b, SA-02; finding EWA-F9) ---------------------------------------------------
+
+/** A service name: lowercase letters, digits and hyphens, starting with a letter or digit, at most 63 characters. */
+export const SERVICE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+/** lp("certen:service-id:v1") || lp(UTF-8 name) */
+export function serviceIdPreimage(name: string): Uint8Array {
+  if (typeof name !== 'string' || !SERVICE_NAME_RE.test(name)) throw new CoreError('service_name_invalid', String(name));
+  return taggedPreimage(TAGS.serviceId, [utf8(name)]);
+}
+/**
+ * serviceId(name) = "0x" || 16 zero bytes || the first 4 bytes of SHA-256( lp("certen:service-id:v1") || lp(UTF-8 name) ), lowercase hex; a name whose
+ * four bytes are all zero has no id (service_name_invalid). Four bytes collide cheaply, so the names meet the ids only in a platform's service
+ * catalogue, which refuses two names with one id (SA-11); a Grant and this core never hold a name.
+ */
+export function serviceId(name: string): string {
+  const four = toHex(sha256(serviceIdPreimage(name)).subarray(0, 4));
+  if (four === '00000000') throw new CoreError('service_name_invalid', 'its id would be the zero address');
+  return '0x' + '00'.repeat(16) + four;
+}
 
 // ---- policy --------------------------------------------------------------------------------------------------
 

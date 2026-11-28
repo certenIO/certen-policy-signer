@@ -22,7 +22,7 @@ import { isPlainObject } from './bytes.js';
 import { checkAccountAuthority, SAFE_AFTER } from './account.js';
 import { decodeAcceptanceEntry, type Acceptance } from './acceptance.js';
 import { decodeEntry } from './envelope.js';
-import { validateGrant } from './grant-profile.js';
+import { isAccUrl, isAdiUrl, isUnderAdi, validateGrant } from './grant-profile.js';
 import { headDecision, lineageParts, type ResolveSubjectResult } from './registry.js';
 import type { Registration } from './registry-profile.js';
 
@@ -79,8 +79,37 @@ export function resolveSubjectOnline(input: ResolveSubjectOnlineInput): ResolveS
   return resolveSubjectOnlineWith(input, () => ({ ok: true, value: input.acceptances }));
 }
 
+/**
+ * The grantor-keyed entry (finding EWA-F30, GRANT.md GR-98): the resolver reads only the grantor's ADI and key book from a Grant, so a subject can be resolved
+ * through the grantor's registry BEFORE any Grant exists (the EWA intake, whose first Grant is the one the assessment maps to) without inventing a Grant. The
+ * input is the resolver's with `grantor: {adi, keyBook}` in place of `grant`; every refusal and every verdict is the Grant-keyed resolver's. A grantor that
+ * is not an ADI with a key book under it is `resolve_input_malformed{grantor}` (a call shape, judged first, as `at` and `activation`).
+ */
+export interface GrantorKey { adi: string; keyBook: string }
+export type ResolveSubjectByGrantorInput = Omit<ResolveSubjectOnlineInput, 'grant'> & { grantor: unknown };
+export function readGrantorKey(v: unknown): GrantorKey | null {
+  if (!isPlainObject(v) || Object.keys(v).length !== 2) return null;
+  const adi = v['adi'];
+  const keyBook = v['keyBook'];
+  if (!isAdiUrl(adi) || !isAccUrl(keyBook) || !keyBook.startsWith(adi + '/')) return null;
+  return { adi, keyBook };
+}
+export function resolveSubjectByGrantor(input: ResolveSubjectByGrantorInput): ResolveSubjectOnlineResult {
+  return resolveSubjectByGrantorWith(input, () => ({ ok: true, value: input.acceptances }));
+}
+export function resolveSubjectByGrantorWith(input: Omit<ResolveSubjectByGrantorInput, 'acceptances'>, loadAcceptances: () => AcceptanceLoad): ResolveSubjectOnlineResult {
+  const key = readGrantorKey(input.grantor);
+  if (key === null) return { ok: false, reason: 'resolve_input_malformed', detail: 'grantor' };
+  return resolveFor(input, key, loadAcceptances);
+}
+
 /** resolveSubjectOnline with the acceptance account loaded lazily: it is asked for only when a version of the registration needs the consent */
 export function resolveSubjectOnlineWith(input: Omit<ResolveSubjectOnlineInput, 'acceptances'>, loadAcceptances: () => AcceptanceLoad): ResolveSubjectOnlineResult {
+  return resolveFor(input, null, loadAcceptances);
+}
+
+/** the one resolver: keyed by a Grant (key null: the Grant is validated and its grantor read) or by the grantor itself */
+function resolveFor(input: Omit<ResolveSubjectOnlineInput, 'acceptances' | 'grant'> & { grant?: unknown }, key: GrantorKey | null, loadAcceptances: () => AcceptanceLoad): ResolveSubjectOnlineResult {
   // the shape of the call itself, before any fact is read (GR-83: an input shape, never a subject_unproven reason)
   if (input.activation !== undefined) return { ok: false, reason: 'resolve_input_malformed', detail: 'activation' };
   if (input.at !== undefined && (typeof input.at !== 'number' || !Number.isSafeInteger(input.at) || input.at < 0)) return { ok: false, reason: 'resolve_input_malformed', detail: 'at' };
@@ -90,9 +119,13 @@ export function resolveSubjectOnlineWith(input: Omit<ResolveSubjectOnlineInput, 
     const t = isPlainObject(e) ? e['entryTime'] : undefined;
     return typeof t === 'number' && Number.isSafeInteger(t) && t >= 0 && t > evalAt;
   };
-  const g = validateGrant(input.grant);
-  if (!g.ok) return unproven('asserted_malformed', { detail: 'grant ' + g.reason });
-  const grant = g.grant;
+  let grantor: GrantorKey;
+  if (key === null) {
+    const g = validateGrant(input.grant);
+    if (!g.ok) return unproven('asserted_malformed', { detail: 'grant ' + g.reason });
+    grantor = g.grant.grantor;
+  } else grantor = key;
+  const grant = { grantor };
   const safeAfter = input.safeAfter === undefined ? SAFE_AFTER : input.safeAfter;
   const subjectBooks = Array.isArray(input.subjectBooks) && input.subjectBooks.every((b) => typeof b === 'string') ? (input.subjectBooks as string[]) : null;
   const grantorAdi = grant.grantor.adi;
@@ -101,6 +134,8 @@ export function resolveSubjectOnlineWith(input: Omit<ResolveSubjectOnlineInput, 
   const early = lineageParts({ asserted: input.asserted, expectType: input.expectType, registry: [] });
   if ('ok' in early && !early.ok && early.reason !== 'not_registered') return early;
   const asserted = input.asserted as { adi: string; assertedBy: string };
+  // the grantor-keyed path keeps the Grant profile's separation (GR-43 grantor_is_subject): a grantor under the subject ADI resolves nothing
+  if (key !== null && isUnderAdi(grantor.adi, asserted.adi)) return { ok: false, reason: 'resolve_input_malformed', detail: 'grantor_is_subject' } as ResolveSubjectOnlineResult;
 
   // 1. the registry of the grantor, and only that
   const registries = input.registries;

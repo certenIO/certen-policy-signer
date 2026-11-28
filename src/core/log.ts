@@ -8,7 +8,7 @@
  * visible to any hash chain; a pinned head `{seq, hash}` held somewhere the writer cannot edit turns both into
  * refusals, and without a pin the verifier says `pinned: false` instead of claiming more.
  */
-import { CoreError, HASH_RE, isPlainObject } from './bytes.js';
+import { CoreError, HASH_RE, isAmount, isPlainObject } from './bytes.js';
 import { genesisHash, logEntryHash } from './hashes.js';
 import { canonicalize } from './jcs.js';
 import { DEFAULT_MIN_REASON_LENGTH } from './pause.js';
@@ -19,9 +19,10 @@ import { isAccUrl } from './grant-profile.js';
 export const INTERVENTION_ACTS: readonly string[] = ['revoke', 'replace', 'reject'];
 
 /**
- * the fifteen kinds (DECISION.md section 9, DE-103): binding.refused (DAX7E-R2-F2, the signer's refusal receipt) is the thirteenth, policy.pinned (the pin
+ * the eighteen kinds (DECISION.md section 9, DE-103): binding.refused (DAX7E-R2-F2, the signer's refusal receipt) is the thirteenth, policy.pinned (the pin
  * step, DE-94) the fourteenth, intervention.recorded (AGT-F135, DE-109: a revoke, replace or cancel by reject vote held by a named seat with a reason) the
- * fifteenth; any other kind is refused by name
+ * fifteenth; assessment.intake, epoch.published and platform.checked (finding EWA-F11, DE-116: the EWA intake, the published permission epoch and every
+ * platform check answer) the sixteenth to eighteenth, appended after the fifteen; any other kind is refused by name
  */
 export const LOG_KINDS = [
   'decision.issued',
@@ -39,6 +40,9 @@ export const LOG_KINDS = [
   'binding.refused',
   'policy.pinned',
   'intervention.recorded',
+  'assessment.intake',
+  'epoch.published',
+  'platform.checked',
 ] as const;
 export type LogKind = (typeof LOG_KINDS)[number];
 
@@ -60,6 +64,10 @@ const isHash = (v: unknown): boolean => typeof v === 'string' && HASH_RE.test(v)
 const isNullableStr = (v: unknown): boolean => v === null || typeof v === 'string';
 const hashOrEmpty = (v: unknown): boolean => v === '' || isHash(v);
 const present = (p: Record<string, unknown>, k: string): boolean => Object.prototype.hasOwnProperty.call(p, k);
+const hashOrNull = (v: unknown): boolean => v === null || isHash(v);
+const intFrom = (v: unknown, min: number): boolean => typeof v === 'number' && Number.isSafeInteger(v) && v >= min;
+/** a platform service string of the EWA catalogue (MAPPING.md section 1): `payout` or `service-access.<name>` with a service name */
+const PLATFORM_SERVICE_RE = /^(payout|service-access\.[a-z0-9][a-z0-9-]{0,62})$/;
 
 /**
  * The members the evidence check reads (DE-52): present and strings, except grantHash and policyHash of decision.issued
@@ -94,6 +102,24 @@ function payloadReadable(kind: string, p: Record<string, unknown>): boolean {
         present(p, 'txHash') && isHash(p['txHash']);
     case 'grant.observed':
       return str('grantId', 'grantHash') && typeof p['version'] === 'number' && Number.isSafeInteger(p['version']) && p['version'] >= 1;
+    case 'assessment.intake':
+      // EWA-F11 (DE-116, EWA RECORD.md section 3): assessmentId and subject strings; version a safe integer from 1 or null (the input did not parse); rawSha256 a
+      // 32-byte hash; assessmentHash PRESENT, a 32-byte hash or null; result accepted (reason empty, assessmentHash a hash) or refused (reason the failure name)
+      return str('assessmentId', 'subject', 'reason') && present(p, 'version') && (p['version'] === null || intFrom(p['version'], 1)) && isHash(p['rawSha256']) &&
+        present(p, 'assessmentHash') && hashOrNull(p['assessmentHash']) &&
+        (p['result'] === 'accepted' ? p['reason'] === '' && isHash(p['assessmentHash']) : p['result'] === 'refused' && p['reason'] !== '');
+    case 'epoch.published':
+      // EWA-F11 (DE-116): merchant an acc:// URL; epoch a safe integer from 1; epochHash and grantHash 32-byte hashes; previousEpochHash PRESENT, a hash or null
+      // (the first epoch); expires a non-negative safe integer
+      return isAccUrl(p['merchant']) && intFrom(p['epoch'], 1) && isHash(p['epochHash']) && isHash(p['grantHash']) && present(p, 'previousEpochHash') && hashOrNull(p['previousEpochHash']) && intFrom(p['expires'], 0);
+    case 'platform.checked':
+      // EWA-F11 (DE-116): merchant a string; service payout or service-access.<name>; amount decimal text; requestHash a 32-byte hash or the empty string (a call
+      // that is not a payout); epochHash and grantHash PRESENT, a hash or null; answer allow (reason and seat empty), deny (a reason, seat empty) or route
+      // (reason limit_per_transaction_exceeded, seat a named seat); cause call or review
+      return str('merchant', 'service', 'reason', 'seat') && PLATFORM_SERVICE_RE.test(p['service'] as string) && isAmount(p['amount']) && hashOrEmpty(p['requestHash']) &&
+        present(p, 'epochHash') && hashOrNull(p['epochHash']) && present(p, 'grantHash') && hashOrNull(p['grantHash']) &&
+        (p['answer'] === 'allow' ? p['reason'] === '' && p['seat'] === '' : p['answer'] === 'deny' ? p['reason'] !== '' && p['seat'] === '' : p['answer'] === 'route' && p['reason'] === 'limit_per_transaction_exceeded' && isSeatId(p['seat'])) &&
+        (p['cause'] === 'call' || p['cause'] === 'review');
     default:
       return true;
   }

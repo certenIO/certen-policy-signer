@@ -5,8 +5,10 @@
  */
 import { ADDRESS_RE, isAmount, isPlainObject } from './bytes.js';
 import {
-  ACTION_KINDS,
+  GRANT_ACTION_KINDS,
+  SERVICE_ACCESS_KIND,
   SUBJECT_TYPES,
+  isServiceAsset,
   parseGrantTextUnhashed,
   validateGrant,
   type Condition,
@@ -75,7 +77,7 @@ function readAction(v: unknown): Action | null {
   const want = ['kind', 'chainId', 'source', 'beneficiary', 'asset', 'amount'];
   if (keys.length !== want.length || !want.every((k) => keys.includes(k))) return null;
   const { kind, chainId, source, beneficiary, asset, amount } = v;
-  if (typeof kind !== 'string' || !(ACTION_KINDS as readonly string[]).includes(kind)) return null;
+  if (typeof kind !== 'string' || !(GRANT_ACTION_KINDS as readonly string[]).includes(kind)) return null;
   if (typeof chainId !== 'number' || !Number.isSafeInteger(chainId) || chainId < 1) return null;
   if (typeof source !== 'string' || !ADDRESS_RE.test(source)) return null;
   if (typeof beneficiary !== 'string' || !ADDRESS_RE.test(beneficiary)) return null;
@@ -83,6 +85,8 @@ function readAction(v: unknown): Action | null {
   if (!isAmount(amount)) return null;
   // a raw action maps asset to native (GRANT.md section 6a, DE-90): any other asset is not a raw action
   if (kind === 'raw' && asset !== 'native') return null;
+  // a service access names a service asset address (GRANT.md section 6b, SA-04 step 1): the native asset is not an action of that kind
+  if (kind === SERVICE_ACCESS_KIND && asset === 'native') return null;
   return { kind, chainId, source, beneficiary, asset, amount };
 }
 
@@ -146,7 +150,8 @@ function holds(c: Condition, a: Action, now: number): boolean {
  * Is this action inside the current Grant? The refusals are evaluated in the order of GRANT.md section 6 so that two
  * implementations name the same reason: malformed Grant, malformed action, malformed time or usage, subject
  * (unproven, then mismatch), validity, scope (action, source, beneficiary, asset), raw_requires_exception (an action of kind raw
- * that no approved exception lifting rawEffect covers, GR-85), per-transaction, cumulative, count, conditions; otherwise a permit with the first tier whose ceiling covers the amount and that tier's required books.
+ * that no approved exception lifting rawEffect covers, GR-85), step 4b (a service.access action whose asset is not a service asset or whose amount
+ * is not "0"; a typed action aimed at a service asset, GRANT.md section 6b), per-transaction, cumulative, count, conditions; otherwise a permit with the first tier whose ceiling covers the amount and that tier's required books.
  */
 export function checkAction(input: CheckActionInput): CheckActionResult {
   const g = validateGrant(input.grant);
@@ -177,6 +182,12 @@ export function checkAction(input: CheckActionInput): CheckActionResult {
 
   // GR-85: a raw call's token effect is unknown to every layer, so it needs an approved single-use exception that lifts rawEffect; judged after scope and before the limits; a typed action is never affected
   if (action.kind === 'raw' && input.rawException !== true) return denied('raw_requires_exception');
+
+  // step 4b (GRANT.md section 6b, SA-04, SA-07; finding EWA-F9): an access must name a service asset with the amount "0"; a typed kind never moves one
+  if (action.kind === SERVICE_ACCESS_KIND) {
+    if (!isServiceAsset(action.asset)) return denied('service_access_asset_not_service');
+    if (action.amount !== '0') return denied('service_access_amount_not_zero');
+  } else if (isServiceAsset(action.asset)) return denied('service_asset_not_transferable');
 
   const limit = grant.limits.find((l) => l.asset.chainId === action.chainId && l.asset.token === action.asset);
   if (limit === undefined) return denied('asset_not_in_scope');
